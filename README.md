@@ -17,10 +17,11 @@ Under construction. See `PLAN.md` for the design and the staged rollout.
 
 ### Portable core
 
-`protocol`, `parser`, `diagnostics` and `sequence` include **no ESPHome
-headers**. They are plain C++ compiled both into the firmware and into the host
-test suite in `tests/`, which is what makes the protocol and the menu-driving
-state machines testable without hardware. Only `vent_axia.cpp` and the platform
+`protocol`, `screens`, `display`, `parser`, `status`, `diagnostics` and
+`sequence` include **no ESPHome headers**. They are plain C++ compiled both
+into the firmware and into the host test suite in `tests/`, which is what
+makes the protocol, the status-line decode and the menu-driving state
+machines testable without hardware. Only `vent_axia.cpp` and the platform
 files (`sensor.py` and friends) touch `esphome/components/...`.
 
 If a core file stops compiling on the host, it has grown an ESPHome dependency

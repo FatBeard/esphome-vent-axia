@@ -19,6 +19,10 @@ TEXT_SENSORS = {
     "display_line_2": text_sensor.text_sensor_schema(
         entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
     ),
+    # The current status-loop message (see status.h), e.g. "Normal Airflow"
+    # or "Summer Bypass On" -- a friendlier, non-diagnostic-category sibling
+    # of display_line_1 for the one line that is actually meant to be read.
+    "status_message": text_sensor.text_sensor_schema(),
 }
 
 CONFIG_SCHEMA = cv.Schema(
