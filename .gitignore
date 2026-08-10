@@ -1,0 +1,11 @@
+# Host test build output
+tests/build/
+
+# ESPHome build output from the example configs
+.esphome/
+*.bin
+*.elf
+
+# Python
+__pycache__/
+*.py[cod]

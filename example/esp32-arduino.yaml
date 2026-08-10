@@ -1,0 +1,32 @@
+# Reference ESP32 config, Arduino framework.
+#
+# The only difference from the ESP8266 build is the UART. An ESP32 has spare
+# UARTs, so the MVHR goes on UART1 and the serial console stays usable -- which
+# makes bring-up considerably easier to debug.
+
+esphome:
+  name: vent-axia-esp32
+  min_version: 2024.11.0
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+logger:
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+    components: [vent_axia]
+
+uart:
+  id: vask_uart
+  tx_pin: GPIO17
+  rx_pin: GPIO16
+  baud_rate: 9600
+
+vent_axia:
+  id: vask
+  uart_id: vask_uart
