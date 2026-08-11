@@ -4,6 +4,7 @@
 
 #include "esphome/core/log.h"
 
+#include "diagnostics.h"
 #include "parser.h"
 
 namespace esphome {
@@ -32,6 +33,20 @@ void VentAxiaHub::setup() {
     }
     if (line2_changed) {
       this->publish_text_(TextKey::DISPLAY_LINE_2, this->display_.line2());
+    }
+
+    // Diagnostic decode is entirely passive (PLAN.md §4): whatever page the
+    // display happens to be showing -- browsed by hand, or later scrolled
+    // by a fetch sequence -- gets fed through here. Gated on either line
+    // actually changing (not fired unconditionally every ~300ms frame) so
+    // sitting still on one page does not spam identical publishes and
+    // trigger firings; `line1_changed` alone would miss a page whose
+    // content changes without its line1 changing (not expected for the
+    // decoded pages, but cheap to cover), so both are checked.
+    if ((line1_changed || line2_changed) && this->display_.screen_kind() == screens::ScreenKind::DIAGNOSTIC) {
+      if (const auto page = screens::diagnostic_page(this->display_.line1())) {
+        this->publish_diagnostic_page_(static_cast<uint8_t>(*page), this->display_.line2());
+      }
     }
   });
 
@@ -163,6 +178,55 @@ void VentAxiaHub::publish_status_() {
 
   this->publish_sensor_(SensorKey::AIRFLOW, this->status_.airflow_percent());
   this->publish_sensor_(SensorKey::BOOST_TIME_REMAINING, this->status_.boost_time_remaining());
+}
+
+void VentAxiaHub::publish_diagnostic_page_(uint8_t page, const std::string &line2) {
+  // Raw escape hatch and trigger fire for every page seen, decoded by the
+  // table or not -- this is what lets a page nobody has taught
+  // diagnostics.cpp to understand yet (or a nonexistent page 28, or
+  // anything else) stay visible from YAML without a component change. See
+  // diagnostics.h's comment on why this is the hub's job and not
+  // decode_page()'s.
+  this->publish_text_(TextKey::RAW_DIAGNOSTIC_PAGE, diagnostics::format_raw_page(page, line2));
+  for (auto *trig : this->diagnostic_page_triggers_) {
+    trig->trigger(page, line2);
+  }
+
+  // Adapts diagnostics::Sink's plain-value callbacks onto this hub's own
+  // optional-based publish_sensor_/publish_binary_/publish_text_ -- the
+  // same dedup-by-last-value and platform-absent-is-a-no-op behaviour those
+  // already have applies here for free, so diagnostics.cpp does not need to
+  // reimplement any of it.
+  diagnostics::Sink sink;
+  sink.publish_sensor = [this](SensorKey key, int value) { this->publish_sensor_(key, value); };
+  sink.publish_binary = [this](BinaryKey key, bool value) { this->publish_binary_(key, value); };
+  sink.publish_text = [this](TextKey key, const std::string &value) { this->publish_text_(key, value); };
+  sink.report_filter_change_due = [this](bool due) { this->reconcile_filter_change_due_(due); };
+  diagnostics::decode_page(page, line2, sink);
+}
+
+void VentAxiaHub::reconcile_filter_change_due_(bool due_from_page23) {
+  // Two independent sources for the same fact: status_ derives
+  // filter_change_due live off the status line's "Check Filter" message,
+  // refreshed roughly 3x/second; diagnostics only sees page 23 once a day
+  // (the scheduled fetch, PLAN.md §6) or whenever a human happens to browse
+  // the menu by hand. "Live wins by recency" (PLAN.md risk 7): the
+  // diagnostic-derived value is only published when the live tracker has no
+  // opinion at all yet -- e.g. straight after boot, before the first
+  // status-screen frame -- otherwise this purely cross-checks and logs a
+  // disagreement, because a disagreement means one of the two decodes is
+  // wrong, not that the filter state is ambiguous.
+  const std::optional<bool> live = this->status_.filter_change_due();
+  if (live.has_value()) {
+    if (*live != due_from_page23) {
+      ESP_LOGW(TAG,
+               "filter_change_due disagreement: live status line says %s, diagnostic page 23 says %s -- one of "
+               "the two decodes is wrong",
+               YESNO(*live), YESNO(due_from_page23));
+    }
+    return;
+  }
+  this->publish_binary_(BinaryKey::FILTER_CHANGE_DUE, due_from_page23);
 }
 
 void VentAxiaHub::publish_link_up_(uint32_t now_ms) {

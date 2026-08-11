@@ -42,6 +42,44 @@ BINARY_SENSORS = {
         device_class=DEVICE_CLASS_CONNECTIVITY,
         entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
     ),
+    # Diagnostic pages 2/3/19 -- the three fault binaries, all DEVICE_CLASS_PROBLEM
+    # per the brief. rail_24v_fault is the INVERTED one (diagnostics.cpp):
+    # the wire's own field is 1 == ok, 0 == fault.
+    "supply_temp_fault": binary_sensor.binary_sensor_schema(
+        device_class=DEVICE_CLASS_PROBLEM,
+    ),
+    "extract_temp_fault": binary_sensor.binary_sensor_schema(
+        device_class=DEVICE_CLASS_PROBLEM,
+    ),
+    "rail_24v_fault": binary_sensor.binary_sensor_schema(
+        device_class=DEVICE_CLASS_PROBLEM,
+    ),
+    # Diagnostic-ish informational flags -- present/fitted state rather than
+    # a problem, and not something a user changes, so ENTITY_CATEGORY_DIAGNOSTIC
+    # rather than a plain sensor per the brief.
+    "wireless_fitted": binary_sensor.binary_sensor_schema(
+        icon="mdi:access-point",
+        entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+    ),
+    "switch_line_1": binary_sensor.binary_sensor_schema(
+        icon="mdi:electric-switch",
+        entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+    ),
+    "switch_line_2": binary_sensor.binary_sensor_schema(
+        icon="mdi:electric-switch",
+        entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+    ),
+    "switch_line_3": binary_sensor.binary_sensor_schema(
+        icon="mdi:electric-switch",
+        entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+    ),
+    # Diagnostic page 24. A once-a-day snapshot of the defrost-bypass state
+    # machine, not the comfort bypass (`summer_bypass` above) -- same
+    # actuator, different reason for opening it, kept as separate entities
+    # deliberately (see vent-axia-esphome-project.md, "Summer bypass").
+    "antifrost_active": binary_sensor.binary_sensor_schema(
+        icon="mdi:snowflake-alert",
+    ),
 }
 
 CONFIG_SCHEMA = cv.Schema(

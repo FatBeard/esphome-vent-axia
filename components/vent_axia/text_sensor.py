@@ -23,6 +23,32 @@ TEXT_SENSORS = {
     # or "Summer Bypass On" -- a friendlier, non-diagnostic-category sibling
     # of display_line_1 for the one line that is actually meant to be read.
     "status_message": text_sensor.text_sensor_schema(),
+    # Diagnostic page 24's mode, spelled out -- see diagnostics.cpp for the
+    # mode -> text table. antifrost_active (binary_sensor.py) is the same
+    # field as a plain boolean.
+    "antifrost_mode": text_sensor.text_sensor_schema(
+        icon="mdi:snowflake-thermometer",
+    ),
+    # Diagnostic pages 25/26, both ENTITY_CATEGORY_DIAGNOSTIC per the brief --
+    # identifying information about the unit, not something a user watches.
+    "serial_number": text_sensor.text_sensor_schema(
+        icon="mdi:identifier",
+        entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+    ),
+    "firmware_version": text_sensor.text_sensor_schema(
+        icon="mdi:chip",
+        entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+    ),
+    # Optional escape hatch (diagnostics.h): "NN: <line2>" for whichever
+    # diagnostic page was last seen, decoded by the table or not -- a page
+    # nobody has taught this component to decode yet is still visible to a
+    # human this way, with no component change. Like every entity in this
+    # dict it is opt-in -- it only exists if mhrv.yaml declares the block --
+    # so there is no publish cost for a config that leaves it out.
+    "raw_diagnostic_page": text_sensor.text_sensor_schema(
+        icon="mdi:code-tags",
+        entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+    ),
 }
 
 CONFIG_SCHEMA = cv.Schema(

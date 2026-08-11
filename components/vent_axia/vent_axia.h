@@ -2,8 +2,11 @@
 
 #include <array>
 #include <optional>
+#include <string>
+#include <vector>
 
 #include "esphome/components/uart/uart.h"
+#include "esphome/core/automation.h"
 #include "esphome/core/component.h"
 #include "esphome/core/defines.h"
 
@@ -25,6 +28,7 @@
 #include "esphome/components/text_sensor/text_sensor.h"
 #endif
 
+#include "diagnostics.h"
 #include "display.h"
 #include "entities.h"
 #include "protocol.h"
@@ -33,14 +37,25 @@
 namespace esphome {
 namespace vent_axia {
 
+/// Fires once per diagnostic page the display passes through -- decoded by
+/// diagnostics.cpp's table or not -- with the page number and raw line2, so
+/// a YAML lambda can act on a page nobody has taught the component to
+/// decode yet without a component change. Just the Trigger<> base with no
+/// extra behaviour: the hub calls ->trigger(page, line2) directly (see
+/// publish_diagnostic_page_() below), the same as any other ESPHome trigger.
+class DiagnosticPageTrigger : public Trigger<uint8_t, std::string> {};
+
 /// Hub for a Vent-Axia Sentinel Kinetic MVHR on its wired-remote serial port.
 ///
 /// The component impersonates the wired remote: the MVHR pushes a 41-byte
 /// display frame roughly every 300 ms, and a keypress is a stream of 8-byte
 /// frames repeated for as long as the key is held (there is no key-up
-/// frame). This stage adds status-line decode (status::StatusTracker) and
-/// link liveness on top of stage 1's RX framing and display decode/publish;
-/// nothing transmits yet except the one-shot alive frame in setup().
+/// frame). Stage 2 added status-line decode (status::StatusTracker) and
+/// link liveness on top of stage 1's RX framing and display decode/publish.
+/// This stage adds the diagnostic page/field table (diagnostics.cpp):
+/// entirely passive, driven off whatever page the display happens to be
+/// showing -- see publish_diagnostic_page_(). Nothing transmits yet except
+/// the one-shot alive frame in setup().
 ///
 /// This is the only file (besides the platform .py files) that may include
 /// esphome/... headers -- protocol.h, display.h, screens.h, parser.h,
@@ -72,6 +87,10 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   }
 #endif
 
+  void register_diagnostic_page_trigger(DiagnosticPageTrigger *trig) {
+    this->diagnostic_page_triggers_.push_back(trig);
+  }
+
  protected:
   void publish_text_(TextKey key, const std::string &value);
   /// No-op (and does not update the "last published" cache) when `value` is
@@ -85,6 +104,26 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   /// Feeds every status-screen-derived entity from the current state of
   /// display_ and status_. Called once per decoded frame.
   void publish_status_();
+
+  /// Passive diagnostic decode (PLAN.md §4): called whenever line1 or line2
+  /// changes while display_.screen_kind() == DIAGNOSTIC, with the page
+  /// number screens::diagnostic_page() read off line1 and the current
+  /// line2. Publishes the raw "NN: <line2>" text sensor and fires
+  /// on_diagnostic_page unconditionally -- for every page, decoded by the
+  /// table or not -- then runs diagnostics::decode_page() for whatever the
+  /// table does understand. Gated on a line actually changing (the same
+  /// dedup Display already does for display_line_1/2) rather than firing on
+  /// every ~300ms frame regardless of content, so sitting still on one page
+  /// does not spam identical publishes and trigger firings.
+  void publish_diagnostic_page_(uint8_t page, const std::string &line2);
+
+  /// Page 23's filter_change_due, reconciled against the live status-line
+  /// source -- see diagnostics::Sink::report_filter_change_due's comment.
+  /// "Live wins by recency": published from the diagnostic reading only
+  /// when the live tracker has no opinion yet; otherwise this purely
+  /// cross-checks and logs a disagreement (PLAN.md risk 7), it never
+  /// overrides a value the live status line is already publishing.
+  void reconcile_filter_change_due_(bool due_from_page23);
 
   /// link_up ages out after LINK_TIMEOUT_MS with no CRC-valid frame -- see
   /// PLAN.md §7 "Link loss". Unlike the status-screen entities this is
@@ -100,6 +139,7 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   status::StatusTracker status_;
   bool have_frame_{false};
   uint32_t last_frame_at_ms_{0};
+  std::vector<DiagnosticPageTrigger *> diagnostic_page_triggers_;
 
 #ifdef USE_TEXT_SENSOR
   std::array<text_sensor::TextSensor *, static_cast<size_t>(TextKey::COUNT)> text_sensors_{};
