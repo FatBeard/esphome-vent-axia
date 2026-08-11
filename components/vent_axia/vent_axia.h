@@ -27,6 +27,9 @@
 #ifdef USE_NUMBER
 #include "esphome/components/number/number.h"
 #endif
+#ifdef USE_SELECT
+#include "esphome/components/select/select.h"
+#endif
 #ifdef USE_SENSOR
 #include "esphome/components/sensor/sensor.h"
 #endif
@@ -98,6 +101,13 @@ class SequenceFailedTrigger : public Trigger<std::string> {};
 /// ReadSettings itself observed on the unit, via publish_switch_()/
 /// publish_number_(), the same "last published value" dedup shape as
 /// publish_sensor_()/publish_binary_().
+///
+/// Stage 7 adds SyncClock, and SetAirflowMode alongside airflow_mode
+/// (select.py) -- write_select() is control()'s entry point, same
+/// not-optimistic shape as write_switch()/write_number(), but with no
+/// sequence-driven read-back of its own: publish_airflow_mode_() derives
+/// the confirmed state entirely from status_'s own passive decode instead,
+/// called every frame alongside publish_status_() -- see its own comment.
 ///
 /// This is the only file (besides the platform .py files) that may include
 /// esphome/... headers -- protocol.h, display.h, screens.h, parser.h,
@@ -186,6 +196,15 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   /// number.py).
   void write_number(NumberKey key, int value);
 
+  /// Starts a SetAirflowMode run (sequence.h) -- select.py's
+  /// VentAxiaSelect::control(size_t index) calls this, never publish_state()
+  /// directly (PLAN.md §6 "Not optimistic"). `index` is handed straight
+  /// through as the AirflowTarget ordinal: select.py's AIRFLOW_MODE_OPTIONS
+  /// list is deliberately ordered to match AirflowTarget's enum values
+  /// index-for-index, so there is no separate lookup here, same as
+  /// write_switch()/write_number() above for their own keys.
+  void write_select(SelectKey key, size_t index);
+
 #ifdef USE_TIME
   /// Optional: without a time_id, stamp_diagnostics_updated_() simply skips
   /// the stamp rather than failing -- see its comment.
@@ -215,6 +234,9 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
 #ifdef USE_NUMBER
   void set_number(NumberKey key, number::Number *num) { this->numbers_[static_cast<size_t>(key)] = num; }
 #endif
+#ifdef USE_SELECT
+  void set_select(SelectKey key, select::Select *sel) { this->selects_[static_cast<size_t>(key)] = sel; }
+#endif
 
   void register_diagnostic_page_trigger(DiagnosticPageTrigger *trig) {
     this->diagnostic_page_triggers_.push_back(trig);
@@ -236,6 +258,59 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   /// equivalent of boost_time_remaining's countdown disappearing.
   void publish_switch_(SwitchKey key, bool value);
   void publish_number_(NumberKey key, int value);
+  /// Same dedup-on-unchanged shape as publish_switch_/publish_number_, for
+  /// airflow_mode's one string-valued select -- see publish_airflow_mode_()
+  /// for what computes `value`.
+  void publish_select_(SelectKey key, const std::string &value);
+
+  /// Derives airflow_mode's confirmed state purely from what status_ already
+  /// decodes (boosting()/purging()/boost_time_remaining()) and publishes it
+  /// -- SetAirflowMode itself never calls this (PLAN.md §6 "Not optimistic":
+  /// see its own class comment in sequence.h). Called once per decoded frame
+  /// alongside every other status-derived entity (publish_status_()), so a
+  /// press at the unit's own keypad reaches Home Assistant the same way a
+  /// command from Home Assistant does -- there is no separate "who caused
+  /// this" channel on the wire to tell them apart.
+  ///
+  /// Skips publishing entirely while SetAirflowMode is the running root
+  /// sequence (Opus review, Finding 3b): normalising deliberately walks the
+  /// unit through boost states nobody chose (Boost 30 -> Boost 60 ->
+  /// continuous -> Normal is one lap of the counter), and PLAN.md risk 3 is
+  /// explicit that HA is expected to keep showing the OLD value for the
+  /// whole ~25-30s a transition can take -- "the `busy` binary sensor
+  /// exists to surface this" -- not to visibly walk through every
+  /// intermediate mode. The dedup cache in last_select_value_ already holds
+  /// the pre-run value, so the very first frame decoded after the run ends
+  /// publishes the settled truth with no special-casing needed there.
+  /// Guarded on THIS ONE sequence specifically, not on Runner::busy()
+  /// generally: FetchDiagnostics/ReadSettings/SyncClock all park the
+  /// display in a menu while they run, where StatusTracker already FREEZES
+  /// rather than ageing (status.h's own class comment on is_status_screen),
+  /// so they need no equivalent special case here.
+  ///
+  /// Two documented approximations, both inherent to what the status line
+  /// actually shows rather than a gap in this decode:
+  ///  - Continuous boost shows only a plain airflow percentage -- no
+  ///    countdown, no distinguishing text -- so boosting() true with no
+  ///    boost_time_remaining() reads as "Normal" here. Same asymmetry
+  ///    PLAN.md §4/risk 2 already documents for the generic `boosting`
+  ///    binary sensor: set continuous boost at the unit's own keypad and
+  ///    airflow_mode may read Normal.
+  ///  - A countdown of 30 minutes or less is, ON ITS OWN, ambiguous between
+  ///    an actual 30-minute boost and a 60-minute boost more than half
+  ///    elapsed (both count down through the same 1-30 range) -- but it is
+  ///    resolvable from evidence already seen earlier in the SAME episode:
+  ///    a countdown above 30 at any point proves it was a 60, since a
+  ///    30-minute boost never shows more than 30. was_boost_60_this_episode_
+  ///    below latches exactly that (Finding 3a): set the moment boosting()
+  ///    is true with boost_time_remaining() > 30, cleared the moment
+  ///    boosting() goes false, so the rest of that same episode keeps
+  ///    reporting "Boost 60 min" through the countdown's second half
+  ///    instead of silently flipping to "Boost 30 min" with nobody having
+  ///    touched anything. Still passive and non-optimistic: this is
+  ///    inference from what the unit's own display showed earlier in this
+  ///    run, never from what Home Assistant asked for.
+  void publish_airflow_mode_();
 
   /// Shared by write_switch()/write_number(): configures the one long-lived
   /// WriteSetting instance and requests it as a root sequence. Both entity
@@ -306,6 +381,7 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   ReadSettings read_settings_;          // the button's own instance -- see read_settings()'s comment
   WriteSetting write_setting_;          // shared by write_switch()/write_number() via start_write_()
   SyncClock sync_clock_;                // stage 7 -- see sync_clock()
+  SetAirflowMode set_airflow_mode_;     // stage 7 -- see write_select()
 
 #ifdef USE_TIME
   time::RealTimeClock *time_{nullptr};
@@ -326,6 +402,9 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
 #ifdef USE_NUMBER
   std::array<number::Number *, static_cast<size_t>(NumberKey::COUNT)> numbers_{};
 #endif
+#ifdef USE_SELECT
+  std::array<select::Select *, static_cast<size_t>(SelectKey::COUNT)> selects_{};
+#endif
 
   // "Last published" caches so publish_sensor_/publish_binary_/
   // publish_switch_/publish_number_ can skip a republish when nothing
@@ -339,6 +418,15 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   std::array<std::optional<bool>, static_cast<size_t>(BinaryKey::COUNT)> last_binary_value_{};
   std::array<std::optional<bool>, static_cast<size_t>(SwitchKey::COUNT)> last_switch_value_{};
   std::array<std::optional<int>, static_cast<size_t>(NumberKey::COUNT)> last_number_value_{};
+  std::array<std::optional<std::string>, static_cast<size_t>(SelectKey::COUNT)> last_select_value_{};
+  // Finding 3a (Opus review): latches "this boost episode was seen above 30
+  // minutes remaining" so publish_airflow_mode_() keeps reporting "Boost 60
+  // min" through the countdown's second half instead of silently flipping
+  // to "Boost 30 min" -- see that function's own comment for the full
+  // reasoning. Set the moment boosting() is true with remaining > 30,
+  // cleared the moment boosting() goes false (a fresh episode starts with
+  // no evidence yet).
+  bool was_boost_60_this_episode_{false};
 };
 
 #ifdef USE_BUTTON
@@ -422,6 +510,28 @@ class VentAxiaNumber final : public number::Number, public Parented<VentAxiaHub>
   void control(float value) override { this->parent_->write_number(this->key_, static_cast<int>(value)); }
 
   NumberKey key_{NumberKey::BYPASS_INDOOR_TEMP};
+};
+#endif
+
+#ifdef USE_SELECT
+/// airflow_mode (select.py) -- same "not optimistic" shape as VentAxiaSwitch/
+/// VentAxiaNumber above: control() only ever starts a SetAirflowMode run
+/// (sequence.h) through the hub, it never calls publish_state() itself. What
+/// Home Assistant shows comes entirely from the hub's own passive
+/// status-line decode -- see VentAxiaHub::publish_airflow_mode_().
+class VentAxiaSelect final : public select::Select, public Parented<VentAxiaHub> {
+ public:
+  void set_key(SelectKey key) { this->key_ = key; }
+
+ protected:
+  // Overriding the index form (not control(const std::string &)) avoids a
+  // string round-trip: select.py's AIRFLOW_MODE_OPTIONS list is deliberately
+  // ordered to match sequence.h's AirflowTarget enum index-for-index, so the
+  // index IS the target, with no string lookup needed on either side -- see
+  // write_select()'s own comment.
+  void control(size_t index) override { this->parent_->write_select(this->key_, index); }
+
+  SelectKey key_{SelectKey::AIRFLOW_MODE};
 };
 #endif
 

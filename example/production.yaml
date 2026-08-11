@@ -164,6 +164,18 @@ text_sensor:
     # first one completes.
     diagnostics_updated: {name: "Diagnostics Last Updated"}
 
+select:
+  - platform: vent_axia
+    # Boost/purge as an absolute set-point (PLAN.md §3/§6) -- Normal /
+    # Boost 30 min / Boost 60 min / Purge. Continuous boost is deliberately
+    # NOT an option (PLAN.md §4/CLAUDE.md device invariants). NOT optimistic,
+    # same shape as summer_mode below -- see select.py -- so this reflects
+    # whatever the unit's own status line last confirmed, whether that came
+    # from a Home Assistant command or a press at the unit's own keypad; a
+    # transition can take ~25-30s (PLAN.md risk 3), during which `busy`
+    # above stays on.
+    airflow_mode: {name: "Airflow Mode"}
+
 switch:
   - platform: vent_axia
     # The bypass On/Off setting, user menu entry 2. NOT optimistic -- see

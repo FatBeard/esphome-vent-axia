@@ -1,6 +1,7 @@
 #include "vent_axia.h"
 
 #include <cmath>
+#include <cstring>
 
 #include "esphome/core/log.h"
 
@@ -152,6 +153,24 @@ void VentAxiaHub::setup() {
     return false;  // no `time:` platform in this build at all
 #endif
   });
+
+  // Stage 7's other deliverable: set_airflow_mode_ needs only a log sink,
+  // unlike sync_clock_/write_setting_/read_settings_ above -- it publishes
+  // nothing of its own (PLAN.md §6 "Not optimistic", see its class comment
+  // in sequence.h), so there is no switch/number-style sink to wire here.
+  this->set_airflow_mode_.set_log_sink({
+      [](const std::string &msg) { ESP_LOGI(TAG, "%s", msg.c_str()); },
+      [](const std::string &msg) { ESP_LOGW(TAG, "%s", msg.c_str()); },
+      [](const std::string &msg) { ESP_LOGE(TAG, "%s", msg.c_str()); },
+  });
+  // Finding 2 (Opus review of this stage): the alternation-aware, sticky
+  // purging() this sequence's CHECK_CURRENT needs to answer "is the unit
+  // currently purging" reliably -- the exact same tracker every other
+  // status-derived entity already reads from, not a second, separate purge
+  // decode. status_ outlives set_airflow_mode_ (both are hub members,
+  // declared above in this class -- sequence.h), so this pointer stays
+  // valid for the hub's whole lifetime.
+  this->set_airflow_mode_.set_status(&this->status_);
 }
 
 void VentAxiaHub::loop() {
@@ -255,6 +274,28 @@ void VentAxiaHub::write_number(NumberKey key, int value) {
       return;
     default:
       ESP_LOGE(TAG, "write_number: no WriteSetting mapping for this NumberKey");
+      return;
+  }
+}
+
+void VentAxiaHub::write_select(SelectKey key, size_t index) {
+  switch (key) {
+    case SelectKey::AIRFLOW_MODE:
+      // index is the AirflowTarget ordinal directly -- see write_select()'s
+      // own comment (vent_axia.h) and select.py's AIRFLOW_MODE_OPTIONS list
+      // for why no lookup table is needed here. select::SelectCall has
+      // already validated index against traits.get_options().size() before
+      // control() is ever reached, so an out-of-range value never gets
+      // here -- same "already validated upstream" reasoning as
+      // VentAxiaNumber::control()'s own comment.
+      this->set_airflow_mode_.configure(static_cast<AirflowTarget>(index));
+      this->runner_.request(this->set_airflow_mode_);
+      return;
+    default:
+      // Unreachable today -- SelectKey has exactly one member -- but logged
+      // rather than silently doing nothing if that ever changes without a
+      // matching case here, same shape as write_switch()/write_number().
+      ESP_LOGE(TAG, "write_select: no SetAirflowMode mapping for this SelectKey");
       return;
   }
 }
@@ -376,6 +417,96 @@ void VentAxiaHub::publish_status_() {
 
   this->publish_sensor_(SensorKey::AIRFLOW, this->status_.airflow_percent());
   this->publish_sensor_(SensorKey::BOOST_TIME_REMAINING, this->status_.boost_time_remaining());
+
+  this->publish_airflow_mode_();
+}
+
+void VentAxiaHub::publish_select_(SelectKey key, const std::string &value) {
+#ifndef USE_SELECT
+  (void) key;
+  (void) value;
+#else
+  const size_t idx = static_cast<size_t>(key);
+  if (this->last_select_value_[idx].has_value() && *this->last_select_value_[idx] == value) {
+    return;  // unchanged since the last publish -- don't spam the API at ~3 Hz
+  }
+  this->last_select_value_[idx] = value;
+  select::Select *sel = this->selects_[idx];
+  if (sel != nullptr) {
+    sel->publish_state(value);
+  }
+#endif
+}
+
+void VentAxiaHub::publish_airflow_mode_() {
+#ifndef USE_SELECT
+  return;
+#else
+  // Finding 3b (Opus review): suppressed ENTIRELY -- no publish, and no
+  // Finding-3a latch update below either -- while SetAirflowMode is the
+  // running root sequence. See this function's own comment (vent_axia.h)
+  // for why: normalising deliberately passes through boost states nobody
+  // chose, and letting the latch below absorb that transient noise would
+  // corrupt the very evidence it exists to remember for whatever state the
+  // run actually settles on. Compared by name against the sequence's own
+  // name() rather than a duplicated string literal, so this can never
+  // silently drift out of sync with sequence.h's SetAirflowMode::name().
+  if (this->runner_.busy() && std::strcmp(this->runner_.running_name(), this->set_airflow_mode_.name()) == 0) {
+    return;
+  }
+
+  // Both must actually be known -- status_ reports std::nullopt for either
+  // until the first status-screen frame has ever been decoded (has_state()),
+  // and publishing a guess before then would be exactly the "unpublished
+  // rather than a guess" violation CLAUDE.md's "Blank != zero" invariant
+  // warns about for the temperature fields, applied here to a derived value
+  // instead of a directly parsed one.
+  const std::optional<bool> purging = this->status_.purging();
+  const std::optional<bool> boosting = this->status_.boosting();
+  if (!purging.has_value() || !boosting.has_value()) {
+    return;
+  }
+
+  std::string mode;
+  if (*purging) {
+    mode = "Purge";
+  } else if (*boosting) {
+    const std::optional<int> remaining = this->status_.boost_time_remaining();
+    // Finding 3a: a countdown above 30 is unambiguous proof of a 60-minute
+    // boost (a 30-minute one never shows more than 30) -- latch that for
+    // the rest of THIS episode, so the countdown's second half (1-30,
+    // otherwise indistinguishable from an actual 30-minute boost) keeps
+    // reporting "Boost 60 min" instead of silently flipping with nobody
+    // having touched anything. See was_boost_60_this_episode_'s own comment
+    // (vent_axia.h) for when it clears.
+    if (remaining.has_value() && *remaining > 30) {
+      this->was_boost_60_this_episode_ = true;
+    }
+    if (!remaining.has_value()) {
+      // Continuous boost: see publish_airflow_mode_()'s own comment
+      // (vent_axia.h) -- no countdown is ever shown for it, so it is
+      // indistinguishable here from a high Normal rate and reads as Normal.
+      // Deliberately leaves the latch untouched either way: continuous
+      // offers no 30-vs-60 evidence of its own, and it does not clear the
+      // episode either -- boosting() stays true straight through it (all
+      // three of Boost30/Boost60/Continuous show "Boost Airflow" on line1,
+      // sequence.h's SetAirflowMode class comment), so whatever the latch
+      // already knew from before continuous still applies if a countdown
+      // reappears afterwards.
+      mode = "Normal";
+    } else if (this->was_boost_60_this_episode_) {
+      mode = "Boost 60 min";  // either >30 right now, or latched from earlier this same episode
+    } else {
+      mode = "Boost 30 min";  // never seen above 30 this episode -- genuinely 30, or a 60 not yet past its midpoint
+    }
+  } else {
+    // Episode over -- clear the latch. A fresh episode starts with no
+    // evidence yet, same as it did the very first time.
+    this->was_boost_60_this_episode_ = false;
+    mode = "Normal";
+  }
+  this->publish_select_(SelectKey::AIRFLOW_MODE, mode);
+#endif
 }
 
 void VentAxiaHub::publish_diagnostic_page_(uint8_t page, const std::string &line2) {

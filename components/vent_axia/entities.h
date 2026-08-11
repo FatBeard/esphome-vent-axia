@@ -14,9 +14,10 @@
 // member per page/field the table decodes, see diagnostics.cpp. Stage 6
 // (settings read/write, sequence.h's ReadSettings/WriteSetting) adds
 // SwitchKey and NumberKey, the first two enums here that back a WRITABLE
-// entity rather than a read-only one -- and later stages keep going (unit
-// clock, diagnostics-updated timestamp, ...); this file is expected to keep
-// growing rather than being considered done.
+// entity rather than a read-only one. Stage 7 adds SelectKey (airflow_mode)
+// the same way, plus the unit clock and diagnostics-updated timestamp
+// TextKeys; this file is expected to keep growing rather than being
+// considered done.
 
 #include <cstdint>
 
@@ -103,6 +104,20 @@ enum class SwitchKey : uint8_t {
   // via ReadSettings; see switch.py for why this is deliberately not
   // optimistic.
   SUMMER_MODE,
+  COUNT,
+};
+
+enum class SelectKey : uint8_t {
+  // Normal / Boost 30 min / Boost 60 min / Purge (PLAN.md §3/§6) -- the
+  // Main key's cumulative press counter, exposed as an absolute set-point
+  // rather than four separate "press N times" buttons. Written via
+  // sequence.h's SetAirflowMode; NOT read back through it, unlike
+  // SwitchKey/NumberKey above -- see select.py and
+  // VentAxiaHub::publish_airflow_mode_() for why the confirmed value comes
+  // from the passive status-line decode instead. Continuous boost is
+  // deliberately not a fifth option here -- PLAN.md §4/CLAUDE.md are
+  // explicit that this is a decision, not an oversight.
+  AIRFLOW_MODE,
   COUNT,
 };
 

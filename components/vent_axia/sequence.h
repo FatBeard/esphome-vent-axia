@@ -51,6 +51,7 @@
 #include "entities.h"
 #include "keypad.h"
 #include "protocol.h"
+#include "status.h"  // SetAirflowMode::set_status() -- status.h is portable core, see its own header comment
 
 namespace esphome {
 namespace vent_axia {
@@ -1071,6 +1072,204 @@ class SyncClock final : public Sequence {
   uint32_t nav_started_ms_{0};
   LogSink log_;
   TimeSource time_source_;
+};
+
+// ------------------------------------------------------------ SetAirflowMode --
+// Stage 7's other deliverable (PLAN.md §3's SetAirflowMode row, §6's
+// airflow_mode select). Ported from mhrv_orig/controls.yaml's boost_probe/
+// boost_normalise/boost_set, extended for Purge per PLAN.md risk 3 -- see
+// SetAirflowMode's own class comment (seq_set_airflow_mode.cpp) for the full
+// step-by-step reasoning.
+
+/// The four targets `airflow_mode` (select.py) can be set to -- deliberately
+/// ordered to match select.py's AIRFLOW_MODE_OPTIONS list index-for-index, so
+/// VentAxiaSelect::control(size_t index) (vent_axia.h) can hand the raw
+/// index straight to SetAirflowMode::configure() with no separate lookup
+/// table. Continuous boost is NOT a fifth member here -- PLAN.md §4 and
+/// CLAUDE.md's device invariants are explicit that this is a decision, not
+/// an oversight: it is the one boost mode with no reliable evidence on the
+/// display (a plain airflow percentage indistinguishable from a high normal
+/// rate), so it is not selectable and not decoded. Normalising below may
+/// still pass THROUGH it transiently on the way back to Normal -- that is
+/// harmless and deliberate, see SetAirflowMode's own comment.
+enum class AirflowTarget : uint8_t { NORMAL, BOOST_30, BOOST_60, PURGE };
+
+/// Sets the Main-key boost/purge state to an ABSOLUTE target. Main is a
+/// cumulative press counter with no usable timeout (1 press = 30 min boost,
+/// 2 = 60 min, 3 = continuous, 4 = back to Normal --
+/// mhrv_orig/controls.yaml's own measured table, "Presses 250ms apart are
+/// counted individually and correctly"), so "Boost 60" only means the same
+/// thing every time if the counter is first normalised back to a known
+/// state (Normal) and then advanced by exactly the target's own press count
+/// -- CLAUDE.md's "Main is never a menu key... its press counter is
+/// cumulative... absolute targeting must normalise first". Purge is a
+/// separate axis: a 5.5s Main hold TOGGLES it on or off regardless of where
+/// the tap counter sits, so it is handled as its own branch rather than
+/// folded into the same counter.
+///
+/// See seq_set_airflow_mode.cpp for the full step-by-step reasoning behind
+/// each state below; in outline:
+///  1. CHECK_CURRENT: no keys pressed. First, PROVES the display is
+///     actually on the status loop -- have_frame() true and
+///     screens::is_menu_screen() false -- and FAILS immediately (no retry
+///     window; a menu screen does not clear itself within a sequence's
+///     patience) if not. This matters because CLAUDE.md's "Main is never a
+///     menu key" applies to being PARKED on a menu/diagnostic screen just
+///     as much as to pressing one on purpose: Runner::recover()'s own exit
+///     tap does not wait for the unit to actually leave the menu, the
+///     unit's own ~2-minute timeout may still be running, and a human at
+///     the unit's own keypad can park it on one at any moment -- all
+///     reachable start states, not hypothetical ones. Without this check,
+///     classify_line()/purging() can never see Purge or Boost from a menu
+///     screen, so the probe below would conclude "Normal" with zero
+///     evidence and go on to tap Main against a boost counter whose
+///     position was never actually read. Second, is the unit currently
+///     showing Purge -- via the injected StatusTracker's sticky purging(),
+///     not a single frame; see set_status()'s own comment for why. Branches
+///     to the Purge hold (direct, no normalising needed -- the manual
+///     describes Purge as reachable from any state) or, for a non-Purge
+///     target, to CANCEL_PURGE first if currently purging, else straight to
+///     the boost probe.
+///  2. CANCEL_PURGE / OPEN_PURGE: a fixed 5500ms Main hold (PLAN.md §3),
+///     via press()+elapsed() rather than HoldUntil -- its SUCCESS condition
+///     is "the timer ran out", not a predicate, the same reasoning
+///     FetchDiagnostics::HOLD_DOWN documents for its own fixed 8s hold.
+///     CANCEL_PURGE is followed by an explicit ~400ms settle before the
+///     first subsequent tap -- CLAUDE.md's "release is silence... a
+///     hold-to-hold [or hold-to-tap] transition needs an explicit gap".
+///  3. PROBE_CHECK / PROBE_WAIT: mhrv_orig's boost_probe -- sample line1 for
+///     "Boost Airflow" right now; if not seen, wait up to 8s for a Boost
+///     frame (line1 alternates every ~3.2-3.5s, so a single unlucky sample
+///     can catch the other half of the cycle -- PLAN.md §3's "the probe
+///     needs up to ~8s to be conclusive").
+///  4. If boosting: tap Main once (bounded by a 4-tap guard, PLAN.md §3),
+///     wait for the tap and its key_gap to clear, wait a further 1s
+///     (mhrv_orig's own figure -- long enough for the unit's own counter
+///     and display to have caught up before judging it), then re-probe.
+///     Guard-exhausted-and-still-boosting FAILS outright rather than
+///     layering the target's own presses on top of an unknown press count
+///     -- mirrors mhrv_orig's own boost_set, which silently skipped
+///     applying anything in exactly this situation.
+///  5. APPLY_TAP / APPLY_WAIT: once confirmed Normal, tap Main exactly as
+///     many times as the target needs from there -- 0/1/2 for
+///     Normal/Boost30/Boost60 -- queued as a batch and drained via Keypad's
+///     own queue, the same batching GotoMenu uses for its own taps
+///     (sequence.cpp).
+///
+/// Accepted edge, chosen deliberately rather than left implicit: purging()'s
+/// sticky ALTERNATION_TIMEOUT_MS window (~12s, status.h) means a purge that
+/// genuinely ended within the last ~12s still reads as "purging" here, so a
+/// PURGE target in that window lands on CHECK_CURRENT's no-op branch and
+/// does nothing rather than re-opening it. That is the SAFE direction of
+/// this trade -- the alternative (trusting a stale "not purging" instead)
+/// risks a wrong-direction 5.5s hold that CANCELS a purge actually still
+/// running, in an occupied house. See CHECK_CURRENT's own comment
+/// (seq_set_airflow_mode.cpp) for the mirror-image reasoning at PROBE_CHECK,
+/// which deliberately does NOT use this same sticky reading.
+///
+/// NOT optimistic (PLAN.md §6) -- same "the unit's own keypad is also a
+/// valid input device" reasoning as WriteSetting: this sequence only ever
+/// presses keys, it never publishes anything itself. What Home Assistant's
+/// airflow_mode shows comes entirely from the hub's own PASSIVE status-line
+/// decode (VentAxiaHub::publish_airflow_mode_(), vent_axia.cpp) -- the same
+/// boosting()/purging()/boost_time_remaining() the generic binary
+/// sensors/sensors already publish from (status.h) -- so a press at the
+/// unit's own physical keypad shows up in HA exactly the way a command from
+/// HA does, with no read-back step of this sequence's own needed to make
+/// that true. That decode also DELIBERATELY GOES SILENT while a
+/// SetAirflowMode run is the active root sequence (VentAxiaHub::
+/// publish_airflow_mode_()'s own comment) -- normalising walks the unit
+/// through intermediate boost states nobody chose (Boost 30 -> Boost 60 ->
+/// continuous -> Normal is one lap of the counter), and PLAN.md risk 3 is
+/// explicit that HA is expected to keep showing the OLD value for the
+/// ~25-30s a transition can take, with `busy` surfacing that a change is in
+/// flight, rather than visibly walking through every intermediate mode.
+///
+/// A long-lived hub member, reused for every write -- configure() before
+/// each request(), see on_start() for what resets between runs.
+class SetAirflowMode final : public Sequence {
+ public:
+  using LogSink = Keypad::LogSink;
+  void set_log_sink(LogSink sink) { this->log_ = std::move(sink); }
+
+  /// Finding 2 (Opus review of this stage): the alternation-aware, STICKY
+  /// purging() this sequence needs at CHECK_CURRENT to know "is the unit
+  /// currently purging" reliably. A single decoded frame is not enough --
+  /// the status loop alternates, which is exactly why StatusTracker models
+  /// purging_ as a Flag with its own ALTERNATION_TIMEOUT_MS rather than
+  /// trusting one frame (status.h's own class comment), and PLAN.md risk 4
+  /// (the purge layout is unresolved) makes a single-frame miss MORE
+  /// likely, not less. Must be set before request()ing this instance --
+  /// VentAxiaHub::setup() wires it to &this->status_, the exact tracker
+  /// every other status-derived entity already reads from, so this is not
+  /// a second, separate purge decode. A null pointer is treated the same
+  /// as "not yet known" at CHECK_CURRENT -- see its own comment for why
+  /// that FAILS rather than being read as "not purging".
+  void set_status(const status::StatusTracker *status) { this->status_ = status; }
+
+  /// Selects the target -- call before request()ing this instance.
+  void configure(AirflowTarget target) { this->target_ = target; }
+
+  const char *name() const override { return "SetAirflowMode"; }
+  void on_start() override;
+  Poll poll() override;
+  void on_finish(Poll result) override;
+
+  // Worst case: CANCEL_PURGE/OPEN_PURGE (5.5s) + CANCEL_SETTLE (0.4s) + the
+  // normalise loop's own worst case (4 guard iterations, each up to
+  // ~8s probe + ~0.45s tap+key_gap + 1s settle =~ 9.45s -- 4*9.45 =~ 37.8s)
+  // + APPLY's own worst case (2 taps, ~0.9s) -- about 44.6s. Comfortable
+  // headroom above that, same "don't cut it close" reasoning as every other
+  // timeout_ms() override in this file -- and in practice unreachable, since
+  // every RUNNING state in this sequence is already internally bounded (see
+  // the class comment), unlike e.g. WriteSetting's VERIFY/OPEN steps which
+  // wait on a specific screen that might never arrive.
+  uint32_t timeout_ms() const override { return 90000; }
+
+ private:
+  enum Step : uint8_t {
+    CHECK_CURRENT,
+    CANCEL_PURGE,
+    CANCEL_SETTLE,
+    OPEN_PURGE,
+    PROBE_CHECK,
+    PROBE_WAIT,
+    NORMALISE_WAIT,
+    NORMALISE_SETTLE,
+    APPLY_TAP,
+    APPLY_WAIT,
+    FINISHED,
+  };
+
+  // The manual's own figure for both starting and cancelling Purge
+  // (mhrv_orig/mhrv.yaml's purge_ms) -- same gesture, same duration, either
+  // direction.
+  static constexpr uint32_t PURGE_HOLD_MS = 5500;
+  // Matches FetchDiagnostics::DOWN_SETTLE_MS -- see this class's own comment
+  // on why a hold's release needs an explicit gap before the next tap.
+  static constexpr uint32_t CANCEL_SETTLE_MS = 400;
+  static constexpr uint32_t PROBE_TIMEOUT_MS = 8000;      // mhrv_orig's boost_probe
+  static constexpr uint32_t NORMALISE_SETTLE_MS = 1000;   // mhrv_orig's boost_normalise `delay: 1s`
+  static constexpr uint8_t NORMALISE_GUARD = 4;           // PLAN.md §3
+
+  /// Shared by CANCEL_PURGE and OPEN_PURGE: holds Main for the fixed
+  /// PURGE_HOLD_MS, then releases and moves to `next_step` -- see the class
+  /// comment for why this is press()+elapsed(), not HoldUntil.
+  Poll hold_main_(uint8_t next_step);
+
+  /// Shared by PROBE_CHECK and PROBE_WAIT once either has an answer: decides
+  /// whether to tap again (guard permitting), fail the guard, or move on to
+  /// APPLY_TAP/FINISHED -- see the class comment, steps 3-5.
+  Poll after_probe_(bool boosting_now);
+
+  /// 0/1/2 Main taps from Normal to reach `target` -- PURGE never reaches
+  /// here, see CHECK_CURRENT/hold_main_ above.
+  static uint8_t presses_for_(AirflowTarget target);
+
+  AirflowTarget target_{AirflowTarget::NORMAL};
+  uint8_t guard_{0};
+  LogSink log_;
+  const status::StatusTracker *status_{nullptr};  // Finding 2 -- set_status(), CHECK_CURRENT
 };
 
 }  // namespace vent_axia
