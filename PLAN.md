@@ -412,9 +412,29 @@ button:
 ### Out of scope (descoped during implementation)
 
 - **`fake_mvhr`, the host model of the unit's menu behaviour.** Dropped. The sequence tests drive a fake keypad and display directly instead, which covers the engine's own contract — `on_finish` always running, mutual exclusion, no key left asserted — but *not* the unit's behavioural quirks (the edit chain, wrapping vs non-wrapping fields, the blink, dropped presses). Those remain verified only by reading, so the sequences that write settings carry more risk than the rest of the codebase.
-- **The staged rollout on the live unit.** Nothing is to be flashed. The device at 192.168.1.200 keeps running its original firmware, and `read_only: true` stays set in `mhrv/mhrv.yaml`. Everything below is therefore *unvalidated against hardware*: it compiles, and the host suite passes, which is a much weaker claim than the timing constants in this document deserve. Whoever picks the rollout up should treat §8's original staged order (read-only soak → `FetchDiagnostics` → `ReadSettings` → `SyncClock` → `WriteSetting` → `airflow_mode` → `ResetFilter` last, being irreversible) as still the right sequencing, and keep `mhrv_orig` plus a known-good `.bin` for rollback.
 
-Consequently `v1.0.0` is not tagged and `mhrv/mhrv.yaml` still points at the component through a local path rather than a pinned git ref. The old project in `mhrv_orig` is untouched and still the thing actually running the house's ventilation.
+### The staged rollout, as it happened
+
+This section was written as a plan and is now a **record**: the rollout is underway on the live unit, not hypothetical. Extend it as each remaining stage goes live rather than treating it as pre-rollout planning. These rollout stages are numbered independently of the *build* stages the source comments count (`// Stage 5:` in `entities.h` and the YAML means "the fifth thing built", not "the fifth thing flashed").
+
+The live device at 192.168.1.200 runs this component. `mhrv_orig` no longer ventilates the house; it is now purely a reference. A known-good rollback build of it lives in `../rollback/`, and keeping it there is the whole safety net — restore it and the unit is back on the old firmware.
+
+| # | Stage | Status |
+|---|---|---|
+| 1 | Read-only soak, `read_only: true` | **Done, 11 Aug 2026.** 145 frames, 0 bad-CRC, decode tracked the live display. `read_only: false` since. |
+| 2 | `FetchDiagnostics` | **Live.** Also on the 04:30 daily schedule. |
+| 3 | `ReadSettings` | **Live.** Manual button. |
+| 4 | `SyncClock` | **Live.** Also on the Sunday 04:05 schedule. |
+| 5 | `WriteSetting` — `summer_mode`, the two bypass numbers, the raw key buttons | **Live.** The first stage that writes settings. |
+| 6 | `airflow_mode` (`SetAirflowMode`) | **Built, not yet flashed.** |
+| 7 | `ResetFilter` | **Built, not yet flashed.** Irreversible; last on purpose. |
+
+Stages 6 and 7 compile and pass the host suite, which is a much weaker claim than this document's timing constants deserve. What is still unvalidated against hardware, and what to watch for when they go live:
+
+- **`SetAirflowMode`.** Whether a 5.5s Main hold actually cancels a running purge is untested — the sequence refuses loudly rather than guessing if Purge is still showing after the cancel hold, so that failure is diagnosable from the log rather than silent. The purge screen's layout is still unresolved (risk 4), so the decode scans both lines. The 30-vs-60 latch assumes a 60-minute boost really does count down through the same 1–30 range a 30-minute one shows.
+- **`ResetFilter`.** Whether this unit answers the Up+Down hold with a "Reset Filter?" prompt has never been observed either way; other Vent-Axia models do. The sequence logs the post-hold `line1`/`line2` and deliberately does **not** act on it, so **that log line is the observation worth capturing when this is first exercised** — if a prompt appears there, the sequence needs a follow-up keypress it currently refuses to guess at. The self-verification against page 23 distinguishes four outcomes (no reading, still zero, unchanged since before the hold, confirmed); a reset pressed while the timer already sits at the full interval reads as "cannot confirm", which is honest rather than wrong.
+
+`v1.0.0` is still not tagged, and `mhrv/mhrv.yaml` still points at the component through a local path rather than the pinned git ref its commented-out block shows — deliberate while stages 6–7 are still being exercised, since the local path is what makes an edit take effect on the next compile with no version bump. Tagging is the thing to do once stage 7 has been seen working on the unit.
 
 ---
 
