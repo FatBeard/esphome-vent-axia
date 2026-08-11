@@ -1,3 +1,7 @@
+# Real secrets, if anyone copies example/secrets.yaml.example here
+secrets.yaml
+example/secrets.yaml
+
 # Host test build output
 tests/build/
 

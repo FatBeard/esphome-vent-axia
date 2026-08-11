@@ -1,0 +1,204 @@
+# Full-featured Vent-Axia Sentinel Kinetic B (firmware V32/05) wired-remote
+# replacement config. This is the config actually running the author's unit
+# (see the project README) -- every entity the component exposes, plus the
+# scheduled diagnostics/clock jobs -- with the component pulled in from this
+# repo's git source rather than a local checkout, so it's a working starting
+# point for anyone else's install.
+#
+# Unlike example/esp8266.yaml (a minimal smoke-test config CI compiles),
+# this one is not built by CI: it needs real `!secret` values (see
+# secrets.yaml.example) that don't exist in this repo.
+
+substitutions:
+  device_name: vent-axia-sentinel-remote
+
+esphome:
+  name: ${device_name}
+  friendly_name: "Vent-Axia Sentinel Remote"
+  min_version: 2024.11.0
+
+esp8266:
+  board: esp12e
+
+logger:
+  level: DEBUG
+  # UART0 is the MVHR link, so there is no serial console. Logs are network-only.
+  baud_rate: 0
+
+api:
+  encryption:
+    key: !secret api_key
+  # Default is 4 on ESP8266 (~40KB free RAM, ~500-1000 bytes/connection --
+  # esphome/components/api). We're at 50% RAM (41KB/82KB) with headroom to
+  # spare, and 4 wasn't enough: Home Assistant's own connection plus one
+  # external tool exhausted the pool during the rollout's live testing,
+  # locking both out until a reboot. Raised to give a script a slot without
+  # starving HA.
+  max_connections: 6
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "Vent-Axia Sentinel Fallback"
+    password: !secret fallback_password
+
+captive_portal:
+
+external_components:
+  # Pulled from this repo instead of a local checkout, since that's what
+  # anyone outside the author's dev tree needs. Pinned to main until a
+  # release is tagged -- switch `ref` to a tag once one exists so a
+  # `git pull` on this repo can't change your build out from under you.
+  - source:
+      type: git
+      url: https://github.com/FatBeard/esphome-vent-axia
+      ref: main
+    components: [vent_axia]
+
+uart:
+  id: vask_uart
+  tx_pin: GPIO1
+  rx_pin: GPIO3
+  baud_rate: 9600
+
+time:
+  - platform: homeassistant
+    id: ha_time
+    # Pinned rather than left to auto-detect: the build host is Etc/UTC and
+    # has no DST rules of its own, so autodetection would get this wrong --
+    # PLAN.md §6. Set this to your own timezone.
+    timezone: Europe/Dublin
+    on_time:
+      # PLAN.md §6's scheduled diagnostics fetch.
+      - seconds: 0
+        minutes: 30
+        hours: 4
+        then:
+          - vent_axia.fetch_diagnostics: { id: vask }
+      # PLAN.md §7's weekly clock correction. Sunday, not daily -- the unit
+      # does not follow daylight saving and loses its clock entirely after
+      # about two weeks without mains power, so weekly is enough to keep it
+      # right without hammering the editor.
+      - seconds: 0
+        minutes: 5
+        hours: 4
+        days_of_week: SUN
+        then:
+          - vent_axia.sync_clock: { id: vask }
+
+vent_axia:
+  id: vask
+  uart_id: vask_uart
+  time_id: ha_time
+  # false means every wired entity below -- summer_mode, the bypass numbers,
+  # the raw key buttons, fetch_diagnostics/read_settings/sync_clock, and the
+  # two on_time schedules above -- actually transmits to the unit. Start
+  # with this set to `true` on a new install (PLAN.md §8's staged rollout):
+  # run read-only first and confirm the decode tracks your unit's display
+  # before letting anything write to it.
+  read_only: false
+
+sensor:
+  - platform: vent_axia
+    airflow:                {name: "Airflow"}
+    boost_time_remaining:   {name: "Boost Time Remaining"}
+    # Diagnostic pages 0/1/2/3/4/23 -- see diagnostics.cpp. supply/extract
+    # airflow_set are the COMMANDED percentage (identical to `airflow` above
+    # when read on the matching motor), not a measured flow rate.
+    supply_airflow_set:     {name: "Supply Airflow Setpoint"}
+    supply_motor_pwm:       {name: "Supply Motor Drive"}
+    supply_fan_rpm:         {name: "Supply Fan Speed"}
+    extract_airflow_set:    {name: "Extract Airflow Setpoint"}
+    extract_motor_pwm:      {name: "Extract Motor Drive"}
+    extract_fan_rpm:        {name: "Extract Fan Speed"}
+    supply_air_temp:        {name: "Supply Air Temperature (To House)"}
+    extract_air_temp:       {name: "Extract Air Temperature (From House)"}
+    indoor_temp:            {name: "Indoor Temperature (Unit Sensor)"}
+    indoor_humidity:        {name: "Indoor Humidity (In Extract Air)"}
+    indoor_humidity_avg:    {name: "Indoor Humidity 5-Minute Average"}
+    filter_hours:           {name: "Filter Hours Remaining"}
+
+binary_sensor:
+  - platform: vent_axia
+    summer_bypass:      {name: "Summer Bypass Active"}
+    boosting:           {name: "Boost Active"}
+    purging:            {name: "Purge Active"}
+    defrost_active:     {name: "Defrost Active"}
+    dryout_active:       {name: "Dryout Mode"}
+    filter_change_due:  {name: "Filter Change Due"}
+    link_up:            {name: "MVHR Link"}
+    # Diagnostic pages 2/3/11/19/24 -- see diagnostics.cpp.
+    antifrost_active:   {name: "Frost Protection Active"}
+    supply_temp_fault:  {name: "Supply Air Sensor Fault (T1)"}
+    extract_temp_fault: {name: "Extract Air Sensor Fault (T2)"}
+    rail_24v_fault:     {name: "24 V Rail Fault (Fuse FS1)"}
+    wireless_fitted:    {name: "Wireless Receiver Fitted"}
+    switch_line_1:      {name: "Wall Switch SW1 (Boost Input)"}
+    switch_line_2:      {name: "Wall Switch SW2 (Boost Input)"}
+    switch_line_3:      {name: "Wall Switch SW3 (Boost Input)"}
+    # True while the keypad is mid-tap/hold, so a slow operation (PLAN.md
+    # risk 3 -- airflow_mode transitions can take ~25-30s) is visible on a
+    # dashboard rather than looking like nothing is happening.
+    busy:               {name: "MVHR Busy"}
+
+text_sensor:
+  - platform: vent_axia
+    display_line_1:  {name: "Display Line 1 (Top)"}
+    display_line_2:  {name: "Display Line 2 (Bottom)"}
+    status_message:  {name: "Status Message"}
+    # Diagnostic pages 24/25/26 -- see diagnostics.cpp.
+    antifrost_mode:   {name: "Frost Protection Mode"}
+    serial_number:    {name: "MVHR Serial Number"}
+    firmware_version: {name: "MVHR Firmware Version"}
+    # Optional escape hatch, not in PLAN.md §6's entity list: "NN: <line2>"
+    # for whichever diagnostic page was last seen, decoded or not -- useful
+    # while extending the table, otherwise safe to delete.
+    raw_diagnostic_page: {name: "Raw Diagnostic Page (Debug)"}
+    # Stamped by the hub after each successful FetchDiagnostics run
+    # (entities.h's TextKey::DIAGNOSTICS_UPDATED) -- stays unknown until the
+    # first one completes.
+    diagnostics_updated: {name: "Diagnostics Last Updated"}
+
+switch:
+  - platform: vent_axia
+    # The bypass On/Off setting, user menu entry 2. NOT optimistic -- see
+    # switch.py -- so this shows whatever ReadSettings last confirmed was
+    # actually on the unit, not what was last requested.
+    summer_mode: {name: "Summer Mode (Enable Bypass)"}
+
+number:
+  - platform: vent_axia
+    # The bypass target and outdoor cut-off. Same "not optimistic" shape as
+    # summer_mode above. bypass_outdoor_temp's 5-25 C range is a guess
+    # (PLAN.md risk 6) -- see number.py.
+    bypass_indoor_temp:  {name: "Bypass Minimum Indoor Temperature"}
+    bypass_outdoor_temp: {name: "Bypass Minimum Outdoor Temperature"}
+
+button:
+  - platform: vent_axia
+    # The four raw key taps, kept as an escape hatch for a human -- see
+    # PLAN.md §6. Deliberately buttons (one bounded tap_duration tap), not
+    # hold-switches: a switch restored on at boot could come back holding a
+    # key down forever, a button cannot. Before scripting Up/Down, check
+    # PLAN.md's device invariants section -- Up/Down adjust a value instead
+    # of navigating whenever an editor is open on the unit's display, and
+    # Main is cumulative Boost, not a menu key.
+    key_up:   {name: "Key Up"}
+    key_down: {name: "Key Down"}
+    key_set:  {name: "Key Set"}
+    key_main: {name: "Key Main"}
+    # Manual trigger for the same sequence the 04:30 schedule above runs.
+    # Refused (and logged) rather than queued if a sequence is already in
+    # flight or the link is down -- see sequence.h's Runner::request().
+    fetch_diagnostics: {name: "Refresh Diagnostic Sensors"}
+    # Manual refresh for the three bypass settings above -- same
+    # refuse-and-log arbitration as fetch_diagnostics.
+    read_settings: {name: "Refresh Summer Settings"}
+    # Manual trigger for the same sequence the Sunday 04:05 schedule above
+    # runs.
+    sync_clock: {name: "Sync MVHR Clock"}
