@@ -21,6 +21,9 @@
 #ifdef USE_BINARY_SENSOR
 #include "esphome/components/binary_sensor/binary_sensor.h"
 #endif
+#ifdef USE_BUTTON
+#include "esphome/components/button/button.h"
+#endif
 #ifdef USE_SENSOR
 #include "esphome/components/sensor/sensor.h"
 #endif
@@ -31,6 +34,7 @@
 #include "diagnostics.h"
 #include "display.h"
 #include "entities.h"
+#include "keypad.h"
 #include "protocol.h"
 #include "status.h"
 
@@ -52,16 +56,21 @@ class DiagnosticPageTrigger : public Trigger<uint8_t, std::string> {};
 /// frames repeated for as long as the key is held (there is no key-up
 /// frame). Stage 2 added status-line decode (status::StatusTracker) and
 /// link liveness on top of stage 1's RX framing and display decode/publish.
-/// This stage adds the diagnostic page/field table (diagnostics.cpp):
-/// entirely passive, driven off whatever page the display happens to be
-/// showing -- see publish_diagnostic_page_(). Nothing transmits yet except
-/// the one-shot alive frame in setup().
+/// Stage 3 added the diagnostic page/field table (diagnostics.cpp): entirely
+/// passive, driven off whatever page the display happens to be showing --
+/// see publish_diagnostic_page_(). This stage (4) adds Keypad and is the
+/// first that transmits anything beyond the one-shot alive frame in
+/// setup(): tap_key()/hold_key()/release_keys() are the primitive the
+/// sequence engine (stage 5+) will drive, plus the manual key_* buttons
+/// (button.py) and the vent_axia.tap_key/hold_key/release_keys YAML
+/// actions. Every caller of Set goes through
+/// refuse_if_set_interlocked_() -- see its comment.
 ///
 /// This is the only file (besides the platform .py files) that may include
 /// esphome/... headers -- protocol.h, display.h, screens.h, parser.h,
-/// status.h and entities.h are the portable core and are compiled into the
-/// host test suite, so they stay framework-free. See README, "Portable
-/// core".
+/// status.h, keypad.h and entities.h are the portable core and are compiled
+/// into the host test suite, so they stay framework-free. See README,
+/// "Portable core".
 class VentAxiaHub : public Component, public uart::UARTDevice {
  public:
   void setup() override;
@@ -71,7 +80,38 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   // Runs LATE so that any entity this hub publishes into is already set up.
   float get_setup_priority() const override { return setup_priority::LATE; }
 
+  // Also mutes the keypad -- see setup(), which wires read_only_ into
+  // keypad_ via Keypad::set_read_only(). One flag, one meaning: "this
+  // firmware never transmits", covering both the alive frame and every key
+  // press.
   void set_read_only(bool read_only) { this->read_only_ = read_only; }
+
+  // Timing constants (PLAN.md §2's table), all forwarded straight into
+  // keypad_ except tap_duration_ms_, which Keypad has no notion of -- tap()
+  // takes an explicit duration per call, so this hub-level default is what
+  // the key_* buttons and an omitted `duration` on vent_axia.tap_key fall
+  // back to.
+  void set_tap_duration_ms(uint32_t ms) { this->tap_duration_ms_ = ms; }
+  uint32_t tap_duration_ms() const { return this->tap_duration_ms_; }
+  void set_tx_interval_ms(uint32_t ms) { this->keypad_.set_tx_interval_ms(ms); }
+  void set_key_gap_ms(uint32_t ms) { this->keypad_.set_key_gap_ms(ms); }
+  void set_key_watchdog_ms(uint32_t ms) { this->keypad_.set_key_watchdog_ms(ms); }
+
+  /// Queues a tap through the keypad, refusing it if it is a Set press while
+  /// a diagnostic page is showing -- see refuse_if_set_interlocked_(). Used
+  /// by button.py's KeypadButton and the vent_axia.tap_key action; the
+  /// (later) sequence engine's Tap primitive goes through this too, not
+  /// keypad_ directly, so no caller can bypass the interlock.
+  void tap_key(protocol::KeyMask mask, uint32_t duration_ms);
+
+  /// Asserts and holds a mask through the keypad, same interlock and same
+  /// reasoning as tap_key(). Used by the vent_axia.hold_key action and (from
+  /// stage 5) the sequence engine's long holds.
+  void hold_key(protocol::KeyMask mask);
+
+  /// Releases whatever the keypad is currently asserting. Never
+  /// interlocked -- releasing a key is always safe, refusing it never is.
+  void release_keys() { this->keypad_.release(); }
 
 #ifdef USE_TEXT_SENSOR
   void set_text_sensor(TextKey key, text_sensor::TextSensor *sensor) {
@@ -133,6 +173,19 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   static constexpr uint32_t LINK_TIMEOUT_MS = 30000;
   void publish_link_up_(uint32_t now_ms);
 
+  /// True (and refused, loudly) only for a mask that includes Set while the
+  /// display is currently showing a diagnostic page (PLAN.md §7). Page 27
+  /// ("Reset") writes and has never been tried, so this is a hard gate here
+  /// in the hub rather than a convention every future caller of Set has to
+  /// remember -- the keypad itself has no idea what is on screen, so it
+  /// cannot enforce this on its own. tap_key()/hold_key() are the only ways
+  /// to reach keypad_.tap()/press(), and both go through this first, so
+  /// there is no path around it. The host test suite will assert this
+  /// globally once the sequence engine lands (PLAN.md §8's three global
+  /// invariants) -- the same "test it once for every caller" shape as the
+  /// fake keypad there, rather than re-checking it in each sequence.
+  bool refuse_if_set_interlocked_(protocol::KeyMask mask) const;
+
   bool read_only_{false};
   protocol::Framer framer_;
   Display display_;
@@ -140,6 +193,9 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   bool have_frame_{false};
   uint32_t last_frame_at_ms_{0};
   std::vector<DiagnosticPageTrigger *> diagnostic_page_triggers_;
+
+  Keypad keypad_;
+  uint32_t tap_duration_ms_{50};  // PLAN.md §2's table: "one tap = one menu step"
 
 #ifdef USE_TEXT_SENSOR
   std::array<text_sensor::TextSensor *, static_cast<size_t>(TextKey::COUNT)> text_sensors_{};
@@ -157,6 +213,73 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   // not know about ESPHome entities or publish cadence.
   std::array<std::optional<int>, static_cast<size_t>(SensorKey::COUNT)> last_sensor_value_{};
   std::array<std::optional<bool>, static_cast<size_t>(BinaryKey::COUNT)> last_binary_value_{};
+};
+
+#ifdef USE_BUTTON
+/// One of the four raw key buttons (button.py's key_up/key_down/key_set/
+/// key_main): pressing it queues a tap_duration_ms tap of a fixed mask
+/// through the hub's tap_key(), the same arbitration point (including the
+/// Set interlock) as everything else that presses a key.
+///
+/// Deliberately a momentary button, not the old setup's hold-switch -- see
+/// PLAN.md §6: a switch restored on at boot (ESPHome's default restore
+/// behaviour for a switch) could come back holding a key down forever after
+/// a power cycle. A button's press_action() only ever queues one bounded
+/// tap, so there is nothing for a reboot to leave stuck.
+class KeypadButton final : public button::Button, public Parented<VentAxiaHub> {
+ public:
+  void set_mask(protocol::KeyMask mask) { this->mask_ = mask; }
+
+ protected:
+  void press_action() override { this->parent_->tap_key(this->mask_, this->parent_->tap_duration_ms()); }
+
+  protocol::KeyMask mask_{0};
+};
+#endif
+
+/// vent_axia.tap_key / vent_axia.hold_key / vent_axia.release_keys (PLAN.md
+/// §5 "Actions for YAML"). Deliberately plain fields resolved once at
+/// codegen time rather than TEMPLATABLE_VALUE: the mask (and, for tap_key,
+/// the duration) come straight out of the YAML action config the same way
+/// button.py's KeypadButton::mask_ does, and there is no use case yet for a
+/// lambda-computed key combination -- TEMPLATABLE_VALUE's extra plumbing on
+/// the Python side would be ceremony without payoff for arguments this
+/// static.
+template<typename... Ts> class TapKeyAction final : public Action<Ts...> {
+ public:
+  TapKeyAction(VentAxiaHub *parent, protocol::KeyMask mask, uint32_t duration_ms)
+      : parent_(parent), mask_(mask), duration_ms_(duration_ms) {}
+
+  void play(const Ts &.../*unused*/) override {
+    // duration_ms_ == 0 means the YAML action left `duration` out -- fall
+    // back to the hub's own tap_duration, same as the key_* buttons.
+    const uint32_t duration = this->duration_ms_ != 0 ? this->duration_ms_ : this->parent_->tap_duration_ms();
+    this->parent_->tap_key(this->mask_, duration);
+  }
+
+ protected:
+  VentAxiaHub *parent_;
+  protocol::KeyMask mask_;
+  uint32_t duration_ms_;
+};
+
+template<typename... Ts> class HoldKeyAction final : public Action<Ts...> {
+ public:
+  HoldKeyAction(VentAxiaHub *parent, protocol::KeyMask mask) : parent_(parent), mask_(mask) {}
+  void play(const Ts &.../*unused*/) override { this->parent_->hold_key(this->mask_); }
+
+ protected:
+  VentAxiaHub *parent_;
+  protocol::KeyMask mask_;
+};
+
+template<typename... Ts> class ReleaseKeysAction final : public Action<Ts...> {
+ public:
+  explicit ReleaseKeysAction(VentAxiaHub *parent) : parent_(parent) {}
+  void play(const Ts &.../*unused*/) override { this->parent_->release_keys(); }
+
+ protected:
+  VentAxiaHub *parent_;
 };
 
 }  // namespace vent_axia

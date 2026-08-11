@@ -57,6 +57,18 @@ void VentAxiaHub::setup() {
     this->write_array(frame.data(), frame.size());
     ESP_LOGI(TAG, "Sent alive frame");
   }
+
+  // Keypad is portable core (no ESPHome headers -- see keypad.h), so it
+  // reaches the UART and the logger only through these two injected sinks.
+  // read_only_ is forwarded here rather than duplicated: one flag, one
+  // meaning, checked in exactly one place (Keypad::maybe_transmit_).
+  this->keypad_.set_frame_sink([this](const uint8_t *data, size_t len) { this->write_array(data, len); });
+  this->keypad_.set_log_sink({
+      [](const std::string &msg) { ESP_LOGI(TAG, "%s", msg.c_str()); },
+      [](const std::string &msg) { ESP_LOGW(TAG, "%s", msg.c_str()); },
+      [](const std::string &msg) { ESP_LOGE(TAG, "%s", msg.c_str()); },
+  });
+  this->keypad_.set_read_only(this->read_only_);
 }
 
 void VentAxiaHub::loop() {
@@ -84,7 +96,15 @@ void VentAxiaHub::loop() {
   // Checked every tick, independently of whether a frame arrived this tick:
   // a dead link produces no frames at all, so link_up must be reevaluated on
   // the clock, not on an event that has stopped happening.
-  this->publish_link_up_(millis());
+  const uint32_t now = millis();
+  this->publish_link_up_(now);
+
+  // Drives every timing decision in Keypad -- see keypad.h's class comment.
+  // Also checked every tick regardless of whether a frame arrived, same
+  // reasoning as link_up above: a held key needs retransmitting on the
+  // clock, not on an event tied to the MVHR's own ~300ms display refresh.
+  this->keypad_.loop(now);
+  this->publish_binary_(BinaryKey::BUSY, this->keypad_.busy());
 }
 
 void VentAxiaHub::dump_config() {
@@ -92,7 +112,47 @@ void VentAxiaHub::dump_config() {
   ESP_LOGCONFIG(TAG, "  Read-only: %s", YESNO(this->read_only_));
   ESP_LOGCONFIG(TAG, "  Frames received: %u", this->framer_.frames_received());
   ESP_LOGCONFIG(TAG, "  Frames dropped (bad CRC): %u", this->framer_.frames_dropped());
+  // The timing constants in force (PLAN.md §2's table -- every one of these
+  // was paid for with debugging on the live unit) and the diagnostic PLAN.md
+  // risk 1 calls for: presses that emitted fewer than 2 frames. Reported
+  // here so a soak test can catch a creeping problem without instrumenting
+  // anything -- see keypad.h's under_emitting_presses() comment for what to
+  // do if this is ever nonzero.
+  ESP_LOGCONFIG(TAG, "  Key TX interval: %ums", this->keypad_.tx_interval_ms());
+  ESP_LOGCONFIG(TAG, "  Key tap duration: %ums", this->tap_duration_ms_);
+  ESP_LOGCONFIG(TAG, "  Key gap: %ums", this->keypad_.key_gap_ms());
+  ESP_LOGCONFIG(TAG, "  Key watchdog: %ums", this->keypad_.key_watchdog_ms());
+  ESP_LOGCONFIG(TAG, "  Under-emitting key presses: %u", this->keypad_.under_emitting_presses());
   this->check_uart_settings(9600, 1, uart::UART_CONFIG_PARITY_NONE, 8);
+}
+
+void VentAxiaHub::tap_key(protocol::KeyMask mask, uint32_t duration_ms) {
+  if (this->refuse_if_set_interlocked_(mask)) {
+    return;
+  }
+  this->keypad_.tap(mask, duration_ms);
+}
+
+void VentAxiaHub::hold_key(protocol::KeyMask mask) {
+  if (this->refuse_if_set_interlocked_(mask)) {
+    return;
+  }
+  this->keypad_.press(mask);
+}
+
+bool VentAxiaHub::refuse_if_set_interlocked_(protocol::KeyMask mask) const {
+  const bool wants_set = (mask & protocol::key_mask(protocol::Key::SET)) != 0;
+  if (!wants_set || this->display_.screen_kind() != screens::ScreenKind::DIAGNOSTIC) {
+    return false;
+  }
+  // Loud on purpose (PLAN.md §7): page 27 ("Reset") writes and has never
+  // been tried, so a Set reaching the unit while any diagnostic page is
+  // showing is exactly the mistake this exists to catch, not routine
+  // operation to log quietly.
+  ESP_LOGE(TAG,
+           "Refusing Set: display is on a diagnostic page (page 27, \"Reset\", writes and has never been "
+           "tried -- see PLAN.md §7)");
+  return true;
 }
 
 // Each publish_ helper compiles to a no-op when its platform is absent from

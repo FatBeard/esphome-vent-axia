@@ -83,6 +83,11 @@ enum class BinaryKey : uint8_t {
   // part of the status-screen decode, so it stays true/known even while a
   // sequence has parked the display in a menu.
   LINK_UP,
+  // Stage 4: true while Keypad::busy() is -- a tap (including its trailing
+  // gap) or a hold in progress. Lets a dashboard show that a slow keypad
+  // operation is in flight (PLAN.md risk 3: airflow_mode transitions can
+  // take ~25-30s) rather than the entity just appearing to sit still.
+  BUSY,
   COUNT,
 };
 

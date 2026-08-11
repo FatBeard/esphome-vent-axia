@@ -80,6 +80,14 @@ BINARY_SENSORS = {
     "antifrost_active": binary_sensor.binary_sensor_schema(
         icon="mdi:snowflake-alert",
     ),
+    # Stage 4: true while Keypad::busy() is -- a tap (including its trailing
+    # gap) or a hold in progress. PLAN.md risk 3: airflow_mode transitions
+    # can take ~25-30s, so this is what lets a dashboard show that a slow
+    # operation is under way rather than looking stalled.
+    "busy": binary_sensor.binary_sensor_schema(
+        icon="mdi:progress-clock",
+        entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+    ),
 }
 
 CONFIG_SCHEMA = cv.Schema(
