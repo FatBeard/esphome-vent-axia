@@ -61,9 +61,18 @@ CONFIG_SCHEMA = cv.Schema(
 
 
 async def to_code(config):
+    hub = await cg.get_variable(config[CONF_VENT_AXIA_ID])
     for key, (_schema, range_kwargs) in NUMBERS.items():
         if key not in config:
             continue
         num = await number.new_number(config[key], **range_kwargs)
+        # BOTH directions have to be wired, and each is a separate call:
+        # register_parented()/set_key() give the entity the hub (the write
+        # path, control() -> write_number()), while set_number() gives the hub
+        # the entity (the read path, publish_number_()). Wiring only the first
+        # is silent -- publish_number_() nullptr-checks its slot, so a write
+        # still reached the unit but no value ever came back and Home
+        # Assistant showed the slider with no state at all, forever.
         await cg.register_parented(num, config[CONF_VENT_AXIA_ID])
         cg.add(num.set_key(getattr(NumberKey, key.upper())))
+        cg.add(hub.set_number(getattr(NumberKey, key.upper()), num))

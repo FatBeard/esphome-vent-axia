@@ -250,6 +250,8 @@ async def to_code(config):
 
 Units, device classes, state classes and icons live in the schema, so YAML only supplies names. Hub keys: `uart_id`, `time_id`, `read_only`, and overrides for `tap_duration` / `key_gap` / `settle_time` / `key_watchdog` / `bypass_timeout`, defaulted to the values proven on the unit.
 
+**A control platform wires two directions, and the loop above only shows one.** `sensor`/`binary_sensor`/`text_sensor` are read-only, so `hub.set_sensor(...)` is the whole job. `number`/`switch`/`select` also need the reverse pointer — `cg.register_parented(ent, hub)` plus `ent.set_key(...)` — so `control()`/`write_state()` can reach `write_number()`/`write_switch()`/`write_select()`. **Both halves, every time, and they are separate `cg.add` calls: neither implies the other.** Wiring only the entity→hub half is completely silent. Every publish helper nullptr-checks its slot before publishing, so the control commands the unit correctly and simply never reports a value back; nothing logs, nothing fails to compile, and the entity sits with no state in Home Assistant forever. All three control platforms shipped that way and it survived until stage 8 — see §8's rollout record.
+
 ---
 
 ## 6. The YAML surface
@@ -303,6 +305,8 @@ time:
     on_time:
       - seconds: 0, minutes: 30, hours: 4
         then: {vent_axia.fetch_diagnostics: {id: vask}}
+      - seconds: 0, minutes: 45, hours: 4        # the bypass settings, nightly
+        then: {vent_axia.read_settings: {id: vask}}
       - seconds: 0, minutes: 5, hours: 4, days_of_week: SUN
         then: {vent_axia.sync_clock: {id: vask}}
 
@@ -344,7 +348,12 @@ binary_sensor:
     switch_line_1:      {name: "Wall Switch SW1 (Boost Input)"}
     switch_line_2:      {name: "Wall Switch SW2 (Boost Input)"}
     switch_line_3:      {name: "Wall Switch SW3 (Boost Input)"}
-    link_up:            {name: "MVHR Link"}
+    link_up:
+      name: "MVHR Link"
+      on_press:                          # the boot-time read — see below
+        then:
+          - delay: 15s
+          - vent_axia.read_settings: {id: vask}
     busy:               {name: "MVHR Busy"}
 
 text_sensor:
@@ -384,6 +393,8 @@ button:
     key_main:          {name: "Key Main"}
 ```
 
+**When the settings get re-read is YAML's decision, not the component's.** `summer_mode` and the two bypass temperatures are deliberately not optimistic and deliberately do not restore from flash — the unit is the sole source of truth — so a value only ever arrives from a `ReadSettings` run. Three things start one, and they are three different mechanisms on purpose: the `read_settings` button (a human), `WriteSetting`'s own read-back (after every change made from here), and the two automations above (nightly, plus once at boot). The boot read hangs off `link_up`'s `on_press` rather than `esphome.on_boot` because `Runner::request()` refuses to start anything while the link is down, and at `on_boot` time it always is — the link only comes up once frames are arriving. A link recovery later re-reads too, which is harmless: a refused request is logged, never queued. `vent_axia.read_settings` exists as an action for exactly this — the component knows *how* to read the settings and has no opinion on *when*.
+
 **Modelling choices.** Boost becomes a `select` (`airflow_mode`) rather than four buttons: the unit's Main key is a cumulative counter, so "boost for 60 minutes" is inherently a *set-absolute* operation that must normalise first — that is a state with a value, which is what a select is. Bypass stays a `switch` because Summer Mode genuinely is a two-state setting. The two temperatures stay `number`s. The raw key buttons are kept as an escape hatch but are now buttons (taps) rather than hold-switches, so nothing can be restored-on into a stuck key.
 
 ---
@@ -392,7 +403,7 @@ button:
 
 - **Key watchdog** in `Keypad`, independent of the sequence engine: 30s hard release.
 - **Sequence timeout** per root sequence in `Runner`; `on_finish(FAILED)` → `recover()`.
-- **Reboot mid-sequence** leaves the unit's display in a menu; the unit's own 2-minute timeout closes any editor without committing. `on_boot` runs `ReadSettings`, which starts with `GotoMenu(0)` and so re-synchronises from any position.
+- **Reboot mid-sequence** leaves the unit's display in a menu; the unit's own 2-minute timeout closes any editor without committing. A `ReadSettings` run at boot re-synchronises from any position, since it starts with `GotoMenu(0)`. Not on `on_boot` as originally written here — that fires while the link is still down and `Runner::request()` refuses it — but 15s after `link_up` goes true; §6 has the reasoning and the YAML.
 - **Link loss**: no valid frame for 30s → `link_up` false and sequences refuse to start. Replaces "infer liveness from line2 having stopped republishing".
 - **Diagnostic page 27 (`Reset`)** is untried and writes. Set is *interlocked off* while the display shows a diagnostic page — asserted globally in the test suite, not just avoided by convention.
 - **Filter reset** verifies the status screen first, is `entity_category: config`, and self-verifies against page 23 afterwards.
@@ -426,15 +437,22 @@ The live device at 192.168.1.200 runs this component. `mhrv_orig` no longer vent
 | 3 | `ReadSettings` | **Live.** Manual button. |
 | 4 | `SyncClock` | **Live.** Also on the Sunday 04:05 schedule. |
 | 5 | `WriteSetting` — `summer_mode`, the two bypass numbers, the raw key buttons | **Live.** The first stage that writes settings. |
-| 6 | `airflow_mode` (`SetAirflowMode`) | **Built, not yet flashed.** |
-| 7 | `ResetFilter` | **Built, not yet flashed.** Irreversible; last on purpose. |
+| 6 | `airflow_mode` (`SetAirflowMode`) | **Live, 12 Aug 2026.** Normal → Boost 30 min → Normal exercised from HA; both transitions clean (~8.6s and ~9.6s of `busy`), no cancel hold involved since neither leg started from Purge. |
+| 7 | `ResetFilter` | **Live, 12 Aug 2026.** Irreversible; last on purpose. Filters had just been cleaned. Full run (hold → self-verifying `FetchDiagnostics`) took ~25s, well inside the ~65s worst case; log: `ResetFilter: reset confirmed, 8712 hours to go`. |
+| 8 | Entity registration fix, and `ReadSettings` on a schedule | **Built, not yet flashed.** The first defect found by *using* the component rather than by review — see below. |
 
-Stages 6 and 7 compile and pass the host suite, which is a much weaker claim than this document's timing constants deserve. What is still unvalidated against hardware, and what to watch for when they go live:
+What was validated against hardware when stages 6 and 7 first went live, and what still isn't:
 
-- **`SetAirflowMode`.** Whether a 5.5s Main hold actually cancels a running purge is untested — the sequence refuses loudly rather than guessing if Purge is still showing after the cancel hold, so that failure is diagnosable from the log rather than silent. The purge screen's layout is still unresolved (risk 4), so the decode scans both lines. The 30-vs-60 latch assumes a 60-minute boost really does count down through the same 1–30 range a 30-minute one shows.
-- **`ResetFilter`.** Whether this unit answers the Up+Down hold with a "Reset Filter?" prompt has never been observed either way; other Vent-Axia models do. The sequence logs the post-hold `line1`/`line2` and deliberately does **not** act on it, so **that log line is the observation worth capturing when this is first exercised** — if a prompt appears there, the sequence needs a follow-up keypress it currently refuses to guess at. The self-verification against page 23 distinguishes four outcomes (no reading, still zero, unchanged since before the hold, confirmed); a reset pressed while the timer already sits at the full interval reads as "cannot confirm", which is honest rather than wrong.
+- **`SetAirflowMode`.** The Normal↔Boost 30 leg is now confirmed live; a 5.5s Main hold actually cancelling a running purge is **still untested** — that only happens when a target is selected while Purge is already showing, which hasn't been exercised yet. The sequence refuses loudly rather than guessing if Purge is still showing after the cancel hold, so that failure is diagnosable from the log rather than silent. The purge screen's layout is still unresolved (risk 4), so the decode scans both lines. The 30-vs-60 latch (a 60-minute boost counting down through the same 1–30 range a 30-minute one shows) is also still unexercised — only Boost 30 has been tried live.
+- **`ResetFilter`.** Resolved: this unit does **not** answer the Up+Down hold with a "Reset Filter?" prompt. The post-hold log line read `ResetFilter: after hold, line1='Low Airflow     ' line2='18%             '` — the ordinary status screen, unchanged — so the follow-up keypress the sequence was prepared to refuse rather than guess at was never needed. The self-verification against page 23 read the fourth of its four possible outcomes, "confirmed" (8712 hours), the maximum interval.
 
-`v1.0.0` is still not tagged, and `mhrv/mhrv.yaml` still points at the component through a local path rather than the pinned git ref its commented-out block shows — deliberate while stages 6–7 are still being exercised, since the local path is what makes an edit take effect on the next compile with no version bump. Tagging is the thing to do once stage 7 has been seen working on the unit.
+**Stage 8** was not planned. It came from the observation that the two bypass temperature sliders showed no value in Home Assistant — not a stale one, none at all — even immediately after being used to change a setting:
+
+- **The cause was codegen, not the sequence engine or the decode.** `number.py`, `switch.py` and `select.py` wired the entity→hub half of §5's two-directional pattern and never the hub→entity half, so `numbers_[]`, `switches_[]` and `selects_[]` were `nullptr` for their entire lives. Every publish helper nullptr-checks its slot, so `ReadSettings` walked the menu, parsed the values correctly, emitted its `ReadSettings: Bypass minimum indoor temperature is N C` line — and then discarded the value one call later. The log telling the truth while the entity showed nothing is what would have made this hard to chase from the symptom alone. Writes were unaffected, because those travel the half that was wired. The symptom was therefore "a control that commands the unit perfectly and never reports back", across `summer_mode` and `airflow_mode` as well as the two numbers — `airflow_mode` worst of the three, since the hub recomputes it from the passive status decode ~3 times a second and had nowhere to put the answer. The fix is one `cg.add(hub.set_*(...))` per platform; §5 now states the rule that was missing.
+- **Neither safety net could have caught it.** The host suite never runs codegen, and `esphome config` does not either. What *would* catch it is a check that the generated `main.cpp` contains a `set_number`/`set_switch`/`set_select` call per configured entity — this fix was verified that way by hand, and there is no automation for it. Worth remembering that the tests cover the C++ and nothing covers the Python.
+- **Fixing the publish path only exposed the second half of the problem**: nothing ever *started* a `ReadSettings` run on its own. The three entities do not restore from flash, so a reboot left them blank until a human pressed the button. Hence `vent_axia.read_settings` (§6) and the two automations that now use it, nightly and 15s after `link_up`.
+
+`v1.0.0` is still not tagged, and `mhrv/mhrv.yaml` still points at the component through a local path rather than the pinned git ref its commented-out block shows. Stage 7 working on the unit was the condition for tagging, and it is met — but stage 8 arrived first and has not been flashed yet, so the order now is: flash stage 8, confirm the three controls actually report state on the live unit, *then* tag `v1.0.0`. Tagging a version whose every control entity is write-only would be a poor first release.
 
 ---
 
@@ -445,7 +463,7 @@ Stages 6 and 7 compile and pass the host suite, which is a much weaker claim tha
 3. **`airflow_mode` transitions are slow and asymmetric.** Purge → Boost 30 is a 5.5s cancel hold, an 8s probe, up to four normalising taps with probes, then one tap: ~25–30s during which HA shows the old value. The `busy` binary sensor exists to surface this.
 4. **The purge screen layout is not established** — the notes record `Purge      120 m` / `100%` without settling which line is which. Parser accepts `Purge` on either line; the countdown mapping is a guess until stage 6.
 5. **Auto-recovery cannot distinguish us from a human at the unit's keypad.** Gating recovery on a long-unchanged menu screen makes a collision unlikely, not impossible. Scheduled work is at 04:05/04:30.
-6. **`Outdoor Temp`'s real range is unknown** (14 °C observed; 5–25 is a guess) and the open question from the old notes stands: whether it is a pure setpoint or also *reports* something. The stated test — write a distinctive value, check it at the next daily read with nobody touching the unit — falls out of stage 5 for free.
+6. **`Outdoor Temp`'s real range is unknown** (14 °C observed; 5–25 is a guess) and the open question from the old notes stands: whether it is a pure setpoint or also *reports* something. The stated test — write a distinctive value, check it at the next daily read with nobody touching the unit — was written as falling out of stage 5 for free, but there was no daily read until stage 8 added one (04:45) and no way to see the result until the same stage fixed the publish path. It is genuinely available now, and is the obvious first thing to do with the fix once it is flashed.
 7. **A second dongle (ESP8266 + RJ9 lead) is the cheapest real risk reduction**, removing "the house's ventilation is the dev target". It would pay for itself by stage 5.
 
 ---

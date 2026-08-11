@@ -56,9 +56,16 @@ CONFIG_SCHEMA = cv.Schema(
 
 
 async def to_code(config):
+    hub = await cg.get_variable(config[CONF_VENT_AXIA_ID])
     for key in SELECTS:
         if key not in config:
             continue
         sel = await select.new_select(config[key], options=AIRFLOW_MODE_OPTIONS)
+        # Both directions, two separate calls -- see number.py's to_code().
+        # This one bites harder than the other two: airflow_mode is published
+        # from the passive status decode on every frame, so without
+        # set_select() the entity sat unknown even though the hub was working
+        # out the right answer ~3 times a second.
         await cg.register_parented(sel, config[CONF_VENT_AXIA_ID])
         cg.add(sel.set_key(getattr(SelectKey, key.upper())))
+        cg.add(hub.set_select(getattr(SelectKey, key.upper()), sel))

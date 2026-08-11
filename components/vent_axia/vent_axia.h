@@ -615,6 +615,24 @@ template<typename... Ts> class FetchDiagnosticsAction final : public Action<Ts..
   VentAxiaHub *parent_;
 };
 
+/// vent_axia.read_settings -- same shape as FetchDiagnosticsAction above.
+/// See VentAxiaHub::read_settings().
+///
+/// Exists so YAML can decide WHEN the bypass settings get re-read (a boot-time
+/// read once the link is up, a nightly one) without that policy moving into
+/// C++ -- CLAUDE.md's dividing line. Until this existed the only way to put a
+/// value on those entities was a human pressing the read_settings button or a
+/// write's own read-back, so a freshly booted node showed the switch and both
+/// temperatures with no state at all.
+template<typename... Ts> class ReadSettingsAction final : public Action<Ts...> {
+ public:
+  explicit ReadSettingsAction(VentAxiaHub *parent) : parent_(parent) {}
+  void play(const Ts &.../*unused*/) override { this->parent_->read_settings(); }
+
+ protected:
+  VentAxiaHub *parent_;
+};
+
 /// vent_axia.sync_clock -- stage 7's sibling of FetchDiagnosticsAction, same
 /// shape. See VentAxiaHub::sync_clock().
 template<typename... Ts> class SyncClockAction final : public Action<Ts...> {

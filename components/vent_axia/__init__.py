@@ -24,14 +24,15 @@ SequenceFailedTrigger = vent_axia_ns.class_(
     "SequenceFailedTrigger", automation.Trigger.template(cg.std_string)
 )
 # vent_axia.tap_key / vent_axia.hold_key / vent_axia.release_keys /
-# vent_axia.fetch_diagnostics / vent_axia.sync_clock (PLAN.md §5). See
-# vent_axia.h's class comments for why the first three are plain constructor
-# args rather than TEMPLATABLE_VALUE; fetch_diagnostics/sync_clock take no
-# arguments at all.
+# vent_axia.fetch_diagnostics / vent_axia.read_settings / vent_axia.sync_clock
+# (PLAN.md §5). See vent_axia.h's class comments for why the first three are
+# plain constructor args rather than TEMPLATABLE_VALUE;
+# fetch_diagnostics/read_settings/sync_clock take no arguments at all.
 TapKeyAction = vent_axia_ns.class_("TapKeyAction", automation.Action)
 HoldKeyAction = vent_axia_ns.class_("HoldKeyAction", automation.Action)
 ReleaseKeysAction = vent_axia_ns.class_("ReleaseKeysAction", automation.Action)
 FetchDiagnosticsAction = vent_axia_ns.class_("FetchDiagnosticsAction", automation.Action)
+ReadSettingsAction = vent_axia_ns.class_("ReadSettingsAction", automation.Action)
 SyncClockAction = vent_axia_ns.class_("SyncClockAction", automation.Action)
 
 CONF_VENT_AXIA_ID = "vent_axia_id"
@@ -189,6 +190,12 @@ VENT_AXIA_FETCH_DIAGNOSTICS_SCHEMA = cv.Schema(
     }
 )
 
+VENT_AXIA_READ_SETTINGS_SCHEMA = cv.Schema(
+    {
+        cv.GenerateID(CONF_VENT_AXIA_ID): cv.use_id(VentAxiaHub),
+    }
+)
+
 VENT_AXIA_SYNC_CLOCK_SCHEMA = cv.Schema(
     {
         cv.GenerateID(CONF_VENT_AXIA_ID): cv.use_id(VentAxiaHub),
@@ -196,8 +203,9 @@ VENT_AXIA_SYNC_CLOCK_SCHEMA = cv.Schema(
 )
 
 
-# All four are synchronous=True: play() only ever queues a request -- with
-# the keypad, or with the Runner (fetch_diagnostics) -- and returns. The
+# All of them are synchronous=True: play() only ever queues a request -- with
+# the keypad, or with the Runner (fetch_diagnostics/read_settings/sync_clock)
+# -- and returns. The
 # tap/hold/sequence itself plays out over many future loop() ticks, but the
 # automation's *next* action is never deferred waiting for that, so there is
 # nothing here for play_next_() to defer.
@@ -226,6 +234,14 @@ async def vent_axia_release_keys_to_code(config, action_id, template_arg, args):
     "vent_axia.fetch_diagnostics", FetchDiagnosticsAction, VENT_AXIA_FETCH_DIAGNOSTICS_SCHEMA, synchronous=True
 )
 async def vent_axia_fetch_diagnostics_to_code(config, action_id, template_arg, args):
+    hub = await cg.get_variable(config[CONF_VENT_AXIA_ID])
+    return cg.new_Pvariable(action_id, template_arg, hub)
+
+
+@automation.register_action(
+    "vent_axia.read_settings", ReadSettingsAction, VENT_AXIA_READ_SETTINGS_SCHEMA, synchronous=True
+)
+async def vent_axia_read_settings_to_code(config, action_id, template_arg, args):
     hub = await cg.get_variable(config[CONF_VENT_AXIA_ID])
     return cg.new_Pvariable(action_id, template_arg, hub)
 

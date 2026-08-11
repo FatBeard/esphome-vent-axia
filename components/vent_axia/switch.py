@@ -41,9 +41,14 @@ CONFIG_SCHEMA = cv.Schema(
 
 
 async def to_code(config):
+    hub = await cg.get_variable(config[CONF_VENT_AXIA_ID])
     for key in SWITCHES:
         if key not in config:
             continue
         sw = await switch.new_switch(config[key])
+        # Both directions, two separate calls -- see number.py's to_code() for
+        # what wiring only the entity->hub half looks like from the outside
+        # (a control that commands fine and never reports back).
         await cg.register_parented(sw, config[CONF_VENT_AXIA_ID])
         cg.add(sw.set_key(getattr(SwitchKey, key.upper())))
+        cg.add(hub.set_switch(getattr(SwitchKey, key.upper()), sw))

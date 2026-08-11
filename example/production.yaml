@@ -80,6 +80,17 @@ time:
         hours: 4
         then:
           - vent_axia.fetch_diagnostics: { id: vask }
+      # The bypass settings, re-read nightly. They only change when someone
+      # presses buttons at the unit itself (every change made from Home
+      # Assistant already ends in WriteSetting's own read-back), so once a day
+      # is enough to catch that. Spaced well clear of the fetch above: only
+      # one root sequence runs at a time (sequence.h's Runner) and the loser
+      # of a collision is refused rather than queued.
+      - seconds: 0
+        minutes: 45
+        hours: 4
+        then:
+          - vent_axia.read_settings: { id: vask }
       # PLAN.md §7's weekly clock correction. Sunday, not daily -- the unit
       # does not follow daylight saving and loses its clock entirely after
       # about two weeks without mains power, so weekly is enough to keep it
@@ -131,7 +142,21 @@ binary_sensor:
     defrost_active:     {name: "Defrost Active"}
     dryout_active:       {name: "Dryout Mode"}
     filter_change_due:  {name: "Filter Change Due"}
-    link_up:            {name: "MVHR Link"}
+    link_up:
+      name: "MVHR Link"
+      # The boot-time read of the bypass settings, and the only thing that
+      # gives summer_mode / the two bypass temperatures a value after a
+      # reboot: none of the three restores from flash (they are "not
+      # optimistic" -- the unit is the sole source of truth, see switch.py),
+      # so until a ReadSettings run happens they have no state at all.
+      # Hung off link_up rather than on_boot because Runner::request() refuses
+      # to start anything while the link is down, and at on_boot time it
+      # always is. A later link recovery re-reads too, which is harmless: a
+      # refused request is logged, not queued.
+      on_press:
+        then:
+          - delay: 15s
+          - vent_axia.read_settings: { id: vask }
     # Diagnostic pages 2/3/11/19/24 -- see diagnostics.cpp.
     antifrost_active:   {name: "Frost Protection Active"}
     supply_temp_fault:  {name: "Supply Air Sensor Fault (T1)"}
