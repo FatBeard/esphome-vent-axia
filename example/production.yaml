@@ -214,3 +214,12 @@ button:
     # Manual trigger for the same sequence the Sunday 04:05 schedule above
     # runs.
     sync_clock: {name: "Sync MVHR Clock"}
+    # The one irreversible operation in this component (PLAN.md §7/§8):
+    # restarts the unit's filter service countdown with no way back from
+    # software. Press this *after* cleaning or changing the filters, not
+    # before -- and only this button reaches it: unlike fetch_diagnostics/
+    # sync_clock above, there is no vent_axia.reset_filter action and no
+    # schedule anywhere in this file, on purpose. Verifies the status screen
+    # first and self-confirms against diagnostic page 23 afterwards (~65s
+    # worst case).
+    reset_filter: {name: "Reset Filter Timer"}

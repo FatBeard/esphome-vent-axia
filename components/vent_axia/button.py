@@ -11,6 +11,7 @@ KeypadButton = vent_axia_ns.class_("KeypadButton", button.Button)
 FetchDiagnosticsButton = vent_axia_ns.class_("FetchDiagnosticsButton", button.Button)
 ReadSettingsButton = vent_axia_ns.class_("ReadSettingsButton", button.Button)
 SyncClockButton = vent_axia_ns.class_("SyncClockButton", button.Button)
+ResetFilterButton = vent_axia_ns.class_("ResetFilterButton", button.Button)
 
 # The manual key buttons (PLAN.md §6): key_up/key_down/key_set/key_main, each
 # a momentary tap_duration tap of the matching bit in KEY_MASKS (__init__.py)
@@ -39,10 +40,9 @@ BUTTONS = {
 # Sequence-triggering buttons (PLAN.md §3/§6): each one starts a Runner root
 # sequence (sequence.h) rather than tapping a raw key, so pressing it while
 # another sequence is already running is refused (and logged), not queued.
-# Stage 5 added fetch_diagnostics; stage 6 adds read_settings the same way.
-# reset_filter (stage 7's other deliverable) is expected to join this dict
-# too, since none of them need any per-instance data either -- see to_code()
-# below.
+# Stage 5 added fetch_diagnostics; stage 6 adds read_settings the same way;
+# stage 7 adds sync_clock and reset_filter, the last of the four -- none of
+# them need any per-instance data either, see to_code() below.
 SEQUENCE_BUTTONS = {
     "fetch_diagnostics": button.button_schema(
         FetchDiagnosticsButton,
@@ -61,6 +61,22 @@ SEQUENCE_BUTTONS = {
     "sync_clock": button.button_schema(
         SyncClockButton,
         icon="mdi:clock-check-outline",
+        entity_category=ENTITY_CATEGORY_CONFIG,
+    ),
+    # "Reset Filter Timer" in the old YAML -- same icon, same entity_category
+    # (mhrv_orig/controls.yaml's own comment: "restarts the service countdown
+    # at the full interval and there is no way to put it back"). config, not
+    # diagnostic, per PLAN.md §6/§7: this changes the unit's own state, it
+    # does not merely read it. Deliberately NO vent_axia.reset_filter action
+    # to go with this button -- unlike fetch_diagnostics/sync_clock, this is
+    # not something mhrv.yaml's on_time schedule should ever call
+    # unattended; a button a human must deliberately press is the only entry
+    # point PLAN.md §7 describes for the one irreversible operation in this
+    # component, the same "manual only" choice already made for
+    # read_settings above.
+    "reset_filter": button.button_schema(
+        ResetFilterButton,
+        icon="mdi:air-filter",
         entity_category=ENTITY_CATEGORY_CONFIG,
     ),
 }

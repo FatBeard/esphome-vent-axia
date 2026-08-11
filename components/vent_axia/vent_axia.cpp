@@ -171,6 +171,31 @@ void VentAxiaHub::setup() {
   // declared above in this class -- sequence.h), so this pointer stays
   // valid for the hub's whole lifetime.
   this->set_airflow_mode_.set_status(&this->status_);
+
+  // Stage 7's other deliverable, and the last sequence in this component by
+  // design (PLAN.md §8): the one irreversible operation. reset_filter_'s
+  // OWN dedicated FetchDiagnostics child (sequence.h's diagnostics_scan_,
+  // NOT fetch_diagnostics_ above -- see that member's own comment for why)
+  // needs the same log sink and on_success stamp every other diagnostic
+  // scrape gets; set_log_sink() already forwards to it internally.
+  this->reset_filter_.set_log_sink({
+      [](const std::string &msg) { ESP_LOGI(TAG, "%s", msg.c_str()); },
+      [](const std::string &msg) { ESP_LOGW(TAG, "%s", msg.c_str()); },
+      [](const std::string &msg) { ESP_LOGE(TAG, "%s", msg.c_str()); },
+  });
+  // A genuine full diagnostic scrape happens inside this sequence's own
+  // chained scan exactly as it does for the button/schedule path, so the
+  // timestamp should reflect it the same way -- see
+  // stamp_diagnostics_updated_()'s own comment.
+  this->reset_filter_.set_on_diagnostics_success([this] { this->stamp_diagnostics_updated_(); });
+  // Least invasive route to page 23's reading (see ResetFilter::
+  // FilterHoursSource's own comment, sequence.h, for the full reasoning and
+  // its one carried-forward limitation): reuses the SAME "last published"
+  // cache publish_sensor_ already keeps for its own dedup, rather than
+  // inventing a second, parallel cache just for this one check.
+  this->reset_filter_.set_filter_hours_source([this]() -> std::optional<int> {
+    return this->last_sensor_value_[static_cast<size_t>(SensorKey::FILTER_HOURS)];
+  });
 }
 
 void VentAxiaHub::loop() {

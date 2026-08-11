@@ -1272,5 +1272,238 @@ class SetAirflowMode final : public Sequence {
   const status::StatusTracker *status_{nullptr};  // Finding 2 -- set_status(), CHECK_CURRENT
 };
 
+// ------------------------------------------------------------- ResetFilter --
+// Stage 7's remaining deliverable, and the last thing built in this
+// component by design (PLAN.md §8 puts it last "for exactly that reason"):
+// the ONE operation with no way back from software. Ported from
+// mhrv_orig/controls.yaml's reset_filter script -- see that file's own
+// comment for how the gesture itself (a 5s Up+Down hold on the status
+// screen) was actually established: the manual originally looked
+// undocumented because its button glyphs are embedded images, not a symbol
+// font, and did not survive naive PDF text extraction.
+
+/// Clears the "Check Filter" reminder and restarts the service countdown
+/// (6/12/18 months, unit-dependent) by holding Up+Down together for a fixed
+/// 5.5s on the status screen -- the same "the protocol is a bitmask, holding
+/// two keys at once is fine" fact FetchDiagnostics' own Up+Main entry combo
+/// already relies on (mhrv_orig/controls.yaml's own comment, carried forward
+/// here). This writes to the unit and restarts the countdown at the full
+/// interval; there is no read-back that could undo it.
+///
+/// Three steps, in outline (see seq_reset_filter.cpp for the full
+/// step-by-step reasoning):
+///  1. CHECK_STATUS: refuses (no retry -- same reasoning as SetAirflowMode's
+///     own CHECK_CURRENT, seq_set_airflow_mode.cpp) unless the display has a
+///     frame and is showing the status loop, never a menu or diagnostic
+///     screen -- CLAUDE.md's device invariants name this sequence
+///     specifically ("Filter reset verifies the status screen first").
+///     This is the ONE guard standing between a stray press and an
+///     unrecoverable write, so a wrong screen here means refuse outright,
+///     not wait-and-see: a menu screen does not clear itself within a
+///     sequence's patience.
+///  2. HOLD/RELEASE_SETTLE: asserts Up+Down for a fixed 5500ms
+///     (press()+elapsed(), not HoldUntil -- same reasoning as
+///     SetAirflowMode::hold_main_(): "the timer ran out" is the whole
+///     success condition, there is no predicate to watch for), then
+///     releases and settles -- long enough to satisfy the "release is
+///     silence... hold-to-hold transition needs an explicit gap" invariant
+///     before FETCH's own Up+Main entry hold, and to let the display show
+///     whatever the unit answers the gesture with, which gets LOGGED and
+///     never acted on: this model's manual describes no confirmation
+///     prompt, but some other Vent-Axia models are known to answer this
+///     same gesture with a "Reset Filter?" prompt needing a second
+///     keypress, untested on this unit either way. Firing a guessed confirm
+///     press at whatever is on screen would be a worse failure than leaving
+///     an unconfirmed reset alone -- if a prompt ever does show up, this log
+///     line is where a human first sees it, not a code path that reacts to
+///     it.
+///  3. FETCH/VERIFY: chains a FetchDiagnostics run (its OWN dedicated
+///     instance -- see diagnostics_scan_'s own comment below for why this
+///     is NOT the hub's shared button/schedule instance) to re-read every
+///     diagnostic page including 23, then checks filter_hours_source_ for
+///     FOUR distinguishable outcomes, each logged differently -- extending
+///     mhrv_orig's own three-way log with one more case Opus review found
+///     it needed (see hours_before_'s own comment for why), because
+///     collapsing any of these into "pass" or "fail" would hide followup
+///     a human needs:
+///       - no reading at all (filter_hours_source_ unset, or answers
+///         nullopt) -- cannot confirm either way, WARN.
+///       - a reading of exactly 0 -- the reset did not take, WARN.
+///       - a reading above 0 but EQUAL to hours_before_ (the pre-hold
+///         snapshot) -- unchanged since before the hold, so page 23 was
+///         most likely not re-read by THIS run's scan rather than the reset
+///         having failed; logged with both numbers, WARN, not INFO --
+///         see hours_before_'s own comment for the one case this still
+///         cannot tell apart from a genuine no-op reset.
+///       - a reading above 0 and DIFFERENT from hours_before_ -- confirmed,
+///         the hours logged at INFO.
+///     VERIFY never itself returns FAILED on any of these four outcomes:
+///     the irreversible hold already happened in step 2 by the time VERIFY
+///     runs, so there is nothing left to protect by failing the sequence
+///     here -- only information to log, the same "never hard-fail a read"
+///     philosophy ReadSettings' own class comment describes. A FAILED
+///     result IS still possible for this sequence, but only via FETCH's
+///     await() cascading if the chained FetchDiagnostics itself could not
+///     complete (e.g. never even reached the diagnostic menu) -- a
+///     distinct situation from "reached page 23 and didn't like what it
+///     saw".
+///
+/// A long-lived hub member, reused on every button press -- see PLAN.md's
+/// "no dynamic allocation in steady state". on_start() resets hours_before_
+/// to the CURRENT filter_hours_source_ reading -- see that member's own
+/// comment for why this run needs to remember it -- and step_/entered_
+/// reset via goto_step()/push_child_() as always; diagnostics_scan_'s own
+/// on_start() (run automatically when FETCH await()s it) resets ITS
+/// per-run state (highest_page_seen_/seen_pages_) the same way it does for
+/// the button's own instance.
+class ResetFilter final : public Sequence {
+ public:
+  using LogSink = Keypad::LogSink;
+
+  void set_log_sink(LogSink sink) {
+    this->log_ = sink;
+    // Forwarded once, here -- diagnostics_scan_ is a private member the hub
+    // cannot reach directly, same pattern as every other sequence in this
+    // file that owns a child (ReadSettings::set_log_sink,
+    // WriteSetting::set_log_sink, SyncClock::set_log_sink).
+    this->diagnostics_scan_.set_log_sink(std::move(sink));
+  }
+
+  /// Wired to diagnostics_scan_'s own SuccessSink -- a genuine full
+  /// diagnostic scrape happens inside this sequence exactly as it does for
+  /// the button/schedule path, so diagnostics_updated should be stamped the
+  /// same way. See VentAxiaHub::stamp_diagnostics_updated_().
+  void set_on_diagnostics_success(FetchDiagnostics::SuccessSink sink) {
+    this->diagnostics_scan_.set_on_success(std::move(sink));
+  }
+
+  /// Read-only view of the last known filter-hours reading (diagnostic page
+  /// 23, SensorKey::FILTER_HOURS) -- injected the same way SetAirflowMode::
+  /// set_status() and SyncClock::set_time_source() let this file reach
+  /// state that only exists on the other side of the portable-core boundary
+  /// (README "Portable core"): this file never includes
+  /// esphome/components/sensor/sensor.h. The value has to arrive this way
+  /// rather than being read off the diagnostics_scan_ child directly
+  /// because diagnostic decoding is entirely passive -- driven by the hub's
+  /// own on_change callback whenever line1/line2 change while a diagnostic
+  /// page is showing, not by whichever sequence (if any) happens to be
+  /// scrolling the display through it at the time (FetchDiagnostics' own
+  /// class comment: "Decodes nothing itself").
+  ///
+  /// nullopt means "never published" -- mirrors sensor::Sensor::has_state()
+  /// being false, the same "no reading from page 23 at all" case
+  /// mhrv_orig/controls.yaml's own reset_filter script checked for
+  /// (`!id(filter_hours).has_state()`). Deliberately carries forward that
+  /// script's one limitation rather than fixing it here: this is the LAST
+  /// known reading, not necessarily one from THIS run's own scan -- if
+  /// diagnostics_scan_ genuinely skipped page 23 (a dropped frame
+  /// mid-scroll) but an earlier run had already published a nonzero value,
+  /// a bare read of this source in VERIFY would see that stale value rather
+  /// than "no reading". A scan-scoped signal would need new per-run
+  /// tracking state on the hub side, since the decode is shared and passive
+  /// rather than owned by whichever sequence is driving the scroll -- a
+  /// larger change than this stage's least-invasive route calls for, and
+  /// the same tradeoff the reference implementation already made.
+  ///
+  /// Opus review of this stage (Finding 1) closed most of that gap WITHOUT
+  /// touching the hub at all: on_start() snapshots this source's answer
+  /// into hours_before_ BEFORE the hold, and VERIFY compares against it --
+  /// see that member's own comment. What the snapshot buys: a stale-nonzero
+  /// reading (the dangerous direction -- see hours_before_) can no longer
+  /// be reported as a fresh confirmation, because "unchanged from before
+  /// the hold" is now distinguishable from "genuinely re-read and still the
+  /// same". What it does NOT buy: it cannot prove page 23 WAS re-read this
+  /// run, only that the value moved (or didn't) -- so a scan that misses
+  /// page 23 twice in a row (before AND after the hold) would still read as
+  /// "unchanged", not "no reading". Still strictly better than a bare read
+  /// of this source, and cheap: one extra int stored per run, no new hub
+  /// state.
+  using FilterHoursSource = std::function<std::optional<int>()>;
+  void set_filter_hours_source(FilterHoursSource source) { this->filter_hours_source_ = std::move(source); }
+
+  const char *name() const override { return "ResetFilter"; }
+  void on_start() override;
+  Poll poll() override;
+  void on_finish(Poll result) override;
+
+  // Worst case: HOLD's fixed 5500ms + RELEASE_SETTLE's fixed 1000ms +
+  // diagnostics_scan_'s own worst case AS A CHILD -- which is what actually
+  // bounds this, not FetchDiagnostics' own (inherited, unused-as-a-child)
+  // timeout_ms(): Sequence::timeout_ms()'s own comment is explicit that it
+  // is "only ever consulted for whichever Sequence is currently the ROOT",
+  // so only THIS override matters once diagnostics_scan_ is pushed as a
+  // child below. FetchDiagnostics' own step timeouts sum to
+  // ENTER_TIMEOUT_MS(15000) + ENTER_SETTLE_MS(300) + HOLD_DOWN_MS(8000) +
+  // DOWN_SETTLE_MS(400) + TO_PAGE_00_TIMEOUT_MS(20000) +
+  // PAGE_00_SETTLE_MS(250) + EXIT_TIMEOUT_MS(15000) = 58950ms (see
+  // seq_fetch_diagnostics.cpp). 5500 + 1000 + 58950 =~ 65.5s. Comfortable
+  // headroom above that, same "don't cut it close" reasoning as every other
+  // timeout_ms() override in this file, so a legitimate full scan -- even
+  // one that ultimately fails on ITS OWN internal timeout rather than
+  // succeeding -- always gets to finish deciding that for itself instead of
+  // being cut off mid-wait by this sequence's own budget expiring first.
+  uint32_t timeout_ms() const override { return 120000; }
+
+ private:
+  enum Step : uint8_t { CHECK_STATUS, HOLD, RELEASE_SETTLE, FETCH, VERIFY, FINISHED };
+
+  // mhrv_orig/controls.yaml's own filter_reset_ms -- the manual's figure for
+  // this gesture, same as PURGE_HOLD_MS is for Main (SetAirflowMode above),
+  // just a different key combination.
+  static constexpr uint32_t HOLD_MS = 5500;
+  // mhrv_orig's own `delay: 1s` after the hold -- longer than
+  // SetAirflowMode::CANCEL_SETTLE_MS/FetchDiagnostics::DOWN_SETTLE_MS's
+  // 400ms because this settle does double duty: it is both the mandatory
+  // hold-to-hold gap before FETCH's own Up+Main entry hold (CLAUDE.md's
+  // "release is silence... needs an explicit gap") AND long enough for the
+  // display to have shown whatever the unit answers the gesture with,
+  // logged the moment this settle ends -- see the class comment. Neither
+  // purpose is served by rushing this down to 400ms.
+  static constexpr uint32_t RELEASE_SETTLE_MS = 1000;
+
+  // A DEDICATED FetchDiagnostics instance, not the hub's shared
+  // button/schedule one (VentAxiaHub::fetch_diagnostics_) -- same reasoning
+  // as WriteSetting::read_back_ being its own ReadSettings rather than
+  // reusing the hub's read_settings_ (vent_axia.h's own read_settings()
+  // comment: "so a manual 'refresh' button press can never collide with a
+  // write's own confirmation pass"). Runner's single-root-at-a-time
+  // exclusivity (this file's own class comment) already makes that literal
+  // collision structurally impossible even with a SHARED instance --
+  // request() refuses a second root while one is running, and this
+  // sequence's own await() below only ever pushes its child while THIS
+  // sequence is that one root -- so a Sequence ending up on the stack twice
+  // is not actually reachable either way. A private instance is still the
+  // safer choice: it keeps this sequence's own per-run scan state
+  // (highest_page_seen_/seen_pages_) from ever being shared with a wholly
+  // unrelated logical operation (a manual "refresh diagnostics" press),
+  // which is one fewer thing that has to stay correct under future changes
+  // rather than one thing that merely happens to be safe today.
+  FetchDiagnostics diagnostics_scan_;
+
+  LogSink log_;
+  FilterHoursSource filter_hours_source_;
+  // Opus review (Finding 1): filter_hours_source_'s answer taken BEFORE the
+  // hold, in on_start() -- the one piece of real per-run state this
+  // sequence carries. Exists to catch the outcome that matters most: this
+  // button is usually pressed at hours == 0, where a stale reading is also
+  // 0 and VERIFY already warns "did not take" -- the safe direction. But
+  // someone cleaning the filters EARLY presses this at a NONZERO reading,
+  // and a scan that misses page 23 would then leave filter_hours_source_
+  // still answering that same old nonzero value -- which, read bare in
+  // VERIFY, is indistinguishable from a fresh, successful reset and would
+  // report "confirmed" for a reset that may never have taken. That is the
+  // one outcome here that must not be allowed to lie: it is what a human
+  // reads before deciding whether to press this irreversible button again.
+  // Comparing against this snapshot turns that case into "unchanged since
+  // before the hold" instead -- WARN, not INFO. One case remains genuinely
+  // unresolvable and is documented at VERIFY, not papered over here: a
+  // reset pressed while the timer is already sitting at the full interval
+  // (i.e. a reset with nothing to gain) leaves the reading unchanged even
+  // though the hold may have worked, and reports the same "unchanged" WARN
+  // as a scan that simply missed page 23 -- the two are not distinguishable
+  // from this sequence's own evidence.
+  std::optional<int> hours_before_;
+};
+
 }  // namespace vent_axia
 }  // namespace esphome

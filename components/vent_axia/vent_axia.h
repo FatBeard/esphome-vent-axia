@@ -182,6 +182,16 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   /// schedules it weekly, Sunday 04:05 (PLAN.md §6).
   void sync_clock() { this->runner_.request(this->sync_clock_); }
 
+  /// Starts ResetFilter as a root sequence, same refuse-and-log shape as
+  /// fetch_diagnostics()/read_settings()/sync_clock(). Used ONLY by
+  /// button.py's ResetFilterButton -- deliberately no vent_axia.reset_filter
+  /// action and no mhrv.yaml schedule, unlike fetch_diagnostics/sync_clock
+  /// above: PLAN.md §7 is explicit that this is the one irreversible
+  /// operation in this component (it restarts the unit's filter service
+  /// countdown and cannot be undone from software), so it only ever runs
+  /// from a human deliberately pressing a button, never unattended.
+  void reset_filter() { this->runner_.request(this->reset_filter_); }
+
   /// Starts a WriteSetting run for the one bypass switch -- switch.py's
   /// VentAxiaSwitch::write_state() calls this, never publish_state()
   /// directly (PLAN.md §6 "Not optimistic"). Unrecognised keys (there is
@@ -382,6 +392,8 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   WriteSetting write_setting_;          // shared by write_switch()/write_number() via start_write_()
   SyncClock sync_clock_;                // stage 7 -- see sync_clock()
   SetAirflowMode set_airflow_mode_;     // stage 7 -- see write_select()
+  ResetFilter reset_filter_;            // stage 7 -- see reset_filter(). Owns ITS OWN FetchDiagnostics
+                                         // child (sequence.h's diagnostics_scan_), NOT fetch_diagnostics_ above.
 
 #ifdef USE_TIME
   time::RealTimeClock *time_{nullptr};
@@ -471,6 +483,18 @@ class ReadSettingsButton final : public button::Button, public Parented<VentAxia
 class SyncClockButton final : public button::Button, public Parented<VentAxiaHub> {
  protected:
   void press_action() override { this->parent_->sync_clock(); }
+};
+
+/// Stage 7's other sibling of FetchDiagnosticsButton/ReadSettingsButton/
+/// SyncClockButton, same shape -- see VentAxiaHub::reset_filter(). The one
+/// irreversible operation in this component (PLAN.md §7/§8) is reached
+/// ONLY through a button like this one: no vent_axia.reset_filter action
+/// exists for YAML automations to call, and mhrv.yaml schedules nothing
+/// against it, unlike fetch_diagnostics/sync_clock's FetchDiagnosticsAction/
+/// SyncClockAction below.
+class ResetFilterButton final : public button::Button, public Parented<VentAxiaHub> {
+ protected:
+  void press_action() override { this->parent_->reset_filter(); }
 };
 #endif
 
