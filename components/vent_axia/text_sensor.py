@@ -49,6 +49,15 @@ TEXT_SENSORS = {
         icon="mdi:code-tags",
         entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
     ),
+    # Stage 5: wall-clock timestamp of the last successful FetchDiagnostics
+    # run (entities.h's TextKey::DIAGNOSTICS_UPDATED). Stays unknown until a
+    # run actually completes -- and, with no time_id configured, forever,
+    # which is a deliberate no-op rather than a failure (vent_axia.h's
+    # stamp_diagnostics_updated_()).
+    "diagnostics_updated": text_sensor.text_sensor_schema(
+        icon="mdi:clock-check-outline",
+        entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+    ),
 }
 
 CONFIG_SCHEMA = cv.Schema(

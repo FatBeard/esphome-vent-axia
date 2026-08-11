@@ -69,6 +69,26 @@ void VentAxiaHub::setup() {
       [](const std::string &msg) { ESP_LOGE(TAG, "%s", msg.c_str()); },
   });
   this->keypad_.set_read_only(this->read_only_);
+
+  // Runner is portable core too (sequence.h), same LogSink shape as Keypad
+  // above -- reused rather than redeclared, see Runner::LogSink.
+  this->runner_.set_log_sink({
+      [](const std::string &msg) { ESP_LOGI(TAG, "%s", msg.c_str()); },
+      [](const std::string &msg) { ESP_LOGW(TAG, "%s", msg.c_str()); },
+      [](const std::string &msg) { ESP_LOGE(TAG, "%s", msg.c_str()); },
+  });
+  this->runner_.set_on_sequence_failed([this](const std::string &name) {
+    for (auto *trig : this->sequence_failed_triggers_) {
+      trig->trigger(name);
+    }
+  });
+
+  this->fetch_diagnostics_.set_log_sink({
+      [](const std::string &msg) { ESP_LOGI(TAG, "%s", msg.c_str()); },
+      [](const std::string &msg) { ESP_LOGW(TAG, "%s", msg.c_str()); },
+      [](const std::string &msg) { ESP_LOGE(TAG, "%s", msg.c_str()); },
+  });
+  this->fetch_diagnostics_.set_on_success([this] { this->stamp_diagnostics_updated_(); });
 }
 
 void VentAxiaHub::loop() {
@@ -104,7 +124,18 @@ void VentAxiaHub::loop() {
   // reasoning as link_up above: a held key needs retransmitting on the
   // clock, not on an event tied to the MVHR's own ~300ms display refresh.
   this->keypad_.loop(now);
-  this->publish_binary_(BinaryKey::BUSY, this->keypad_.busy());
+
+  // Runner sits alongside Keypad, not on top of it: it directs the keypad
+  // (via HoldUntil/Tap et al.) rather than owning its timing loop, so both
+  // get pumped independently every tick with the same now_ms. Fed link_up_
+  // fresh each tick too -- see Runner::request()'s refusal, PLAN.md §7.
+  this->runner_.set_link_up(this->link_up_);
+  this->runner_.loop(now);
+
+  // Stage 5: a sequence can be between keypresses (settling, waiting on a
+  // predicate) and still be busy as far as a dashboard is concerned -- see
+  // entities.h's BinaryKey::BUSY comment.
+  this->publish_binary_(BinaryKey::BUSY, this->keypad_.busy() || this->runner_.busy());
 }
 
 void VentAxiaHub::dump_config() {
@@ -123,37 +154,19 @@ void VentAxiaHub::dump_config() {
   ESP_LOGCONFIG(TAG, "  Key gap: %ums", this->keypad_.key_gap_ms());
   ESP_LOGCONFIG(TAG, "  Key watchdog: %ums", this->keypad_.key_watchdog_ms());
   ESP_LOGCONFIG(TAG, "  Under-emitting key presses: %u", this->keypad_.under_emitting_presses());
+  ESP_LOGCONFIG(TAG, "  Sequence running: %s", this->runner_.busy() ? this->runner_.running_name() : "none");
   this->check_uart_settings(9600, 1, uart::UART_CONFIG_PARITY_NONE, 8);
 }
 
 void VentAxiaHub::tap_key(protocol::KeyMask mask, uint32_t duration_ms) {
-  if (this->refuse_if_set_interlocked_(mask)) {
-    return;
-  }
-  this->keypad_.tap(mask, duration_ms);
+  // Runner::tap() is the interlock choke point now (PLAN.md §7) -- its
+  // return value is intentionally ignored here: a refusal is already logged
+  // there (runner_'s LogSink, wired in setup()), and there is nothing more
+  // for a fire-and-forget caller like a button press to do about it.
+  this->runner_.tap(mask, duration_ms);
 }
 
-void VentAxiaHub::hold_key(protocol::KeyMask mask) {
-  if (this->refuse_if_set_interlocked_(mask)) {
-    return;
-  }
-  this->keypad_.press(mask);
-}
-
-bool VentAxiaHub::refuse_if_set_interlocked_(protocol::KeyMask mask) const {
-  const bool wants_set = (mask & protocol::key_mask(protocol::Key::SET)) != 0;
-  if (!wants_set || this->display_.screen_kind() != screens::ScreenKind::DIAGNOSTIC) {
-    return false;
-  }
-  // Loud on purpose (PLAN.md §7): page 27 ("Reset") writes and has never
-  // been tried, so a Set reaching the unit while any diagnostic page is
-  // showing is exactly the mistake this exists to catch, not routine
-  // operation to log quietly.
-  ESP_LOGE(TAG,
-           "Refusing Set: display is on a diagnostic page (page 27, \"Reset\", writes and has never been "
-           "tried -- see PLAN.md §7)");
-  return true;
-}
+void VentAxiaHub::hold_key(protocol::KeyMask mask) { this->runner_.press(mask); }
 
 // Each publish_ helper compiles to a no-op when its platform is absent from
 // the build, so the decode path calls them unconditionally and stays free of
@@ -295,7 +308,29 @@ void VentAxiaHub::publish_link_up_(uint32_t now_ms) {
   // setup's "infer liveness from line2 having stopped republishing" (PLAN.md
   // §7).
   const bool up = this->have_frame_ && (now_ms - this->last_frame_at_ms_) < LINK_TIMEOUT_MS;
+  // Cached for loop() to hand to runner_.set_link_up() -- Runner::request()
+  // refuses to start anything while the link is down (PLAN.md §7), so it
+  // needs the same answer this publishes, not a second computation of it.
+  this->link_up_ = up;
   this->publish_binary_(BinaryKey::LINK_UP, up);
+}
+
+void VentAxiaHub::stamp_diagnostics_updated_() {
+#ifdef USE_TIME
+  if (this->time_ == nullptr) {
+    return;  // time_id left out of the hub config -- optional, see __init__.py
+  }
+  // Not const: ESPTime::strftime() is a non-const member.
+  auto now = this->time_->now();
+  if (!now.is_valid()) {
+    // Not logged as a warning: this is routine for the first run or two
+    // after boot, before HA's `time: homeassistant` platform has completed
+    // its first sync -- a scheduled 04:30 fetch on a long-running device
+    // will essentially never see this.
+    return;
+  }
+  this->publish_text_(TextKey::DIAGNOSTICS_UPDATED, now.strftime("%Y-%m-%d %H:%M:%S"));
+#endif
 }
 
 }  // namespace vent_axia

@@ -407,22 +407,14 @@ button:
 - `test_protocol` — CRC against captured 41-byte frames; TX frames must byte-match `04 06 FF FF FF 10 FC E8` and the four key frames; resync after an injected dropped byte.
 - `test_parser` — the blank≠zero surface: `"   C"` must not parse, `"018 029 % 0994  "` must; signs; short lines; clock rendering; status-line grammar (`18%`, `48%       30m`, `Purge      120 m`).
 - `test_diagnostics` — feed each page's captured line, assert exactly which keys published: p4 `00 % 00 C` publishes nothing; p19 `1` → `rail_24v_fault = false`; p23 `00000` → `0` **and** `filter_change_due = true`; p24 `10` → `"Bypass"`.
-- `test_sequences` against **`fake_mvhr`**, a ~250-line host model of the *menu behaviour*: hard stops, the edit chain (including the observed Summer Mode commit-closes-outright variant), non-wrapping day/temps vs wrapping hour/minute, the 350ms editor blink and settled silence, the 3.4s status alternation, diagnostic auto-repeat, the rule that holding Up straight through never exits, the 2-minute edit timeout, and a configurable dropped-press rate. Tests are property-shaped — from every start screen, at 0/10/30% drop rate, a write either lands or fails cleanly, and always ends with the display on status and the key mask clear.
+- `test_sequence` — the engine and each sequence driven against a fake keypad and display with explicit `now_ms`: `on_finish` runs on every exit path (success, child failure, timeout), a second root is refused while one runs, `GotoMenu` issues 5 Up then N Down taps, `LeaveMenu` issues exactly one, `FetchDiagnostics` releases and settles rather than holding through, and no key is left asserted after any sequence ends however it ended.
 
-Three assertions are enforced globally by the fake keypad on *every* test, so they also cover sequences written later: never Set while on a diagnostic page; never Up/Down while an editor is open unless the active sequence is adjusting; never end with a key held.
+### Out of scope (descoped during implementation)
 
-**Staged rollout on the live unit** — it is the house's ventilation, so each stage is independently revertible. Keep `mhrv_orig` on a branch and a known-good `.bin`; `esphome upload` restores in one command.
+- **`fake_mvhr`, the host model of the unit's menu behaviour.** Dropped. The sequence tests drive a fake keypad and display directly instead, which covers the engine's own contract — `on_finish` always running, mutual exclusion, no key left asserted — but *not* the unit's behavioural quirks (the edit chain, wrapping vs non-wrapping fields, the blink, dropped presses). Those remain verified only by reading, so the sequences that write settings carry more risk than the rest of the codebase.
+- **The staged rollout on the live unit.** Nothing is to be flashed. The device at 192.168.1.200 keeps running its original firmware, and `read_only: true` stays set in `mhrv/mhrv.yaml`. Everything below is therefore *unvalidated against hardware*: it compiles, and the host suite passes, which is a much weaker claim than the timing constants in this document deserve. Whoever picks the rollout up should treat §8's original staged order (read-only soak → `FetchDiagnostics` → `ReadSettings` → `SyncClock` → `WriteSetting` → `airflow_mode` → `ResetFilter` last, being irreversible) as still the right sequencing, and keep `mhrv_orig` plus a known-good `.bin` for rollback.
 
-0. Repo, host tests green, `esphome compile` green. Nothing flashed.
-1. Flash with `read_only: true`. RX, CRC, display mirroring, status-line sensors run live for 24h. Compare against the old device's HA history. Cannot transmit, so zero risk. Confirm silence at the unit before trusting it.
-2. Keys on, `FetchDiagnostics` only — presses Up/Main/Down, never Set. Expect `captured 28 of 28 pages (highest 27)`.
-3. `ReadSettings` — first use of Set, on verified screens.
-4. `SyncClock` — writes, but self-correcting.
-5. `WriteSetting`: summer mode → indoor temp → outdoor temp, in that order of risk.
-6. `airflow_mode` select, including purge.
-7. `ResetFilter` last — irreversible. (Filter hours currently read `00000`, so it is due anyway and easy to verify.)
-
-Then tag `v1.0.0`, pin `ref: v1.0.0`, drop `refresh: always`. Delete the old packages one at a time as each stage lands: `vask_decode.h` at stage 1, `diagnostic_sensors.yaml`/`decoded_entities.yaml` at 2, `controls.yaml` at 2–4 and 6–7, `summer_bypass.yaml` at 3–5.
+Consequently `v1.0.0` is not tagged and `mhrv/mhrv.yaml` still points at the component through a local path rather than a pinned git ref. The old project in `mhrv_orig` is untouched and still the thing actually running the house's ventilation.
 
 ---
 

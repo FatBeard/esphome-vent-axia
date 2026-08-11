@@ -84,9 +84,12 @@ enum class BinaryKey : uint8_t {
   // sequence has parked the display in a menu.
   LINK_UP,
   // Stage 4: true while Keypad::busy() is -- a tap (including its trailing
-  // gap) or a hold in progress. Lets a dashboard show that a slow keypad
-  // operation is in flight (PLAN.md risk 3: airflow_mode transitions can
-  // take ~25-30s) rather than the entity just appearing to sit still.
+  // gap) or a hold in progress. Stage 5 broadens this to Keypad::busy() OR
+  // Runner::busy(): a sequence can be between keypresses (e.g. FetchDiagnostics'
+  // settle steps) and still very much be "doing something" as far as a
+  // dashboard is concerned. Lets a dashboard show that a slow operation is in
+  // flight (PLAN.md risk 3: airflow_mode transitions can take ~25-30s) rather
+  // than the entity just appearing to sit still.
   BUSY,
   COUNT,
 };
@@ -106,6 +109,12 @@ enum class TextKey : uint8_t {
   // page this component doesn't understand is still visible to a human
   // without a component change -- see diagnostics.h.
   RAW_DIAGNOSTIC_PAGE,
+  // Stage 5: wall-clock timestamp of the last successful FetchDiagnostics
+  // run, stamped by the hub (not by the sequence -- portable core has no
+  // notion of wall-clock time, see FetchDiagnostics::set_on_success()).
+  // Unpublished until the first run completes; skipped entirely (never
+  // failing) if the hub has no time_id configured.
+  DIAGNOSTICS_UPDATED,
   COUNT,
 };
 

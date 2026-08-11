@@ -1,0 +1,707 @@
+#include "test_framework.h"
+
+#include <functional>
+#include <string>
+#include <vector>
+
+#include "frame_test_helper.h"
+#include "sequence.h"
+
+using namespace esphome::vent_axia;
+
+namespace {
+
+constexpr protocol::KeyMask UP = protocol::key_mask(protocol::Key::UP);
+constexpr protocol::KeyMask DOWN = protocol::key_mask(protocol::Key::DOWN);
+constexpr protocol::KeyMask SET = protocol::key_mask(protocol::Key::SET);
+constexpr protocol::KeyMask MAIN = protocol::key_mask(protocol::Key::MAIN);
+
+// ------------------------------------------------------------- fixtures --
+
+/// Records every frame's mask alongside the `now_ms` it was sent at (via
+/// `current_now`, set by the test's own tick loop) so a test can tell a
+/// single held-down episode's retransmits apart from a genuinely new press
+/// -- see episodes_from() below. Same shape as test_keypad.cpp's
+/// RecordingSink, plus the timestamp GotoMenu/LeaveMenu/FetchDiagnostics
+/// tests need and test_keypad.cpp's don't.
+struct RecordingSink {
+  std::vector<std::pair<uint32_t, protocol::KeyMask>> frames;
+  const uint32_t *current_now{nullptr};
+
+  Keypad::FrameSink as_frame_sink() {
+    return [this](const uint8_t *data, size_t len) {
+      (void) len;
+      this->frames.emplace_back(*this->current_now, data[5]);
+    };
+  }
+};
+
+/// Collapses a RecordingSink's raw frames (several per press, retransmitted
+/// every tx_interval) into one entry per press EPISODE: a run of frames of
+/// the same mask is one episode, a new episode starts only after a gap
+/// bigger than one tx_interval could explain (100ms sits comfortably
+/// between the 20ms retransmit cadence and the 400ms mandatory key_gap, so
+/// it can only mean "the key actually went up and came back down", never a
+/// slow retransmit). This is what lets a test assert "exactly 5 Up taps",
+/// not just "some Up frames appeared".
+std::vector<protocol::KeyMask> episodes_from(const RecordingSink &sink) {
+  std::vector<protocol::KeyMask> episodes;
+  uint32_t last_ts = 0;
+  bool have_last = false;
+  for (const auto &f : sink.frames) {
+    if (!have_last || f.first - last_ts > 100) {
+      episodes.push_back(f.second);
+    }
+    last_ts = f.first;
+    have_last = true;
+  }
+  return episodes;
+}
+
+/// Records severities the same way test_keypad.cpp's RecordingLog does.
+/// Reused for Runner::LogSink, Keypad::LogSink and FetchDiagnostics::LogSink
+/// -- all three are literally the same type (Runner::LogSink and
+/// FetchDiagnostics::LogSink are `using` aliases of Keypad::LogSink, see
+/// sequence.h), so one fixture covers all of them.
+struct RecordingLog {
+  int info_count{0};
+  int warn_count{0};
+  int error_count{0};
+  std::string last_info;
+  std::string last_warn;
+  std::string last_error;
+
+  Keypad::LogSink as_log_sink() {
+    Keypad::LogSink sink;
+    sink.info = [this](const std::string &m) {
+      this->info_count++;
+      this->last_info = m;
+    };
+    sink.warn = [this](const std::string &m) {
+      this->warn_count++;
+      this->last_warn = m;
+    };
+    sink.error = [this](const std::string &m) {
+      this->error_count++;
+      this->last_error = m;
+    };
+    return sink;
+  }
+};
+
+/// Drives kp and runner together, exactly as VentAxiaHub::loop() does --
+/// both pumped independently every tick with the same now_ms (vent_axia.cpp:
+/// "Runner sits alongside Keypad, not on top of it").
+struct Clock {
+  Keypad &kp;
+  Runner &runner;
+  uint32_t now{0};
+
+  void tick() {
+    this->now += 20;
+    this->kp.loop(this->now);
+    this->runner.loop(this->now);
+  }
+  void advance(uint32_t ms) {
+    const uint32_t target = this->now + ms;
+    while (this->now < target) {
+      this->tick();
+    }
+  }
+};
+
+/// A Sequence whose behaviour is supplied by the test as std::functions,
+/// for exercising the ENGINE (Runner's stack/timeout/propagation) without
+/// needing a real primitive. Exposes protected Sequence machinery (await(),
+/// goto_step(), elapsed(), the current step, and runner_-mediated keypad
+/// access) through public do_*() wrappers so a test's lambda -- which is
+/// not a Sequence member function and so cannot reach protected members
+/// itself -- can still drive them via the `self` reference poll() passes in.
+class ScriptedSequence final : public Sequence {
+ public:
+  const char *name() const override { return this->name_; }
+
+  Poll poll() override {
+    this->poll_count++;
+    return this->on_poll ? this->on_poll(*this) : Poll::DONE;
+  }
+  void on_start() override {
+    this->start_count++;
+    if (this->on_start_hook) {
+      this->on_start_hook();
+    }
+  }
+  void on_finish(Poll result) override {
+    this->finish_count++;
+    this->last_result = result;
+    if (this->on_finish_hook) {
+      this->on_finish_hook(result);
+    }
+  }
+  uint32_t timeout_ms() const override { return this->timeout_ms_; }
+
+  Poll do_await(Sequence &child, uint8_t on_ok) { return this->await(child, on_ok); }
+  Poll do_goto(uint8_t s) { return this->goto_step(s); }
+  uint32_t do_elapsed() const { return this->elapsed(); }
+  uint8_t current_step() const { return this->step_; }
+  bool do_press(protocol::KeyMask mask) { return this->runner_->press(mask); }
+
+  const char *name_{"Scripted"};
+  std::function<Poll(ScriptedSequence &)> on_poll;
+  std::function<void()> on_start_hook;
+  std::function<void(Poll)> on_finish_hook;
+  int start_count{0};
+  int poll_count{0};
+  int finish_count{0};
+  Poll last_result{Poll::RUNNING};
+  uint32_t timeout_ms_{120000};
+};
+
+}  // namespace
+
+// ================================================================ Runner --
+// The engine itself: stack, timeout, propagation, the fixed depth, request()'s
+// two refusals, and the Set interlock now enforced here (PLAN.md §7 -- moved
+// from vent_axia.cpp so it is testable at all, see sequence.h's comment on
+// Runner::tap()).
+
+TEST_CASE(a_root_sequence_runs_to_completion_and_on_finish_sees_done) {
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+
+  ScriptedSequence seq;
+  seq.on_poll = [](ScriptedSequence &) { return Poll::DONE; };
+
+  CHECK(runner.request(seq));
+  CHECK_EQ(seq.start_count, 1);
+
+  Clock clock{kp, runner};
+  clock.tick();
+
+  CHECK_EQ(seq.poll_count, 1);
+  CHECK_EQ(seq.finish_count, 1);
+  CHECK(seq.last_result == Poll::DONE);
+  CHECK(!runner.busy());
+}
+
+TEST_CASE(a_failing_child_propagates_failed_to_its_parent_which_is_never_polled_again) {
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+
+  ScriptedSequence child;
+  child.name_ = "Child";
+  child.on_poll = [](ScriptedSequence &) { return Poll::FAILED; };
+
+  ScriptedSequence parent;
+  parent.name_ = "Parent";
+  parent.on_poll = [&](ScriptedSequence &self) {
+    // Only ever reachable at step 0 -- if this fires a second time (i.e. the
+    // parent got resumed at step 1 despite the child failing) the test below
+    // catches it via poll_count.
+    if (self.current_step() == 0) {
+      return self.do_await(child, 1);
+    }
+    return Poll::DONE;
+  };
+
+  CHECK(runner.request(parent));
+
+  Clock clock{kp, runner};
+  clock.tick();  // parent's poll(): awaits child, pushes it
+  clock.tick();  // child's poll(): fails
+
+  CHECK_EQ(child.finish_count, 1);
+  CHECK(child.last_result == Poll::FAILED);
+  CHECK_EQ(parent.poll_count, 1);  // never polled again -- see the comment above
+  CHECK_EQ(parent.finish_count, 1);
+  CHECK(parent.last_result == Poll::FAILED);
+  CHECK(!runner.busy());
+}
+
+TEST_CASE(on_finish_runs_on_a_timeout_too_and_recover_releases_the_key) {
+  // Rounds out "on_finish runs on every exit path": success is the first
+  // test above, a child's failure cascading is the second, this is the
+  // third -- a root that never finishes on its own, caught by Runner's
+  // per-root backstop (PLAN.md §2 "Sequence timeout"), not by anything the
+  // sequence itself does.
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+
+  ScriptedSequence root;
+  root.timeout_ms_ = 1000;
+  root.on_poll = [](ScriptedSequence &self) {
+    self.do_press(UP);  // holds forever, on purpose -- this sequence never finishes itself
+    return Poll::RUNNING;
+  };
+
+  CHECK(runner.request(root));
+
+  Clock clock{kp, runner};
+  clock.advance(980);  // still under the 1000ms budget
+  CHECK_EQ(root.finish_count, 0);
+
+  clock.tick();  // crosses 1000ms -- the backstop fires
+  CHECK_EQ(root.finish_count, 1);
+  CHECK(root.last_result == Poll::FAILED);
+  CHECK(!runner.busy());
+
+  clock.tick();  // recover()'s release() takes effect on the following loop() tick
+  CHECK(!kp.busy());
+}
+
+TEST_CASE(request_refuses_a_second_root_while_one_is_running) {
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+
+  ScriptedSequence first;
+  first.name_ = "First";
+  first.on_poll = [](ScriptedSequence &) { return Poll::RUNNING; };  // never finishes in this test
+  ScriptedSequence second;
+  second.name_ = "Second";
+
+  CHECK(runner.request(first));
+  CHECK(runner.busy());
+  CHECK(std::string(runner.running_name()) == "First");
+
+  CHECK(!runner.request(second));
+  CHECK_EQ(second.start_count, 0);  // never touched at all, not queued either
+  CHECK(std::string(runner.running_name()) == "First");  // unchanged
+}
+
+TEST_CASE(request_refuses_when_the_link_is_down) {
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  // link_up defaults to false -- deliberately never set here.
+
+  ScriptedSequence seq;
+  CHECK(!runner.request(seq));
+  CHECK(!runner.busy());
+  CHECK_EQ(seq.start_count, 0);
+}
+
+TEST_CASE(the_stack_does_not_overflow_a_5th_nesting_level_fails_cleanly) {
+  CHECK_EQ(static_cast<int>(Runner::MAX_DEPTH), 4);  // this test assumes the documented depth
+
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+
+  ScriptedSequence root, a, b, c, d;
+  root.name_ = "Root";
+  a.name_ = "A";
+  b.name_ = "B";
+  c.name_ = "C";
+  d.name_ = "D";
+
+  root.on_poll = [&](ScriptedSequence &self) { return self.do_await(a, 1); };
+  a.on_poll = [&](ScriptedSequence &self) { return self.do_await(b, 1); };
+  b.on_poll = [&](ScriptedSequence &self) { return self.do_await(c, 1); };
+  // root(1) -> a(2) -> b(3) -> c(4) is already MAX_DEPTH; awaiting d would be
+  // a 5th frame and must be refused rather than corrupting the stack.
+  c.on_poll = [&](ScriptedSequence &self) { return self.do_await(d, 1); };
+  d.on_poll = [](ScriptedSequence &) { return Poll::DONE; };  // must never actually run
+
+  CHECK(runner.request(root));
+
+  Clock clock{kp, runner};
+  clock.advance(200);
+
+  CHECK_EQ(d.start_count, 0);
+  CHECK_EQ(d.poll_count, 0);
+  CHECK(c.last_result == Poll::FAILED);
+  CHECK(b.last_result == Poll::FAILED);
+  CHECK(a.last_result == Poll::FAILED);
+  CHECK(root.last_result == Poll::FAILED);
+  CHECK(!runner.busy());
+}
+
+TEST_CASE(runner_refuses_set_while_a_diagnostic_page_is_showing) {
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  disp.update(vatest::pad16("Diagnostic  05"), vatest::pad16(""), 0);
+
+  RecordingLog log;
+  runner.set_log_sink(log.as_log_sink());
+
+  CHECK(!runner.tap(SET, 50));
+  CHECK(!runner.press(SET));
+  CHECK(!kp.busy());  // never reached the keypad at all
+  CHECK(log.error_count >= 2);
+
+  // Never interlocked: Up/Down/Main are always accepted, regardless of screen.
+  CHECK(runner.tap(UP, 50));
+}
+
+TEST_CASE(runner_does_not_refuse_set_on_a_non_diagnostic_screen) {
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  disp.update(vatest::pad16("Indoor Temp"), vatest::pad16(" 20C"), 0);
+
+  CHECK(runner.tap(SET, 50));
+}
+
+// ============================================================ primitives --
+
+TEST_CASE(tap_issues_one_tap_and_completes_once_idle) {
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+  RecordingSink sink;
+  Clock clock{kp, runner};
+  sink.current_now = &clock.now;
+  kp.set_frame_sink(sink.as_frame_sink());
+
+  Tap tap(UP, 50);
+  CHECK(runner.request(tap));
+  clock.advance(600);  // comfortably past the 50ms tap plus the 400ms gap
+
+  CHECK(!runner.busy());
+  CHECK(!kp.busy());
+  const auto episodes = episodes_from(sink);
+  CHECK_EQ(episodes.size(), static_cast<size_t>(1));
+  CHECK_EQ(episodes[0], UP);
+}
+
+TEST_CASE(tap_fails_fast_when_the_set_interlock_refuses_it) {
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+  disp.update(vatest::pad16("Diagnostic  05"), vatest::pad16(""), 0);
+  RecordingSink sink;
+  Clock clock{kp, runner};
+  sink.current_now = &clock.now;
+  kp.set_frame_sink(sink.as_frame_sink());
+
+  Tap tap(SET, 50);
+  CHECK(runner.request(tap));
+  clock.advance(100);
+
+  CHECK(!runner.busy());
+  CHECK(sink.frames.empty());  // the refused tap never reached the keypad
+  CHECK(!kp.busy());
+}
+
+TEST_CASE(hold_until_completes_when_the_predicate_becomes_true_and_releases_the_key) {
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+  bool ready = false;
+
+  HoldUntil hold(UP, [&ready] { return ready; }, 5000);
+  CHECK(runner.request(hold));
+
+  Clock clock{kp, runner};
+  clock.advance(200);
+  CHECK(runner.busy());
+  CHECK(kp.busy());  // asserted, predicate not true yet
+
+  ready = true;
+  clock.advance(40);
+
+  CHECK(!runner.busy());
+  CHECK(!kp.busy());  // released in on_finish -- see HoldUntil's class comment
+}
+
+TEST_CASE(hold_until_fails_and_still_releases_the_key_on_timeout) {
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+
+  HoldUntil hold(DOWN, [] { return false; }, 500);
+  CHECK(runner.request(hold));
+
+  Clock clock{kp, runner};
+  clock.advance(800);  // past the 500ms timeout
+
+  CHECK(!runner.busy());
+  CHECK(!kp.busy());
+}
+
+TEST_CASE(hold_until_re_presses_every_tick_which_is_safe_and_does_not_restart_the_watchdog) {
+  // The one invariant the spec calls out by name: press() is a documented
+  // no-op when re-asserting an already-held mask (keypad.h), so HoldUntil
+  // calling it every poll() must not reset Keypad's 30s watchdog clock.
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+
+  HoldUntil hold(UP, [] { return false; }, 60000);  // outlives the watchdog on purpose
+  CHECK(runner.request(hold));
+
+  Clock clock{kp, runner};
+  // +100ms margin: the very first press() only takes effect on the tick
+  // AFTER poll() calls it (Keypad applies a pending hold in loop(), not
+  // synchronously -- see keypad.cpp), so the watchdog's own 30s clock
+  // actually starts one tick later than t=0.
+  clock.advance(30100);
+
+  CHECK(kp.watchdog_releases() >= 1u);
+  // HoldUntil's own 60s timeout is still nowhere close, so it is still
+  // running and will simply re-press on the next tick (a fresh assertion,
+  // not the no-op above, since the watchdog already dropped it back to
+  // IDLE) -- proving the watchdog is a real, working backstop independent
+  // of whatever the sequence above it believes.
+  CHECK(runner.busy());
+}
+
+TEST_CASE(goto_menu_issues_five_up_taps_then_n_down_taps) {
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+  RecordingSink sink;
+  Clock clock{kp, runner};
+  sink.current_now = &clock.now;
+  kp.set_frame_sink(sink.as_frame_sink());
+
+  GotoMenu goto_menu(2);  // Summer Mode
+  CHECK(runner.request(goto_menu));
+  clock.advance(5000);  // 5 taps + settle + 2 taps + settle, comfortably
+
+  CHECK(!runner.busy());
+  const auto episodes = episodes_from(sink);
+  CHECK_EQ(episodes.size(), static_cast<size_t>(7));
+  for (size_t i = 0; i < 5; i++) {
+    CHECK_EQ(episodes[i], UP);
+  }
+  for (size_t i = 5; i < 7; i++) {
+    CHECK_EQ(episodes[i], DOWN);
+  }
+}
+
+TEST_CASE(goto_menu_index_0_is_five_up_taps_and_no_down_taps) {
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+  RecordingSink sink;
+  Clock clock{kp, runner};
+  sink.current_now = &clock.now;
+  kp.set_frame_sink(sink.as_frame_sink());
+
+  GotoMenu goto_menu(0);  // status -- the hard stop alone
+  CHECK(runner.request(goto_menu));
+  clock.advance(4000);
+
+  CHECK(!runner.busy());
+  const auto episodes = episodes_from(sink);
+  CHECK_EQ(episodes.size(), static_cast<size_t>(5));
+  for (const auto mask : episodes) {
+    CHECK_EQ(mask, UP);
+  }
+}
+
+TEST_CASE(leave_menu_issues_exactly_one_up_tap) {
+  Keypad kp;
+  Display disp;  // default: line1() == "", classify()s as STATUS -- not a menu screen
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+  RecordingSink sink;
+  Clock clock{kp, runner};
+  sink.current_now = &clock.now;
+  kp.set_frame_sink(sink.as_frame_sink());
+
+  LeaveMenu leave;
+  CHECK(runner.request(leave));
+  clock.advance(600);
+
+  CHECK(!runner.busy());
+  const auto episodes = episodes_from(sink);
+  CHECK_EQ(episodes.size(), static_cast<size_t>(1));
+  CHECK_EQ(episodes[0], UP);
+}
+
+TEST_CASE(leave_menu_waits_out_the_unit_timeout_rather_than_pressing_again) {
+  Keypad kp;
+  Display disp;
+  disp.update(vatest::pad16("Set Clock"), vatest::pad16(""), 0);  // parked on a menu screen
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+  RecordingSink sink;
+  Clock clock{kp, runner};
+  sink.current_now = &clock.now;
+  kp.set_frame_sink(sink.as_frame_sink());
+
+  LeaveMenu leave;
+  CHECK(runner.request(leave));
+
+  // Still parked on the menu screen the whole time -- must NOT press Up
+  // again while waiting. 60s is comfortably under both LeaveMenu's own
+  // 130s wait and the default 120s root backstop (see this file's note on
+  // that overlap in the final report), enough to prove "patient", not "mash".
+  clock.advance(60000);
+  CHECK(runner.busy());
+  CHECK_EQ(episodes_from(sink).size(), static_cast<size_t>(1));
+
+  // The unit's own timeout would eventually close the menu; simulate that
+  // and confirm LeaveMenu notices and finishes, still without a second tap.
+  disp.update(vatest::pad16("18%"), vatest::pad16(""), clock.now);
+  clock.advance(100);
+
+  CHECK(!runner.busy());
+  CHECK_EQ(episodes_from(sink).size(), static_cast<size_t>(1));
+}
+
+// ======================================================= FetchDiagnostics --
+
+TEST_CASE(fetch_diagnostics_completes_and_tracks_the_highest_page_actually_seen) {
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+  RecordingLog log;
+  bool success = false;
+
+  FetchDiagnostics fd;
+  fd.set_log_sink(log.as_log_sink());
+  fd.set_on_success([&success] { success = true; });
+
+  CHECK(runner.request(fd));
+  Clock clock{kp, runner};
+
+  // 1: enter the diagnostic menu.
+  clock.advance(40);
+  disp.update(vatest::pad16("Diagnostic  00"), vatest::pad16(""), clock.now);
+  clock.advance(40);
+
+  // 2: 300ms settle, then into the fixed 8s Down hold.
+  clock.advance(400);
+
+  // 3: the unit's own auto-repeat would walk every page; simulate it
+  // passing through a few, ending on the highest one this firmware has
+  // (27, never a hardcoded 28 -- PLAN.md §3/§7).
+  disp.update(vatest::pad16("Diagnostic  05"), vatest::pad16(""), clock.now);
+  clock.advance(1000);
+  disp.update(vatest::pad16("Diagnostic  12"), vatest::pad16(""), clock.now);
+  clock.advance(1000);
+  disp.update(vatest::pad16("Diagnostic  27"), vatest::pad16(""), clock.now);
+  clock.advance(7000);  // finishes out the 8s hold (well past it in total)
+
+  // 5: hold Up back to page 00.
+  disp.update(vatest::pad16("Diagnostic  00"), vatest::pad16(""), clock.now);
+  clock.advance(200);
+
+  // 6: release, 250ms settle -- see the dedicated test below for this step
+  // in isolation.
+  clock.advance(300);
+
+  // 7: the fresh hold, until the display leaves the diagnostic menu.
+  disp.update(vatest::pad16("18%"), vatest::pad16(""), clock.now);
+  clock.advance(200);
+
+  CHECK(!runner.busy());
+  CHECK(success);
+  CHECK(!kp.busy());
+  // Four distinct pages were shown (0, 5, 12, 27); highest was 27, so "of"
+  // is 28 -- never the old component's hardcoded, wrong-for-this-firmware 28.
+  CHECK(log.last_info.find("captured 4 of 28") != std::string::npos);
+  CHECK(log.last_info.find("highest 27") != std::string::npos);
+}
+
+TEST_CASE(fetch_diagnostics_releases_and_settles_before_the_fresh_exit_hold) {
+  // The essential, non-obvious behaviour PLAN.md calls out: holding Up
+  // straight through from page 00 never exits, so step 6 must be a genuine
+  // release-and-settle, not a no-op on the way to step 7's hold.
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+  FetchDiagnostics fd;
+
+  CHECK(runner.request(fd));
+  Clock clock{kp, runner};
+
+  disp.update(vatest::pad16("Diagnostic  00"), vatest::pad16(""), clock.now);
+  clock.advance(40);
+  clock.advance(400);
+  clock.advance(8000);
+  clock.advance(440);  // the release settle between the Down and Up holds
+  disp.update(vatest::pad16("Diagnostic  00"), vatest::pad16(""), clock.now);
+  clock.advance(40);  // the page-00 hold observes it and completes
+
+  // Now in the 250ms settle: the key must already be released -- not still
+  // asserted from the hold that just finished.
+  CHECK(!kp.busy());
+  clock.advance(100);
+  CHECK(!kp.busy());  // still released partway through the settle
+
+  // Past the settle: EXIT's FRESH hold begins, asserting Up again.
+  clock.advance(200);
+  CHECK(kp.busy());
+}
+
+TEST_CASE(fetch_diagnostics_fails_and_recovers_if_the_unit_never_enters_the_menu) {
+  Keypad kp;
+  Display disp;  // never updated to a diagnostic screen
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+  RecordingLog log;
+  bool success = false;
+
+  FetchDiagnostics fd;
+  fd.set_log_sink(log.as_log_sink());
+  fd.set_on_success([&success] { success = true; });
+
+  CHECK(runner.request(fd));
+  Clock clock{kp, runner};
+  clock.advance(15200);  // past ENTER's 15s timeout
+
+  CHECK(!runner.busy());
+  CHECK(!success);
+  CHECK(!kp.busy());  // released via HoldUntil::on_finish and/or Runner::recover()
+}
+
+TEST_CASE(fetch_diagnostics_leaves_real_silence_between_the_down_and_up_holds) {
+  // A release is only silence on this protocol -- there is no key-up frame --
+  // so moving straight from the Down hold into the Up hold would leave a
+  // single loop tick of silence, far below the 400ms the unit needs to see a
+  // release at all. It would read Down-then-Up as one unbroken press, never
+  // register the Up, and the page-00 hold would time out with the display
+  // abandoned in the diagnostic menu: the old component's exact failure.
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+  RecordingSink sink;
+  kp.set_frame_sink(sink.as_frame_sink());
+
+  FetchDiagnostics fd;
+  CHECK(runner.request(fd));
+  Clock clock{kp, runner};
+  sink.current_now = &clock.now;
+
+  disp.update(vatest::pad16("Diagnostic  00"), vatest::pad16(""), clock.now);
+  clock.advance(40);    // entered the diagnostic menu
+  clock.advance(400);   // 300ms entry settle, then into the Down hold
+  clock.advance(8100);  // run the fixed 8s Down hold out
+
+  // The Down hold has now been released. Step forward and confirm nothing is
+  // transmitted at all until the settle has elapsed.
+  const size_t frames_at_release = sink.frames.size();
+  clock.advance(200);
+  CHECK_EQ(sink.frames.size(), frames_at_release);  // silent 200ms in
+  clock.advance(140);
+  CHECK_EQ(sink.frames.size(), frames_at_release);  // still silent at ~340ms
+
+  // Past 400ms of silence the Up hold may start.
+  clock.advance(200);
+  CHECK(sink.frames.size() > frames_at_release);
+  CHECK_EQ(sink.frames.back().second, UP);
+}
