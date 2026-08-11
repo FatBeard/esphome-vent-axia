@@ -23,11 +23,15 @@ SyncClockButton = vent_axia_ns.class_("SyncClockButton", button.Button)
 # action, and the one piece of per-instance data it needs (which mask to
 # tap) is set directly on the KeypadButton instance below rather than looked
 # up by key at publish time.
+#
+# No entity_category: these are the escape-hatch controls a human presses
+# directly (CLAUDE.md's device invariants), so they belong in HA's top-level
+# Controls section next to fetch_diagnostics, not filed under Configuration
+# where they're easy to miss.
 BUTTONS = {
     f"key_{name}": button.button_schema(
         KeypadButton,
         icon="mdi:remote",
-        entity_category=ENTITY_CATEGORY_CONFIG,
     )
     for name in KEY_MASKS
 }
