@@ -24,13 +24,15 @@ SequenceFailedTrigger = vent_axia_ns.class_(
     "SequenceFailedTrigger", automation.Trigger.template(cg.std_string)
 )
 # vent_axia.tap_key / vent_axia.hold_key / vent_axia.release_keys /
-# vent_axia.fetch_diagnostics (PLAN.md §5). See vent_axia.h's class comments
-# for why the first three are plain constructor args rather than
-# TEMPLATABLE_VALUE; fetch_diagnostics takes no arguments at all.
+# vent_axia.fetch_diagnostics / vent_axia.sync_clock (PLAN.md §5). See
+# vent_axia.h's class comments for why the first three are plain constructor
+# args rather than TEMPLATABLE_VALUE; fetch_diagnostics/sync_clock take no
+# arguments at all.
 TapKeyAction = vent_axia_ns.class_("TapKeyAction", automation.Action)
 HoldKeyAction = vent_axia_ns.class_("HoldKeyAction", automation.Action)
 ReleaseKeysAction = vent_axia_ns.class_("ReleaseKeysAction", automation.Action)
 FetchDiagnosticsAction = vent_axia_ns.class_("FetchDiagnosticsAction", automation.Action)
+SyncClockAction = vent_axia_ns.class_("SyncClockAction", automation.Action)
 
 CONF_VENT_AXIA_ID = "vent_axia_id"
 CONF_READ_ONLY = "read_only"
@@ -187,6 +189,12 @@ VENT_AXIA_FETCH_DIAGNOSTICS_SCHEMA = cv.Schema(
     }
 )
 
+VENT_AXIA_SYNC_CLOCK_SCHEMA = cv.Schema(
+    {
+        cv.GenerateID(CONF_VENT_AXIA_ID): cv.use_id(VentAxiaHub),
+    }
+)
+
 
 # All four are synchronous=True: play() only ever queues a request -- with
 # the keypad, or with the Runner (fetch_diagnostics) -- and returns. The
@@ -218,5 +226,11 @@ async def vent_axia_release_keys_to_code(config, action_id, template_arg, args):
     "vent_axia.fetch_diagnostics", FetchDiagnosticsAction, VENT_AXIA_FETCH_DIAGNOSTICS_SCHEMA, synchronous=True
 )
 async def vent_axia_fetch_diagnostics_to_code(config, action_id, template_arg, args):
+    hub = await cg.get_variable(config[CONF_VENT_AXIA_ID])
+    return cg.new_Pvariable(action_id, template_arg, hub)
+
+
+@automation.register_action("vent_axia.sync_clock", SyncClockAction, VENT_AXIA_SYNC_CLOCK_SCHEMA, synchronous=True)
+async def vent_axia_sync_clock_to_code(config, action_id, template_arg, args):
     hub = await cg.get_variable(config[CONF_VENT_AXIA_ID])
     return cg.new_Pvariable(action_id, template_arg, hub)

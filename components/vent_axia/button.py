@@ -10,6 +10,7 @@ DEPENDENCIES = ["vent_axia"]
 KeypadButton = vent_axia_ns.class_("KeypadButton", button.Button)
 FetchDiagnosticsButton = vent_axia_ns.class_("FetchDiagnosticsButton", button.Button)
 ReadSettingsButton = vent_axia_ns.class_("ReadSettingsButton", button.Button)
+SyncClockButton = vent_axia_ns.class_("SyncClockButton", button.Button)
 
 # The manual key buttons (PLAN.md §6): key_up/key_down/key_set/key_main, each
 # a momentary tap_duration tap of the matching bit in KEY_MASKS (__init__.py)
@@ -35,8 +36,9 @@ BUTTONS = {
 # sequence (sequence.h) rather than tapping a raw key, so pressing it while
 # another sequence is already running is refused (and logged), not queued.
 # Stage 5 added fetch_diagnostics; stage 6 adds read_settings the same way.
-# sync_clock/reset_filter (stage 7) are expected to join this dict too, since
-# none of them need any per-instance data either -- see to_code() below.
+# reset_filter (stage 7's other deliverable) is expected to join this dict
+# too, since none of them need any per-instance data either -- see to_code()
+# below.
 SEQUENCE_BUTTONS = {
     "fetch_diagnostics": button.button_schema(
         FetchDiagnosticsButton,
@@ -48,6 +50,14 @@ SEQUENCE_BUTTONS = {
         ReadSettingsButton,
         icon="mdi:sun-clock",
         entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+    ),
+    # "Sync MVHR Clock" in the old YAML -- same icon, same entity_category
+    # (mhrv_orig/controls.yaml's button block): a clock sync is a
+    # configuration action, not a diagnostic read.
+    "sync_clock": button.button_schema(
+        SyncClockButton,
+        icon="mdi:clock-check-outline",
+        entity_category=ENTITY_CATEGORY_CONFIG,
     ),
 }
 

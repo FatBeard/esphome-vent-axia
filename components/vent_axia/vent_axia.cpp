@@ -113,6 +113,45 @@ void VentAxiaHub::setup() {
   });
   this->write_setting_.set_on_switch(publish_switch);
   this->write_setting_.set_on_number(publish_number);
+
+  // Stage 7: sync_clock_ gets wall-clock time through this sink rather than
+  // touching time::RealTimeClock itself -- sequence.h/seq_sync_clock.cpp are
+  // portable core (README "Portable core"). Must compile with USE_TIME
+  // undefined (the ESP32-IDF example declares no `time:` platform at all):
+  // the #else branch below is what makes that true, returning "unavailable"
+  // rather than failing to build.
+  this->sync_clock_.set_log_sink({
+      [](const std::string &msg) { ESP_LOGI(TAG, "%s", msg.c_str()); },
+      [](const std::string &msg) { ESP_LOGW(TAG, "%s", msg.c_str()); },
+      [](const std::string &msg) { ESP_LOGE(TAG, "%s", msg.c_str()); },
+  });
+  this->sync_clock_.set_time_source([this](int &dow_display, int &hour, int &minute) -> bool {
+#ifdef USE_TIME
+    if (this->time_ == nullptr) {
+      return false;  // time_id left out of the hub config -- optional, see __init__.py
+    }
+    // Not const: ESPTime::strftime() is a non-const member (see
+    // stamp_diagnostics_updated_() above) -- this callback never calls it,
+    // but `now` is left non-const anyway so a future edit that does add one
+    // doesn't have to remember the rule.
+    auto now = this->time_->now();
+    if (!now.is_valid()) {
+      // Not synced yet -- see SyncClock::TimeSource's own comment: this
+      // counts as "unavailable" the same as no time source at all, because
+      // syncing the unit against an unsynced clock would write a WRONG time.
+      return false;
+    }
+    dow_display = parser::dow_to_display(now.day_of_week);
+    hour = now.hour;
+    minute = now.minute;
+    return true;
+#else
+    (void) dow_display;
+    (void) hour;
+    (void) minute;
+    return false;  // no `time:` platform in this build at all
+#endif
+  });
 }
 
 void VentAxiaHub::loop() {

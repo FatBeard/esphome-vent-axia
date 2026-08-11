@@ -314,8 +314,16 @@ Poll GotoMenu::poll() {
 
 Poll LeaveMenu::poll() {
   switch (this->step_) {
-    // Exactly one tap -- see the class comment. Never looped, never retried.
+    // At most one tap -- see the class comment. If an editor is still open
+    // here (most likely a dropped commit Set upstream), Up would adjust the
+    // field under the cursor instead of navigating out -- the same trap
+    // Runner::recover() has guarded against since stage 6 (PLAN.md §3's
+    // 14C->19C observation). Skip straight to WAIT_EXIT and let the unit's
+    // own ~2-minute timeout close the editor without touching it.
     case TAP:
+      if (this->runner_->display().editor_open(this->runner_->now_ms())) {
+        return this->goto_step(WAIT_EXIT);
+      }
       this->runner_->tap(protocol::key_mask(protocol::Key::UP), MENU_TAP_MS);
       return this->goto_step(WAIT_TAP);
 
@@ -372,9 +380,22 @@ Poll OpenEditor::poll() {
 }
 
 void AdjustField::reset(ValueParser parse, DirectionFn direction, int target, int guard_limit) {
+  // The fixed-target form: a TargetFn that always returns the same value, so
+  // CHECK below has exactly one implementation for both this and the
+  // live-target overload -- see TargetFn's own comment.
+  this->reset(
+      parse, direction,
+      [target](int &out) {
+        out = target;
+        return true;
+      },
+      guard_limit);
+}
+
+void AdjustField::reset(ValueParser parse, DirectionFn direction, TargetFn target, int guard_limit) {
   this->parse_ = parse;
   this->direction_ = direction;
-  this->target_ = target;
+  this->target_ = std::move(target);
   this->guard_limit_ = guard_limit;
 }
 
@@ -385,33 +406,45 @@ Poll AdjustField::poll() {
     case CHECK: {
       // Step 1: the guard, not a timeout, is what bounds this loop -- see
       // the class comment. Reaching it means either the field genuinely
-      // cannot get to target_ (PLAN.md risk 6: Outdoor Temp's guessed range
-      // rejecting a value looks identical to a dropped press from here) or
-      // something is very wrong; either way the caller still needs to walk
-      // the editor out afterwards, same as every other failure in this
-      // component.
+      // cannot get to the target (PLAN.md risk 6: Outdoor Temp's guessed
+      // range rejecting a value looks identical to a dropped press from
+      // here) or something is very wrong; either way the caller still needs
+      // to walk the editor out afterwards, same as every other failure in
+      // this component.
       if (this->guard_count_ >= this->guard_limit_) {
         return Poll::FAILED;
       }
-      // Step 2: NOT an error if this fails to parse -- see class comment.
+      // Step 2: re-read the target fresh -- see TargetFn's own comment for
+      // why this matters (stage 7's clock fields) and why it can never fail
+      // for the fixed-target reset() overload. FAILED, not a silent stall,
+      // if it is genuinely unavailable: there is nothing to adjust towards.
+      int want = 0;
+      if (!this->target_ || !this->target_(want)) {
+        if (this->log_.error) {
+          this->log_.error("AdjustField: target unavailable -- aborting rather than adjusting towards an unknown "
+                            "value");
+        }
+        return Poll::FAILED;
+      }
+      // Step 3: NOT an error if this fails to parse -- see class comment.
       int cur = 0;
       if (!this->parse_(this->runner_->display().line2(), cur)) {
         return Poll::RUNNING;
       }
-      // Step 3.
-      if (cur == this->target_) {
+      // Step 4.
+      if (cur == want) {
         return Poll::DONE;
       }
-      // Step 4.
+      // Step 5.
       this->guard_count_++;
-      const bool up = this->direction_(cur, this->target_);
+      const bool up = this->direction_(cur, want);
       const protocol::KeyMask mask =
           up ? protocol::key_mask(protocol::Key::UP) : protocol::key_mask(protocol::Key::DOWN);
       this->runner_->tap(mask, MENU_TAP_MS);  // never Set -- always accepted, see Runner::tap()
       return this->goto_step(WAIT_CHANGE);
     }
 
-    // Step 5: never fires the next tap blind. Loops back to CHECK once line2
+    // Step 6: never fires the next tap blind. Loops back to CHECK once line2
     // has actually changed since the tap above, or after CHANGE_TIMEOUT_MS
     // regardless -- the guard in CHECK is what stops a genuinely stuck field
     // from looping forever, not this per-tap timeout.
@@ -485,6 +518,43 @@ bool parse_summer_mode_field(const std::string &line2, int &out) {
 bool parse_temp_field(const std::string &line2, int &out) { return parser::parse_field(line2, 0, 2, out); }
 
 bool direction_no_wrap(int cur, int want) { return cur < want; }
+
+// ------------------------------------------------------------ clock fields --
+
+bool parse_clock_day_field(const std::string &line2, int &out) {
+  // clock_rendered() first -- clock_day()'s own comment assumes it already
+  // passed, so calling it on a mid-blink frame (the day blanked, e.g.
+  // "    23:49") would read garbage rather than correctly failing.
+  if (!parser::clock_rendered(line2)) {
+    return false;
+  }
+  const int day = parser::clock_day(line2);
+  if (day < 0) {
+    return false;  // clock_rendered() passed but the three letters weren't a day name -- defensive, not expected
+  }
+  out = day;
+  return true;
+}
+
+bool parse_clock_hour_field(const std::string &line2, int &out) {
+  if (!parser::clock_rendered(line2)) {
+    return false;
+  }
+  out = parser::clock_hour(line2);
+  return true;
+}
+
+bool parse_clock_minute_field(const std::string &line2, int &out) {
+  if (!parser::clock_rendered(line2)) {
+    return false;
+  }
+  out = parser::clock_minute(line2);
+  return true;
+}
+
+bool direction_wrap_24(int cur, int want) { return parser::wrapped_delta(cur, want, 24) > 0; }
+
+bool direction_wrap_60(int cur, int want) { return parser::wrapped_delta(cur, want, 60) > 0; }
 
 std::optional<int> read_fresh_value(const Display &display, uint32_t since_ms, AdjustField::ValueParser parse) {
   if (display.line2_changed_at_ms() <= since_ms) {

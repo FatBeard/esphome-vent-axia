@@ -166,6 +166,12 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   /// collide with a write's own confirmation pass.
   void read_settings() { this->runner_.request(this->read_settings_); }
 
+  /// Starts SyncClock as a root sequence, same refuse-and-log shape as
+  /// fetch_diagnostics()/read_settings(). Used by button.py's
+  /// SyncClockButton and the vent_axia.sync_clock action; mhrv.yaml
+  /// schedules it weekly, Sunday 04:05 (PLAN.md §6).
+  void sync_clock() { this->runner_.request(this->sync_clock_); }
+
   /// Starts a WriteSetting run for the one bypass switch -- switch.py's
   /// VentAxiaSwitch::write_state() calls this, never publish_state()
   /// directly (PLAN.md §6 "Not optimistic"). Unrecognised keys (there is
@@ -299,6 +305,7 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   FetchDiagnostics fetch_diagnostics_;  // long-lived -- no dynamic allocation in steady state, PLAN.md §2
   ReadSettings read_settings_;          // the button's own instance -- see read_settings()'s comment
   WriteSetting write_setting_;          // shared by write_switch()/write_number() via start_write_()
+  SyncClock sync_clock_;                // stage 7 -- see sync_clock()
 
 #ifdef USE_TIME
   time::RealTimeClock *time_{nullptr};
@@ -369,6 +376,13 @@ class FetchDiagnosticsButton final : public button::Button, public Parented<Vent
 class ReadSettingsButton final : public button::Button, public Parented<VentAxiaHub> {
  protected:
   void press_action() override { this->parent_->read_settings(); }
+};
+
+/// Stage 7's sibling of FetchDiagnosticsButton/ReadSettingsButton, same
+/// shape -- see VentAxiaHub::sync_clock().
+class SyncClockButton final : public button::Button, public Parented<VentAxiaHub> {
+ protected:
+  void press_action() override { this->parent_->sync_clock(); }
 };
 #endif
 
@@ -462,6 +476,17 @@ template<typename... Ts> class FetchDiagnosticsAction final : public Action<Ts..
  public:
   explicit FetchDiagnosticsAction(VentAxiaHub *parent) : parent_(parent) {}
   void play(const Ts &.../*unused*/) override { this->parent_->fetch_diagnostics(); }
+
+ protected:
+  VentAxiaHub *parent_;
+};
+
+/// vent_axia.sync_clock -- stage 7's sibling of FetchDiagnosticsAction, same
+/// shape. See VentAxiaHub::sync_clock().
+template<typename... Ts> class SyncClockAction final : public Action<Ts...> {
+ public:
+  explicit SyncClockAction(VentAxiaHub *parent) : parent_(parent) {}
+  void play(const Ts &.../*unused*/) override { this->parent_->sync_clock(); }
 
  protected:
   VentAxiaHub *parent_;

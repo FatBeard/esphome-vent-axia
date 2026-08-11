@@ -6,109 +6,12 @@
 
 #include "frame_test_helper.h"
 #include "sequence.h"
+#include "sequence_test_helpers.h"
 
 using namespace esphome::vent_axia;
+using namespace vatest;
 
 namespace {
-
-constexpr protocol::KeyMask UP = protocol::key_mask(protocol::Key::UP);
-constexpr protocol::KeyMask DOWN = protocol::key_mask(protocol::Key::DOWN);
-constexpr protocol::KeyMask SET = protocol::key_mask(protocol::Key::SET);
-constexpr protocol::KeyMask MAIN = protocol::key_mask(protocol::Key::MAIN);
-
-// ------------------------------------------------------------- fixtures --
-
-/// Records every frame's mask alongside the `now_ms` it was sent at (via
-/// `current_now`, set by the test's own tick loop) so a test can tell a
-/// single held-down episode's retransmits apart from a genuinely new press
-/// -- see episodes_from() below. Same shape as test_keypad.cpp's
-/// RecordingSink, plus the timestamp GotoMenu/LeaveMenu/FetchDiagnostics
-/// tests need and test_keypad.cpp's don't.
-struct RecordingSink {
-  std::vector<std::pair<uint32_t, protocol::KeyMask>> frames;
-  const uint32_t *current_now{nullptr};
-
-  Keypad::FrameSink as_frame_sink() {
-    return [this](const uint8_t *data, size_t len) {
-      (void) len;
-      this->frames.emplace_back(*this->current_now, data[5]);
-    };
-  }
-};
-
-/// Collapses a RecordingSink's raw frames (several per press, retransmitted
-/// every tx_interval) into one entry per press EPISODE: a run of frames of
-/// the same mask is one episode, a new episode starts only after a gap
-/// bigger than one tx_interval could explain (100ms sits comfortably
-/// between the 20ms retransmit cadence and the 400ms mandatory key_gap, so
-/// it can only mean "the key actually went up and came back down", never a
-/// slow retransmit). This is what lets a test assert "exactly 5 Up taps",
-/// not just "some Up frames appeared".
-std::vector<protocol::KeyMask> episodes_from(const RecordingSink &sink) {
-  std::vector<protocol::KeyMask> episodes;
-  uint32_t last_ts = 0;
-  bool have_last = false;
-  for (const auto &f : sink.frames) {
-    if (!have_last || f.first - last_ts > 100) {
-      episodes.push_back(f.second);
-    }
-    last_ts = f.first;
-    have_last = true;
-  }
-  return episodes;
-}
-
-/// Records severities the same way test_keypad.cpp's RecordingLog does.
-/// Reused for Runner::LogSink, Keypad::LogSink and FetchDiagnostics::LogSink
-/// -- all three are literally the same type (Runner::LogSink and
-/// FetchDiagnostics::LogSink are `using` aliases of Keypad::LogSink, see
-/// sequence.h), so one fixture covers all of them.
-struct RecordingLog {
-  int info_count{0};
-  int warn_count{0};
-  int error_count{0};
-  std::string last_info;
-  std::string last_warn;
-  std::string last_error;
-
-  Keypad::LogSink as_log_sink() {
-    Keypad::LogSink sink;
-    sink.info = [this](const std::string &m) {
-      this->info_count++;
-      this->last_info = m;
-    };
-    sink.warn = [this](const std::string &m) {
-      this->warn_count++;
-      this->last_warn = m;
-    };
-    sink.error = [this](const std::string &m) {
-      this->error_count++;
-      this->last_error = m;
-    };
-    return sink;
-  }
-};
-
-/// Drives kp and runner together, exactly as VentAxiaHub::loop() does --
-/// both pumped independently every tick with the same now_ms (vent_axia.cpp:
-/// "Runner sits alongside Keypad, not on top of it").
-struct Clock {
-  Keypad &kp;
-  Runner &runner;
-  uint32_t now{0};
-
-  void tick() {
-    this->now += 20;
-    this->kp.loop(this->now);
-    this->runner.loop(this->now);
-  }
-  void advance(uint32_t ms) {
-    const uint32_t target = this->now + ms;
-    while (this->now < target) {
-      this->tick();
-    }
-  }
-};
 
 /// A Sequence whose behaviour is supplied by the test as std::functions,
 /// for exercising the ENGINE (Runner's stack/timeout/propagation) without
@@ -528,6 +431,51 @@ TEST_CASE(leave_menu_issues_exactly_one_up_tap) {
   CHECK_EQ(episodes[0], UP);
 }
 
+TEST_CASE(leave_menu_issues_no_up_tap_while_an_editor_is_open) {
+  // Finding 1's structural backstop, on the primitive directly: with
+  // Display::editor_open() true at TAP time, LeaveMenu must press NOTHING
+  // -- Up here would adjust the field under the cursor instead of
+  // navigating out (the class comment's 14C->19C observation), so the
+  // right move is to fall straight through to WAIT_EXIT and let the unit's
+  // own ~2-minute timeout close the editor untouched. Complements
+  // leave_menu_issues_exactly_one_up_tap (editor_open() false: a fresh
+  // Display, no frame ever received) and
+  // leave_menu_waits_out_the_unit_timeout_rather_than_pressing_again (also
+  // false, once aged past the settle window) -- this is the one case where
+  // it reads true.
+  Keypad kp;
+  Display disp;
+  disp.update(vatest::pad16("Set Clock"), vatest::pad16("Mon 12:00"), 0);  // a fresh frame -- editor_open() reads true
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+  RecordingSink sink;
+  Clock clock{kp, runner};
+  sink.current_now = &clock.now;
+  kp.set_frame_sink(sink.as_frame_sink());
+
+  LeaveMenu leave;
+  CHECK(runner.request(leave));
+
+  // The first poll (now=20ms) is well inside editor_open()'s ~1200ms settle
+  // window from the update() above -- TAP must decline to tap at all.
+  clock.advance(20);
+  CHECK(episodes_from(sink).empty());
+  CHECK(runner.busy());  // parked in WAIT_EXIT already, not TAP/WAIT_TAP
+
+  // Stays open for a while longer -- still nothing transmitted.
+  clock.advance(500);
+  CHECK(episodes_from(sink).empty());
+  CHECK(runner.busy());
+
+  // The unit's own timeout eventually closes the menu on its own; confirm
+  // LeaveMenu notices and finishes -- still without ever pressing Up.
+  disp.update(vatest::pad16("18%"), vatest::pad16(""), clock.now);
+  clock.advance(100);
+
+  CHECK(!runner.busy());
+  CHECK(episodes_from(sink).empty());
+}
+
 TEST_CASE(leave_menu_waits_out_the_unit_timeout_rather_than_pressing_again) {
   Keypad kp;
   Display disp;
@@ -538,6 +486,19 @@ TEST_CASE(leave_menu_waits_out_the_unit_timeout_rather_than_pressing_again) {
   Clock clock{kp, runner};
   sink.current_now = &clock.now;
   kp.set_frame_sink(sink.as_frame_sink());
+
+  // Age the display past Display::editor_open()'s own ~1200ms settle window
+  // before starting LeaveMenu -- stage 7a made LeaveMenu's own TAP step
+  // check editor_open() before pressing anything (Finding 1's structural
+  // backstop), and this fixture's single update() at t=0 would otherwise
+  // read as a freshly-opened editor for its own first ~1200ms purely because
+  // the frame is new, not because anything is actually being edited -- the
+  // exact false positive Display::editor_open()'s own class comment warns
+  // about ("line2 stopped changing cannot be observed as an edge"). This
+  // test means to simulate a settled, non-editing menu screen, so it must
+  // start past that window for editor_open() to read false, matching what
+  // it is actually testing.
+  clock.advance(1300);
 
   LeaveMenu leave;
   CHECK(runner.request(leave));
@@ -848,6 +809,38 @@ TEST_CASE(adjust_field_tolerates_a_blank_or_blinking_frame_without_erroring_or_r
   CHECK_EQ(episodes_from(sink).size(), static_cast<size_t>(2));  // taps again, correctly -- not stuck
   CHECK_EQ(episodes_from(sink)[1], DOWN);
   CHECK(runner.busy());  // 25 -> 20 needs more taps still; not finished by this one
+}
+
+TEST_CASE(adjust_field_reports_an_unavailable_target_through_an_installed_log_sink) {
+  // Finding 2 (stage 7a): AdjustField grew a log_ member and this exact
+  // error, but nothing ever called set_log_sink() on any of the
+  // AdjustField members that reuse it (SyncClock::adjust_field_,
+  // WriteSetting::adjust_field_) -- so the one genuinely new failure mode
+  // that stage introduced logged nothing at all. This is a direct unit test
+  // of AdjustField itself: install a log sink, give it a TargetFn that
+  // always reports "unavailable" (false), and assert the error actually
+  // arrives -- not just that the sequence fails.
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+  RecordingLog log;
+  Clock clock{kp, runner};
+
+  disp.update(vatest::pad16("Indoor Temp"), vatest::pad16("25 C"), 0);
+
+  AdjustField adjust;
+  adjust.set_log_sink(log.as_log_sink());
+  adjust.reset(
+      parse_temp_field, direction_no_wrap, [](int &) { return false; },  // target never available
+      40);
+  CHECK(runner.request(adjust));
+
+  clock.advance(100);
+
+  CHECK(!runner.busy());
+  CHECK_EQ(log.error_count, 1);
+  CHECK(log.last_error.find("target unavailable") != std::string::npos);
 }
 
 TEST_CASE(open_editor_retries_exactly_once_then_fails) {

@@ -367,12 +367,24 @@ class GotoMenu final : public Sequence {
   uint8_t index_{0};
 };
 
-/// Exactly ONE Up tap, then -- if the display is still showing a menu screen
-/// -- waits out the unit's own ~2-minute menu timeout rather than pressing
-/// again. PLAN.md §3: mashing Up would corrupt a setting if an editor is
-/// still open (observed on the real unit: a second Up silently walked a
-/// 14°C setpoint to 19°C). This is deliberate, measured behaviour, not
-/// laziness -- do not "helpfully" retry the tap.
+/// At most ONE Up tap -- never into an open editor -- then, if the display
+/// is still showing a menu screen, waits out the unit's own ~2-minute menu
+/// timeout rather than pressing again. PLAN.md §3: mashing Up would corrupt
+/// a setting if an editor is still open (observed on the real unit: a
+/// second Up silently walked a 14°C setpoint to 19°C). This is deliberate,
+/// measured behaviour, not laziness -- do not "helpfully" retry the tap.
+///
+/// Stage 7a widened the guard: TAP itself now checks Display::editor_open()
+/// before pressing anything, the same guard Runner::recover() has carried
+/// since stage 6 (see its own comment). This matters because LeaveMenu can
+/// run immediately after a sequence's own commit Set (SyncClock's LEAVE
+/// step, following its fourth/COMMIT Set) -- if that commit was dropped,
+/// the editor is still open, and Up would adjust the field under the cursor
+/// instead of navigating out, the exact 14°C->19°C failure above. So
+/// "exactly one Up" (the old contract) is now "at most one Up, and never
+/// into an open editor": when the editor is still open, TAP skips straight
+/// to WAIT_EXIT and lets the unit's own timeout close it without committing
+/// anything.
 class LeaveMenu final : public Sequence {
  public:
   const char *name() const override { return "LeaveMenu"; }
@@ -433,13 +445,18 @@ class OpenEditor final : public Sequence {
 ///  1. Bail (FAILED) if the guard is already exhausted -- bounds the loop so
 ///     a misread, or a value the unit refuses (PLAN.md risk 6, Outdoor
 ///     Temp's guessed range), cannot become a key-mashing runaway.
-///  2. Read and parse line2. A frame that fails to parse is NOT an error and
+///  2. Re-read the target via target_ (TargetFn, see below) -- FAILED,
+///     logged, if it is not available right now. For the fixed-target
+///     reset() overload this call can never fail; it only matters for stage
+///     7's clock fields, where "not available" means no time source at all
+///     or a clock that has not synced yet.
+///  3. Read and parse line2. A frame that fails to parse is NOT an error and
 ///     does not count against the guard: an open editor blanks its value on
 ///     alternate frames, and a blank temperature frame renders "   C", which
 ///     parse_field correctly rejects -- this just waits for the next frame.
-///  3. If the parsed value already equals the target, done.
-///  4. Otherwise tap Up or Down once -- direction_ decides which.
-///  5. Wait -- up to ~900ms -- for line2 to actually change before looping,
+///  4. If the parsed value already equals the (freshly re-read) target, done.
+///  5. Otherwise tap Up or Down once -- direction_ decides which.
+///  6. Wait -- up to ~900ms -- for line2 to actually change before looping,
 ///     so a dropped or doubled press self-corrects instead of the next tap
 ///     firing blind.
 class AdjustField final : public Sequence {
@@ -452,23 +469,62 @@ class AdjustField final : public Sequence {
   using ValueParser = bool (*)(const std::string &line2, int &out);
 
   /// True if the field needs to move UP to get from cur towards want, false
-  /// for DOWN. Only ever called once cur != want (see step 3 above). A
+  /// for DOWN. Only ever called once cur != want (see step 4 above). A
   /// parameter rather than a hardcoded `cur < want` because it is NOT always
   /// that simple: every field this stage writes is a plain sign comparison
   /// (none of the three wrap -- PLAN.md is explicit that parser::wrapped_delta
   /// would be actively wrong on all three, see direction_no_wrap() below),
   /// but stage 7's clock fields DO wrap and need a shortest-path version
-  /// instead, and this is the seam that lets them reuse this same class.
+  /// instead (direction_wrap_24/direction_wrap_60 below), and this is the
+  /// seam that lets them reuse this same class.
   using DirectionFn = bool (*)(int cur, int want);
+
+  /// Supplies the field's target, re-read fresh on every CHECK iteration
+  /// rather than fixed once at reset() time -- what stage 7's clock fields
+  /// need and WriteSetting's plain fields do not: the minute field alone can
+  /// take up to ~34 taps (each up to ~1.35s -- see guard_limit's callers),
+  /// long enough for a real minute (or even hour) rollover to happen
+  /// mid-adjustment, and re-reading is how the loop follows it instead of
+  /// chasing a target that is already stale by the time it gets there. The
+  /// old YAML's own adjust_minute script did exactly this, and said why in
+  /// so many words: "The target is re-read from Home Assistant on every
+  /// iteration". False means the target is not available right now (no time
+  /// source at all, or a clock that has not synced yet) -- see CHECK's
+  /// handling of that below.
+  ///
+  /// A std::function, not a raw function pointer like ValueParser/
+  /// DirectionFn above: those two are always one of a handful of stateless
+  /// free functions known at compile time, but a live target has to capture
+  /// something stateful to be live at all -- here, the hub's own clock
+  /// (VentAxiaHub::time_, guarded by USE_TIME -- see seq_sync_clock.cpp) --
+  /// and a bare function pointer cannot carry that capture. Assigned only at
+  /// reset()/configure() time, a handful of times per run rather than every
+  /// tick, so this is not the "no dynamic allocation in steady state" the
+  /// class comment elsewhere on this file cares about -- HoldUntil::Predicate
+  /// is the same shape for the same reason.
+  using TargetFn = std::function<bool(int &out)>;
+
+  using LogSink = Keypad::LogSink;
+  void set_log_sink(LogSink sink) { this->log_ = std::move(sink); }
 
   AdjustField() = default;
 
-  /// Reconfigures for a fresh field. Must only be called while this instance
-  /// is NOT on the Runner's stack, same rule as HoldUntil::reset(). A single
-  /// long-lived instance serves every field WriteSetting can write (and,
-  /// stage 7, every clock field SyncClock can) -- see PLAN.md's "no dynamic
-  /// allocation in steady state".
+  /// The fixed-target form every field but the clock's uses (WriteSetting) --
+  /// implemented in terms of the live-target overload below via a capturing
+  /// lambda that always returns the same value, so there is exactly one
+  /// CHECK implementation for both shapes. Must only be called while this
+  /// instance is NOT on the Runner's stack, same rule as HoldUntil::reset().
+  /// A single long-lived instance serves every field WriteSetting can write
+  /// -- see PLAN.md's "no dynamic allocation in steady state".
   void reset(ValueParser parse, DirectionFn direction, int target, int guard_limit);
+
+  /// Stage 7's live-target form -- see TargetFn's own comment for why
+  /// SyncClock needs this and WriteSetting does not. Must only be called
+  /// while this instance is NOT on the Runner's stack, same rule as
+  /// HoldUntil::reset(). SyncClock reuses ONE long-lived instance across its
+  /// day/hour/minute steps, same "no dynamic allocation in steady state"
+  /// reasoning as WriteSetting's own use of this class.
+  void reset(ValueParser parse, DirectionFn direction, TargetFn target, int guard_limit);
 
   const char *name() const override { return "AdjustField"; }
   void on_start() override;
@@ -481,9 +537,10 @@ class AdjustField final : public Sequence {
 
   ValueParser parse_{nullptr};
   DirectionFn direction_{nullptr};
-  int target_{0};
+  TargetFn target_;
   int guard_limit_{0};
   int guard_count_{0};
+  LogSink log_;
 };
 
 /// The walk-out: leaves any open editor without changing a thing, by
@@ -561,6 +618,37 @@ bool direction_no_wrap(int cur, int want);
 /// timeout. Shared because ReadSettings' plain screens and WriteSetting's
 /// VERIFY step both need exactly this.
 std::optional<int> read_fresh_value(const Display &display, uint32_t since_ms, AdjustField::ValueParser parse);
+
+// ------------------------------------------------------------ clock fields --
+// Stage 7's SyncClock (seq_sync_clock.cpp): the Set Clock screen's three
+// fields, shaped to match AdjustField::ValueParser/DirectionFn exactly like
+// the settings fields above -- one AdjustField, three table rows in spirit,
+// even though the clock's "table" is just three named calls rather than an
+// array (there being only ever three rows, unlike SettingSpec's three that
+// are expected to grow).
+
+/// Set Clock's day field. Rejects anything parser::clock_rendered() would --
+/// a mid-blink frame, e.g. "    23:49" with the day blanked -- rather than
+/// partially decoding it; see parser::clock_day's own comment for why that
+/// assumption is safe once clock_rendered() has passed.
+bool parse_clock_day_field(const std::string &line2, int &out);
+bool parse_clock_hour_field(const std::string &line2, int &out);
+bool parse_clock_minute_field(const std::string &line2, int &out);
+
+/// Shortest-path direction for a field that wraps at 24 (the hour field) --
+/// parser::wrapped_delta > 0 means "up is the fewer signed presses", not
+/// merely "up is numerically larger" the way direction_no_wrap reads. This
+/// is for hour and minute (direction_wrap_60 below) ONLY -- the day field
+/// uses direction_no_wrap, same as every other non-wrapping field on this
+/// unit, because it does NOT wrap: Up on Sun does nothing at all (observed
+/// on the real unit, mhrv_orig/controls.yaml's own clock-sync comment). That
+/// is the one place the three clock fields genuinely differ from each other,
+/// so it is worth being explicit here rather than letting SyncClock's table
+/// of three calls be the only place it shows up.
+bool direction_wrap_24(int cur, int want);
+
+/// Same, at modulus 60, for the minute field.
+bool direction_wrap_60(int cur, int want);
 
 /// PLAN.md §3: Up+Main to enter the diagnostic menu, hold Down 8s to auto-
 /// scroll through every page, then the verified two-stage exit (release,
@@ -749,10 +837,14 @@ class WriteSetting final : public Sequence {
 
   void set_log_sink(LogSink sink) {
     this->log_ = sink;
-    // Forwarded once, here -- exit_chain_ and read_back_ are private members
-    // the hub cannot reach directly. read_back_ is a full ReadSettings, so
-    // this also reaches ITS OWN exit_chain_ (see ReadSettings::set_log_sink).
+    // Forwarded once, here -- exit_chain_, adjust_field_ and read_back_ are
+    // private members the hub cannot reach directly. read_back_ is a full
+    // ReadSettings, so this also reaches ITS OWN exit_chain_ (see
+    // ReadSettings::set_log_sink). adjust_field_ forwarding added stage 7a --
+    // it previously had a log_ member and an unavailable-target error with
+    // nothing wired up to receive it, so that failure mode logged nothing.
     this->exit_chain_.set_log_sink(sink);
+    this->adjust_field_.set_log_sink(sink);
     this->read_back_.set_log_sink(std::move(sink));
   }
   void set_on_switch(ReadSettings::SwitchSink sink) { this->read_back_.set_on_switch(std::move(sink)); }
@@ -821,6 +913,164 @@ class WriteSetting final : public Sequence {
   ReadSettings read_back_;
 
   LogSink log_;
+};
+
+// ---------------------------------------------------------------- SyncClock --
+// Stage 7: the Set Clock screen, PLAN.md §3's remaining stage-7 sequence that
+// touches this file (SetAirflowMode/ResetFilter/ManualKey are separate
+// deliverables). Ported from mhrv_orig/controls.yaml's sync_clock/
+// sync_clock_run/adjust_day/adjust_hour/adjust_minute scripts -- see this
+// class's own comment and seq_sync_clock.cpp for where each observation on
+// the physical unit landed.
+
+/// Corrects the unit's own clock against wall-clock time, one field at a
+/// time through the Set Clock editor. How the editor behaves, measured on
+/// the real unit (mhrv_orig/controls.yaml's own comment, carried forward
+/// here): Set enters on the day field; each further Set accepts the current
+/// field and advances to the next; a FOURTH Set commits and drops out of the
+/// editor. The field being edited blinks (blanks on alternate frames --
+/// Display::editor_open()'s own signal), which is both how the unit shows
+/// which field is active and why parse_clock_*_field() above only ever
+/// trusts a fully rendered frame. Day does not wrap (Up on Sun does
+/// nothing); hour and minute do, and take the shortest path
+/// (direction_wrap_24/60 above). Main is never pressed anywhere in this
+/// sequence: on this unit Main is Boost, and the old script says so in as
+/// many words.
+///
+/// If anything is not where it is expected -- wrong screen, an unreadable
+/// clock, no time source -- this bails out and leaves the display alone
+/// (see VERIFY/CHECK_TIME below); the unit returns to its normal screen on
+/// its own two-minute timeout, same as every other sequence in this
+/// component that fails before committing anything.
+///
+/// The fourth (COMMIT) Set is not itself retried or verified the way
+/// OpenEditor verifies the first -- SETTLE and EXIT_CHAIN below stand in for
+/// that. If COMMIT's Set was dropped, the editor is still open once SETTLE
+/// has waited long enough to tell (Display::editor_open(), gated on a
+/// window deliberately longer than editor_open()'s own settle window --
+/// see SETTLE_MS's own comment), and EXIT_CHAIN runs ExitEditChain to walk
+/// it closed with more Sets before LEAVE ever taps Up. LeaveMenu's own TAP
+/// step also refuses to tap into an open editor, as a structural backstop
+/// -- but EXIT_CHAIN is what actually recovers the run; LeaveMenu merely
+/// keeps a recovery failure from making things worse.
+///
+/// A long-lived hub member, reused on every scheduled or button-triggered
+/// run -- see PLAN.md's "no dynamic allocation in steady state". There is no
+/// real per-run state to reset in on_start(): nav_started_ms_ is written
+/// fresh at NAVIGATE (always step 0 of a new run), and every AdjustField
+/// child resets its own guard_count_ in ITS on_start(), called automatically
+/// each time this pushes it via await().
+class SyncClock final : public Sequence {
+ public:
+  using LogSink = Keypad::LogSink;
+
+  /// Wall-clock time to sync the unit's own clock to, injected the same way
+  /// FetchDiagnostics::SuccessSink lets the hub touch wall-clock time from
+  /// the other side of the portable-core boundary (README "Portable core"):
+  /// this file never includes esphome/components/time/real_time_clock.h.
+  /// Mon=0..Sun=6 (parser::dow_to_display's convention), hour 0-23, minute
+  /// 0-59. False when there is no time source at all (no `time_id`
+  /// configured, or USE_TIME undefined -- see vent_axia.h ~line 303) or the
+  /// clock has not synced yet (ESPTime::is_valid() false) -- a sync against
+  /// an unsynced clock would write a WRONG time to the unit, which is worse
+  /// than not syncing at all, so both count as "unavailable" the same way.
+  using TimeSource = std::function<bool(int &dow_display, int &hour, int &minute)>;
+
+  void set_log_sink(LogSink sink) {
+    this->log_ = sink;
+    // Forwarded, here, rather than every run -- adjust_field_ and
+    // exit_chain_ are private members the hub cannot reach directly, same
+    // pattern as ReadSettings::set_log_sink/WriteSetting::set_log_sink.
+    // adjust_field_ forwarding added stage 7a -- see WriteSetting's own
+    // set_log_sink comment for why that one mattered.
+    this->adjust_field_.set_log_sink(sink);
+    this->exit_chain_.set_log_sink(std::move(sink));
+  }
+  void set_time_source(TimeSource source) { this->time_source_ = std::move(source); }
+
+  const char *name() const override { return "SyncClock"; }
+  Poll poll() override;
+  void on_finish(Poll result) override;
+
+  // Worst case: the three guard limits (8+14+34 = 56 taps -- the old
+  // script's own numbers, carried into DAY_GUARD/HOUR_GUARD/MINUTE_GUARD
+  // below) each up to ~1.35s (AdjustField's own worst case: WAIT_CHANGE's
+  // 900ms plus a tap and its mandatory key_gap, ~450ms) -- 56 * 1.35s =~
+  // 76s -- plus NAVIGATE's GotoMenu(1) (a handful of seconds, ~4s), VERIFY's
+  // 3s budget, OPEN's own worst case (one retry: two Set-tap-plus-700ms-
+  // settle cycles, ~2.3s), three plain Set taps advancing/committing the
+  // editor (~1.35s), SETTLE's now-1800ms wait (~1.8s -- raised stage 7a from
+  // the old script's 700ms; see SETTLE_MS's own comment for why), EXIT_
+  // CHAIN's own worst case if the commit Set was dropped and the fourth Set
+  // never actually landed (~157s -- ExitEditChain's own 4-commits-then-150s-
+  // fallback shape, the same figure ReadSettings'/WriteSetting's own
+  // timeout_ms() comments use), and LEAVE's own worst case (a tap plus
+  // LeaveMenu::WAIT_TIMEOUT_MS, ~130.5s) if the editor still somehow has not
+  // closed by then. Roughly 76 + 4 + 3 + 2.3 + 1.35 + 1.8 + 157 + 130.5 =~
+  // 376s -- the old 300s budget no longer has headroom above that, so this
+  // is raised to 450s (~74s of headroom), same "comfortable, not cutting it
+  // close" reasoning as WriteSetting's own timeout_ms().
+  uint32_t timeout_ms() const override { return 450000; }
+
+ private:
+  enum Step : uint8_t {
+    NAVIGATE,
+    VERIFY,
+    CHECK_TIME,
+    OPEN,
+    ADJUST_DAY,
+    SET_DAY,
+    WAIT_SET_DAY,
+    ADJUST_HOUR,
+    SET_HOUR,
+    WAIT_SET_HOUR,
+    ADJUST_MINUTE,
+    COMMIT,
+    WAIT_COMMIT,
+    SETTLE,
+    EXIT_CHAIN,
+    LEAVE,
+    FINISHED,
+  };
+
+  static constexpr uint32_t VERIFY_TIMEOUT_MS = 3000;  // matches WriteSetting::VERIFY's own budget
+  // NOT the old script's 700ms: that delay only ever gated a log line, but
+  // this one also gates EXIT_CHAIN's decision of whether the commit Set
+  // actually landed (Display::editor_open() below) -- so, unlike the old
+  // delay, it has to outlast editor_open()'s own ~1200ms default settle
+  // window for that check to mean anything, the same reason
+  // ExitEditChain::COMMIT_SETTLE_MS is 1800ms rather than reusing
+  // OpenEditor::SETTLE_MS's 700ms (see that constant's own comment).
+  // Settling on the SAME 1800ms here rather than inventing a third number.
+  static constexpr uint32_t SETTLE_MS = 1800;
+
+  // The old script's own guard numbers (mhrv_orig/controls.yaml's
+  // adjust_day/adjust_hour/adjust_minute comments): the day field needs at
+  // most 6 presses, the hour 12, the minute 30 -- each with headroom, same
+  // "bound the loop, don't trust luck" reasoning as every other guard_limit
+  // in this component (PLAN.md risk 6).
+  static constexpr int DAY_GUARD = 8;
+  static constexpr int HOUR_GUARD = 14;
+  static constexpr int MINUTE_GUARD = 34;
+
+  bool day_target_(int &out) const;
+  bool hour_target_(int &out) const;
+  bool minute_target_(int &out) const;
+  /// Shared by CHECK_TIME's initial log and SETTLE's before/after one --
+  /// "Ddd HH:MM" from a TimeSource reading, or "unknown" if none is
+  /// available right now (SETTLE's own read is best-effort logging only, not
+  /// a condition anything branches on -- the sync already happened).
+  std::string describe_target_() const;
+
+  GotoMenu goto_menu_;      // NAVIGATE only, but reset()-able the same as every other sequence's copy
+  OpenEditor open_editor_;
+  AdjustField adjust_field_;  // reused for ADJUST_DAY, ADJUST_HOUR and ADJUST_MINUTE -- reset() before each
+  ExitEditChain exit_chain_;  // EXIT_CHAIN only -- runs only if the commit Set was dropped, see class comment
+  LeaveMenu leave_menu_;
+
+  uint32_t nav_started_ms_{0};
+  LogSink log_;
+  TimeSource time_source_;
 };
 
 }  // namespace vent_axia
