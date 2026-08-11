@@ -705,3 +705,542 @@ TEST_CASE(fetch_diagnostics_leaves_real_silence_between_the_down_and_up_holds) {
   CHECK(sink.frames.size() > frames_at_release);
   CHECK_EQ(sink.frames.back().second, UP);
 }
+
+// ===================================================== editing model (6) --
+// OpenEditor, AdjustField, ExitEditChain -- PLAN.md's "The unit's editing
+// model". Set is the only key ever safe once an editor is open, so these
+// three are the only things in the component allowed to open one, adjust a
+// value inside one, or walk one closed.
+
+TEST_CASE(adjust_field_steps_the_right_direction_and_stops_at_target) {
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+  RecordingSink sink;
+  Clock clock{kp, runner};
+  sink.current_now = &clock.now;
+  kp.set_frame_sink(sink.as_frame_sink());
+
+  disp.update(vatest::pad16("Indoor Temp"), vatest::pad16("25 C"), 0);
+
+  AdjustField adjust;
+  adjust.reset(parse_temp_field, direction_no_wrap, 20, 40);
+  CHECK(runner.request(adjust));
+
+  // Simulates the unit ticking the value down one degree per Down tap --
+  // exactly what the closed loop expects: a fresh, still-unequal value keeps
+  // it going, and only a value that actually equals the target stops it.
+  int value = 25;
+  for (int i = 0; i < 5; i++) {
+    clock.advance(300);  // let the queued tap actually fire
+    value--;
+    disp.update(vatest::pad16("Indoor Temp"), vatest::pad16(std::to_string(value) + " C"), clock.now);
+    clock.advance(300);  // let AdjustField notice the change and loop back
+  }
+  clock.advance(200);
+
+  CHECK(!runner.busy());
+  CHECK(!kp.busy());  // no key left asserted
+  const auto episodes = episodes_from(sink);
+  CHECK_EQ(episodes.size(), static_cast<size_t>(5));
+  for (const auto mask : episodes) {
+    CHECK_EQ(mask, DOWN);
+  }
+}
+
+TEST_CASE(adjust_field_respects_its_guard_limit_rather_than_looping_forever) {
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+  RecordingSink sink;
+  Clock clock{kp, runner};
+  sink.current_now = &clock.now;
+  kp.set_frame_sink(sink.as_frame_sink());
+
+  // Line2 never moves -- simulates a value the unit refuses to accept
+  // (PLAN.md risk 6) or a run of dropped presses. Summer Mode's own guard
+  // (3, mhrv_orig/summer_bypass.yaml) so the test does not need to simulate
+  // 40 stuck taps.
+  disp.update(vatest::pad16("Summer Mode"), vatest::pad16("Off"), 0);
+
+  AdjustField adjust;
+  adjust.reset(parse_summer_mode_field, direction_no_wrap, 1 /* want On */, 3);
+  CHECK(runner.request(adjust));
+
+  clock.advance(6000);  // 3 guard taps, each waiting out the ~900ms change timeout, plus margin
+
+  CHECK(!runner.busy());
+  CHECK(!kp.busy());
+  const auto episodes = episodes_from(sink);
+  // 3 guard taps -- never a 4th, the guard rather than luck stopped it --
+  // plus one more from Runner::recover(): the sequence failed on a menu
+  // screen with no editor open (line2 has been frozen well past the settle
+  // window), so recovery correctly walks out with a single Up.
+  CHECK_EQ(episodes.size(), static_cast<size_t>(4));
+  for (const auto mask : episodes) {
+    CHECK_EQ(mask, UP);
+  }
+}
+
+TEST_CASE(adjust_field_waits_for_line2_to_change_before_tapping_again) {
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+  RecordingSink sink;
+  Clock clock{kp, runner};
+  sink.current_now = &clock.now;
+  kp.set_frame_sink(sink.as_frame_sink());
+
+  disp.update(vatest::pad16("Indoor Temp"), vatest::pad16("25 C"), 0);
+
+  AdjustField adjust;
+  adjust.reset(parse_temp_field, direction_no_wrap, 20, 40);
+  CHECK(runner.request(adjust));
+
+  clock.advance(500);  // the first tap fires and its gap clears
+  CHECK_EQ(episodes_from(sink).size(), static_cast<size_t>(1));
+
+  // Line2 has NOT changed -- still "25 C". Even though the keypad itself is
+  // idle again, a second tap must not fire yet: never blind.
+  clock.advance(300);  // ~800ms since the tap -- inside the ~900ms change window
+  CHECK_EQ(episodes_from(sink).size(), static_cast<size_t>(1));
+
+  clock.advance(400);  // now well past 900ms -- the timeout itself allows the retry
+  CHECK_EQ(episodes_from(sink).size(), static_cast<size_t>(2));
+}
+
+TEST_CASE(adjust_field_tolerates_a_blank_or_blinking_frame_without_erroring_or_reading_it_as_zero) {
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+  RecordingSink sink;
+  Clock clock{kp, runner};
+  sink.current_now = &clock.now;
+  kp.set_frame_sink(sink.as_frame_sink());
+
+  disp.update(vatest::pad16("Indoor Temp"), vatest::pad16("25 C"), 0);
+
+  AdjustField adjust;
+  adjust.reset(parse_temp_field, direction_no_wrap, 20, 40);
+  CHECK(runner.request(adjust));
+
+  clock.advance(500);  // the first tap (25 -> Down) fires
+  CHECK_EQ(episodes_from(sink).size(), static_cast<size_t>(1));
+
+  // The editor blinks: line2 goes blank for a frame -- "   C", not "" -- the
+  // real rendering of a mid-blink temperature field (parser.h). This must
+  // NOT be read as 0, must NOT fail the sequence, and must NOT itself
+  // provoke a tap.
+  disp.update(vatest::pad16("Indoor Temp"), vatest::pad16("   C"), clock.now);
+  clock.advance(300);
+
+  CHECK(runner.busy());  // still running -- not FAILED, not DONE
+  CHECK_EQ(episodes_from(sink).size(), static_cast<size_t>(1));  // the blank frame alone did not tap
+
+  // The blink resolves back to the real (unmoved) value.
+  disp.update(vatest::pad16("Indoor Temp"), vatest::pad16("25 C"), clock.now);
+  clock.advance(500);
+
+  CHECK_EQ(episodes_from(sink).size(), static_cast<size_t>(2));  // taps again, correctly -- not stuck
+  CHECK_EQ(episodes_from(sink)[1], DOWN);
+  CHECK(runner.busy());  // 25 -> 20 needs more taps still; not finished by this one
+}
+
+TEST_CASE(open_editor_retries_exactly_once_then_fails) {
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+  RecordingSink sink;
+  Clock clock{kp, runner};
+  sink.current_now = &clock.now;
+  kp.set_frame_sink(sink.as_frame_sink());
+
+  disp.update(vatest::pad16("Indoor Temp"), vatest::pad16("25 C"), 0);
+  // Let the initial update go stale so editor_open() reads false from the
+  // start -- otherwise its own default ~1200ms settle window would read as
+  // "just opened" purely from this setup call, not from anything Set did.
+  clock.advance(1300);
+
+  OpenEditor open_editor;
+  CHECK(runner.request(open_editor));
+
+  // Nothing ever updates line2 again -- Set is tapped, but no editor ever
+  // opens. Two full tap+700ms-settle cycles, comfortably.
+  clock.advance(2500);
+  // ...then long enough for recover()'s walk-out tap and its mandatory gap to
+  // finish, so the "no key left asserted" check below is about the sequence
+  // having cleaned up rather than about catching recovery mid-tap.
+  clock.advance(600);
+
+  CHECK(!runner.busy());
+  CHECK(!kp.busy());  // no key left asserted
+  const auto episodes = episodes_from(sink);
+  // Two Sets -- exactly one retry -- then Runner::recover()'s single Up. No
+  // editor ever opened here, so walking out with Up is the safe gesture; had
+  // one been open, recover() would have left it to the unit's own timeout.
+  CHECK_EQ(episodes.size(), static_cast<size_t>(3));
+  CHECK_EQ(episodes[0], SET);
+  CHECK_EQ(episodes[1], SET);
+  CHECK_EQ(episodes[2], UP);
+}
+
+TEST_CASE(open_editor_succeeds_on_the_first_try_when_the_editor_actually_opens) {
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+  RecordingSink sink;
+  Clock clock{kp, runner};
+  sink.current_now = &clock.now;
+  kp.set_frame_sink(sink.as_frame_sink());
+
+  disp.update(vatest::pad16("Indoor Temp"), vatest::pad16("25 C"), 0);
+  clock.advance(1300);
+
+  OpenEditor open_editor;
+  CHECK(runner.request(open_editor));
+
+  clock.advance(600);  // the Set tap (50ms) fires and its 400ms gap clears
+  // The editor starts blinking -- any change counts as the "opened" signal.
+  disp.update(vatest::pad16("Indoor Temp"), vatest::pad16(""), clock.now);
+  clock.advance(900);  // past the 700ms settle -- editor_open() now reads true
+
+  CHECK(!runner.busy());
+  CHECK(!kp.busy());
+  CHECK_EQ(episodes_from(sink).size(), static_cast<size_t>(1));  // no retry needed
+}
+
+TEST_CASE(exit_edit_chain_presses_only_set_up_to_4_times_then_falls_back_to_waiting_out_the_timeout) {
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+  RecordingSink sink;
+  RecordingLog log;
+  Clock clock{kp, runner};
+  sink.current_now = &clock.now;
+  kp.set_frame_sink(sink.as_frame_sink());
+
+  // A perpetually blinking editor -- the unit never actually closes it, the
+  // exact scenario this primitive's fallback exists for.
+  disp.update(vatest::pad16("Indoor Temp"), vatest::pad16("20 C"), 0);
+
+  ExitEditChain exit_chain;
+  exit_chain.set_log_sink(log.as_log_sink());
+  CHECK(runner.request(exit_chain));
+
+  bool blink = false;
+  while (runner.busy()) {
+    blink = !blink;
+    disp.update(vatest::pad16("Indoor Temp"), vatest::pad16(blink ? "20 C" : "   C"), clock.now);
+    clock.advance(300);  // well under the 1200ms settle window -- keeps editor_open() true throughout
+  }
+
+  CHECK(!kp.busy());  // no key left asserted, however this ended
+  const auto episodes = episodes_from(sink);
+  CHECK_EQ(episodes.size(), static_cast<size_t>(4));  // MAX_COMMITS -- never more
+  for (const auto mask : episodes) {
+    CHECK_EQ(mask, SET);  // never Up or Down -- see class comment
+  }
+  CHECK(log.warn_count >= 1);  // logged the fallback
+}
+
+TEST_CASE(exit_edit_chain_stops_as_soon_as_the_editor_is_seen_closed) {
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+  RecordingSink sink;
+  Clock clock{kp, runner};
+  sink.current_now = &clock.now;
+  kp.set_frame_sink(sink.as_frame_sink());
+
+  disp.update(vatest::pad16("Indoor Temp"), vatest::pad16("20 C"), 0);
+  clock.advance(1300);  // stale -- editor_open() reads false already, nothing to walk out of
+
+  ExitEditChain exit_chain;
+  CHECK(runner.request(exit_chain));
+  clock.advance(100);
+
+  CHECK(!runner.busy());
+  CHECK(!kp.busy());
+  CHECK(episodes_from(sink).empty());  // never pressed Set at all -- there was nothing open
+}
+
+// ============================================================ WriteSetting --
+
+TEST_CASE(write_setting_runs_navigate_open_adjust_commit_exit_readback_in_order) {
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+  RecordingSink sink;
+  Clock clock{kp, runner};
+  sink.current_now = &clock.now;
+  kp.set_frame_sink(sink.as_frame_sink());
+
+  WriteSetting write_setting;
+  write_setting.configure(SettingId::SUMMER_MODE, 1);  // want On
+  CHECK(runner.request(write_setting));
+
+  // NAVIGATE (GotoMenu(2)) never looks at the display; provide the arrival
+  // screen well after navigation starts so VERIFY's freshness check (newer
+  // than nav_started_ms_) is satisfied for the rest of this run -- nothing
+  // else updates line1/line2 to "Summer Mode" again until READ_BACK's own
+  // pass gets there.
+  clock.advance(100);
+  disp.update(vatest::pad16("Summer Mode"), vatest::pad16("Off"), clock.now);
+  clock.advance(4500);  // GotoMenu(2): 5 Up + settle + 2 Down + settle
+  clock.advance(300);   // let VERIFY notice, well before OPEN's own Set tap can land
+
+  // OPEN (OpenEditor): wait for its first Set tap to actually register --
+  // robust to exactly how long GotoMenu/VERIFY took above -- then blink for
+  // long enough to cover its one possible retry (~1.15s: tap+gap+700ms
+  // settle) before settling steadily on "Off".
+  const size_t before_open = episodes_from(sink).size();
+  while (episodes_from(sink).size() == before_open) {
+    clock.advance(20);
+  }
+  for (int i = 0; i < 5; i++) {
+    disp.update(vatest::pad16("Summer Mode"), vatest::pad16(i % 2 == 0 ? "" : "Off"), clock.now);
+    clock.advance(300);
+  }
+  disp.update(vatest::pad16("Summer Mode"), vatest::pad16("Off"), clock.now);
+  clock.advance(200);
+
+  // ADJUST (AdjustField): Off(0) -> On(1). Usually one Up tap, but the
+  // blinking above and this step can legitimately overlap by a tick or two
+  // (this is simulating two independent, un-synchronised timers, same as
+  // the real unit and this component would be) -- see the episode-run
+  // assertions below, which accept one or more Up taps here rather than
+  // assuming a precise count.
+  clock.advance(500);  // an Up tap fires
+  disp.update(vatest::pad16("Summer Mode"), vatest::pad16("On"), clock.now);
+  clock.advance(300);  // AdjustField notices, cur == target, DONE
+
+  // COMMIT, SETTLE (1800ms), EXIT_CHAIN (the "On" update above is by now
+  // well past its 1200ms settle window, so editor_open() already reads
+  // false -- nothing to walk out of), HOME, and READ_BACK's own navigation:
+  // none of it needs the display faked any further. ReadSettings never
+  // hard-fails on a value it cannot confirm (see its class comment) -- this
+  // test only cares that every step runs, in order, not that the read-back
+  // finds a value.
+  clock.advance(30000);
+
+  CHECK(!runner.busy());
+  CHECK(!kp.busy());  // no key left asserted, run to completion
+  const auto episodes = episodes_from(sink);
+  CHECK(episodes.size() > 10);
+
+  // NAVIGATE: 5 Up, then 2 Down (menu index 2).
+  for (size_t i = 0; i < 5; i++) {
+    CHECK_EQ(episodes[i], UP);
+  }
+  CHECK_EQ(episodes[5], DOWN);
+  CHECK_EQ(episodes[6], DOWN);
+
+  // OPEN: a run of one or more Set taps (OpenEditor retries at most once;
+  // exactly how many lands here depends on tick alignment between the
+  // simulated blink and the sequence's own timers, not on anything this
+  // test should be pinning down -- see the comment above).
+  size_t idx = 7;
+  CHECK(idx < episodes.size());
+  CHECK_EQ(episodes[idx], SET);
+  while (idx < episodes.size() && episodes[idx] == SET) {
+    idx++;
+  }
+
+  // ADJUST: a run of one or more Up taps -- Off -> On, the value-changing
+  // direction, never Down.
+  CHECK(idx < episodes.size());
+  CHECK_EQ(episodes[idx], UP);
+  while (idx < episodes.size() && episodes[idx] == UP) {
+    idx++;
+  }
+
+  // COMMIT: the next Set -- exactly one, and the LAST Set this run ever
+  // presses.
+  CHECK(idx < episodes.size());
+  CHECK_EQ(episodes[idx], SET);
+  idx++;
+
+  // Everything after COMMIT is EXIT_CHAIN/HOME/READ_BACK -- navigation
+  // only. ExitEditChain closed immediately (nothing was open by then), and
+  // nothing past this point ever presses Set again.
+  for (size_t i = idx; i < episodes.size(); i++) {
+    CHECK(episodes[i] == UP || episodes[i] == DOWN);
+  }
+  // READ_BACK genuinely ran (its own GotoMenu(2)+GotoMenu(3)+GotoMenu(0)),
+  // not just HOME on its own -- a fixed HOME-only tail would be 5 episodes.
+  CHECK(episodes.size() > idx + 5);
+}
+
+TEST_CASE(write_setting_reaches_exit_edit_chain_on_the_outdoor_hop_failure_path) {
+  // PLAN.md: Outdoor Temp's hop can leave an editor open whether or not it
+  // landed on the right screen, so EXIT_CHAIN must be reached even when the
+  // hop fails -- this is the failure-path half of the funnel design (the
+  // success half is exercised, less directly, by the SUMMER_MODE test
+  // above reaching EXIT_CHAIN too).
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+  RecordingSink sink;
+  RecordingLog log;
+  Clock clock{kp, runner};
+  sink.current_now = &clock.now;
+  kp.set_frame_sink(sink.as_frame_sink());
+
+  WriteSetting write_setting;
+  write_setting.set_log_sink(log.as_log_sink());
+  write_setting.configure(SettingId::OUTDOOR_TEMP, 14);
+  CHECK(runner.request(write_setting));
+
+  // NAVIGATE lands on Indoor Temp (Outdoor Temp's own row targets it) --
+  // provide a fresh, parseable value so VERIFY passes.
+  clock.advance(100);
+  disp.update(vatest::pad16("Indoor Temp"), vatest::pad16("25 C"), clock.now);
+  clock.advance(4700);  // GotoMenu(3): 5 Up + settle + 3 Down + settle
+  clock.advance(300);
+
+  // OPEN: blink between blank and "25 C" for a few seconds -- comfortably
+  // covers OpenEditor's worst case (one retry, ~2.3s) whatever tick exactly
+  // its Set tap and 700ms settle land on -- then let it succeed on Indoor
+  // Temp.
+  for (int i = 0; i < 12; i++) {
+    disp.update(vatest::pad16("Indoor Temp"), vatest::pad16(i % 2 == 0 ? "" : "25 C"), clock.now);
+    clock.advance(300);
+  }
+
+  // HOP_COMMIT taps Set to step past Indoor Temp -- but the display never
+  // shows "Outdoor Temp" (simulating the chain closing outright instead of
+  // advancing, which PLAN.md records as an observed real outcome). This is
+  // a plain runner_->tap(), not OpenEditor, so it fires exactly once; give
+  // it time to fire, then let WAIT_HOP_SCREEN's 3000ms timeout elapse.
+  clock.advance(500);
+  clock.advance(3300);  // WAIT_HOP_SCREEN gives up
+
+  // EXIT_CHAIN (closes immediately -- the last real change is long stale by
+  // now), HOME, and READ_BACK's own full navigation pass, none of which
+  // needs the display faked any further -- same reasoning as the SUMMER_MODE
+  // test above.
+  clock.advance(30000);
+
+  CHECK(!runner.busy());
+  CHECK(!kp.busy());  // no key left asserted, however this ended
+
+  // Reached EXIT_CHAIN despite the hop failing: after OPEN's Set tap(s) --
+  // one or two, OpenEditor retries at most once -- and HOP_COMMIT's single
+  // Set, nothing further presses Set (ExitEditChain closed immediately --
+  // the last change was long enough ago to already read as closed by the
+  // time it is checked), but the run keeps going (HOME + READ_BACK's own
+  // navigation) rather than stopping dead.
+  const auto episodes = episodes_from(sink);
+  CHECK(episodes.size() > 2);
+  size_t set_count = 0;
+  for (const auto mask : episodes) {
+    if (mask == SET) {
+      set_count++;
+    }
+  }
+  CHECK(set_count == 2 || set_count == 3);  // OPEN (1-2) + HOP_COMMIT (1) -- never a Set after that
+
+  // And the overall write is reported as FAILED -- nothing was actually
+  // written, since the hop never reached Outdoor Temp.
+  CHECK(log.warn_count >= 1);
+}
+
+// ============================================================ ReadSettings --
+
+TEST_CASE(read_settings_finishes_and_returns_home_even_when_nothing_parses) {
+  // ReadSettings never hard-fails on an unreadable value (see its class
+  // comment) -- this proves the whole pass still completes and settles the
+  // keypad even when every screen it tries to read is unreadable/unreached.
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+  RecordingLog log;
+
+  ReadSettings read_settings;
+  read_settings.set_log_sink(log.as_log_sink());
+  CHECK(runner.request(read_settings));
+
+  Clock clock{kp, runner};
+  clock.advance(20000);  // two GotoMenus, two value-waits, no outdoor hop (indoor never read), one more GotoMenu
+
+  CHECK(!runner.busy());
+  CHECK(!kp.busy());
+  CHECK(log.warn_count >= 2);  // Summer Mode and Indoor Temp both logged as unreadable
+}
+
+TEST_CASE(recover_never_presses_a_key_while_an_editor_is_still_open) {
+  // Up inside an editor adjusts the value under the cursor instead of
+  // navigating -- the 14 C walked to 19 C failure -- and Set would commit
+  // whatever half-finished value a failed sequence abandoned. Neither is
+  // acceptable, so recover() must leave an open editor entirely alone and
+  // let the unit's own ~2min timeout close it, which commits nothing.
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+  RecordingSink sink;
+  kp.set_frame_sink(sink.as_frame_sink());
+
+  ScriptedSequence seq;
+  seq.on_poll = [](ScriptedSequence &) { return Poll::FAILED; };
+  CHECK(runner.request(seq));
+
+  Clock clock{kp, runner};
+  sink.current_now = &clock.now;
+
+  // Park on a settings screen with a value blinking -- an open editor.
+  disp.update(vatest::pad16("Indoor Temp"), vatest::pad16("     20 C"), clock.now);
+  clock.tick();
+  disp.update(vatest::pad16("Indoor Temp"), vatest::pad16("        C"), clock.now);  // blink
+  clock.tick();
+  CHECK(disp.editor_open(clock.now));
+
+  clock.advance(1000);
+
+  CHECK(!runner.busy());
+  CHECK(sink.frames.empty());  // not one frame: no Up, no Set, nothing
+  CHECK(!kp.busy());
+}
+
+TEST_CASE(recover_does_tap_up_once_on_a_menu_screen_with_no_editor_open) {
+  // The other half of the above: with nothing being edited, walking out with
+  // a single Up is safe and is what should happen.
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+  RecordingSink sink;
+  kp.set_frame_sink(sink.as_frame_sink());
+
+  Clock clock{kp, runner};
+  sink.current_now = &clock.now;
+
+  // Park on a menu screen and let it go quiet first: editor_open() is a
+  // staleness test, so the screen has to have been settled for longer than
+  // the settle window BEFORE the sequence fails, not merely at some point.
+  disp.update(vatest::pad16("Indoor Temp"), vatest::pad16("     20 C"), clock.now);
+  clock.advance(3000);
+  CHECK(!disp.editor_open(clock.now));
+
+  ScriptedSequence seq;
+  seq.on_poll = [](ScriptedSequence &) { return Poll::FAILED; };
+  CHECK(runner.request(seq));
+  clock.advance(1000);  // fails, recovers, and the Up tap goes out
+
+  const auto episodes = episodes_from(sink);
+  CHECK_EQ(episodes.size(), static_cast<size_t>(1));
+  if (!episodes.empty()) {
+    CHECK_EQ(episodes[0], UP);
+  }
+}

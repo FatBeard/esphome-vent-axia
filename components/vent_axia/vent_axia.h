@@ -24,8 +24,14 @@
 #ifdef USE_BUTTON
 #include "esphome/components/button/button.h"
 #endif
+#ifdef USE_NUMBER
+#include "esphome/components/number/number.h"
+#endif
 #ifdef USE_SENSOR
 #include "esphome/components/sensor/sensor.h"
+#endif
+#ifdef USE_SWITCH
+#include "esphome/components/switch/switch.h"
 #endif
 #ifdef USE_TEXT_SENSOR
 #include "esphome/components/text_sensor/text_sensor.h"
@@ -76,14 +82,22 @@ class SequenceFailedTrigger : public Trigger<std::string> {};
 /// see publish_diagnostic_page_(). Stage 4 added Keypad and was the first
 /// that transmitted anything beyond the one-shot alive frame in setup():
 /// tap_key()/hold_key()/release_keys() are the primitive the sequence
-/// engine drives. This stage (5) adds that engine (sequence.h's Runner) and
-/// its first concrete sequence, FetchDiagnostics -- fetch_diagnostics()
-/// below is the only new entry point a caller (button.py, the
-/// vent_axia.fetch_diagnostics action) needs. Every caller of Set still
-/// goes through the same interlock, now enforced in Runner::tap()/press()
+/// engine drives. Stage 5 added that engine (sequence.h's Runner) and its
+/// first concrete sequence, FetchDiagnostics. Every caller of Set still
+/// goes through the same interlock, enforced in Runner::tap()/press()
 /// (sequence.h) rather than a hub-private method, so the sequence engine's
 /// own primitives are not exempt from it either -- see Runner::tap()'s
 /// comment.
+///
+/// This stage (6) adds ReadSettings and WriteSetting -- the first sequence
+/// that presses Set, the only key that writes. write_switch()/write_number()
+/// are the entry points switch.py's/number.py's platform classes drive from
+/// write_state()/control(); read_settings() is fetch_diagnostics()'s sibling
+/// for the button/switch/number readback. Neither switch nor number is
+/// optimistic (PLAN.md §6): what gets published comes only from what
+/// ReadSettings itself observed on the unit, via publish_switch_()/
+/// publish_number_(), the same "last published value" dedup shape as
+/// publish_sensor_()/publish_binary_().
 ///
 /// This is the only file (besides the platform .py files) that may include
 /// esphome/... headers -- protocol.h, display.h, screens.h, parser.h,
@@ -144,6 +158,28 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   /// 04:30 (PLAN.md §6).
   void fetch_diagnostics() { this->runner_.request(this->fetch_diagnostics_); }
 
+  /// Starts ReadSettings as a root sequence, same refuse-and-log shape as
+  /// fetch_diagnostics(). Used by button.py's ReadSettingsButton; also what
+  /// WriteSetting's own read-back step drives, through ITS OWN ReadSettings
+  /// member (sequence.h), not through this method -- the two are separate,
+  /// long-lived instances so a manual "refresh" button press can never
+  /// collide with a write's own confirmation pass.
+  void read_settings() { this->runner_.request(this->read_settings_); }
+
+  /// Starts a WriteSetting run for the one bypass switch -- switch.py's
+  /// VentAxiaSwitch::write_state() calls this, never publish_state()
+  /// directly (PLAN.md §6 "Not optimistic"). Unrecognised keys (there is
+  /// only one today) are logged and ignored rather than silently starting
+  /// nothing -- see write_number() for the same shape.
+  void write_switch(SwitchKey key, bool state);
+
+  /// Starts a WriteSetting run for one of the two bypass temperatures --
+  /// number.py's VentAxiaNumber::control() calls this, never publish_state()
+  /// directly. value is whole degrees C; NumberCall has already clamped it
+  /// to the entity's configured min/max before this is ever reached (see
+  /// number.py).
+  void write_number(NumberKey key, int value);
+
 #ifdef USE_TIME
   /// Optional: without a time_id, stamp_diagnostics_updated_() simply skips
   /// the stamp rather than failing -- see its comment.
@@ -167,6 +203,12 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
     this->binary_sensors_[static_cast<size_t>(key)] = sensor;
   }
 #endif
+#ifdef USE_SWITCH
+  void set_switch(SwitchKey key, switch_::Switch *sw) { this->switches_[static_cast<size_t>(key)] = sw; }
+#endif
+#ifdef USE_NUMBER
+  void set_number(NumberKey key, number::Number *num) { this->numbers_[static_cast<size_t>(key)] = num; }
+#endif
 
   void register_diagnostic_page_trigger(DiagnosticPageTrigger *trig) {
     this->diagnostic_page_triggers_.push_back(trig);
@@ -181,6 +223,22 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   /// any given entity.
   void publish_sensor_(SensorKey key, std::optional<int> value);
   void publish_binary_(BinaryKey key, std::optional<bool> value);
+  /// Same "skip an unchanged republish" dedup as publish_sensor_/
+  /// publish_binary_ -- see those for why. Unlike them there is no "value
+  /// went away" case to handle: a setting last read off the unit stays
+  /// exactly as valid until the next read actually changes it, there is no
+  /// equivalent of boost_time_remaining's countdown disappearing.
+  void publish_switch_(SwitchKey key, bool value);
+  void publish_number_(NumberKey key, int value);
+
+  /// Shared by write_switch()/write_number(): configures the one long-lived
+  /// WriteSetting instance and requests it as a root sequence. Both entity
+  /// types funnel through here rather than each driving its own copy --
+  /// PLAN.md §2's "one class... three table rows".
+  void start_write_(SettingId id, int target) {
+    this->write_setting_.configure(id, target);
+    this->runner_.request(this->write_setting_);
+  }
 
   /// Feeds every status-screen-derived entity from the current state of
   /// display_ and status_. Called once per decoded frame.
@@ -239,6 +297,8 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   uint32_t tap_duration_ms_{50};  // PLAN.md §2's table: "one tap = one menu step"
   Runner runner_;
   FetchDiagnostics fetch_diagnostics_;  // long-lived -- no dynamic allocation in steady state, PLAN.md §2
+  ReadSettings read_settings_;          // the button's own instance -- see read_settings()'s comment
+  WriteSetting write_setting_;          // shared by write_switch()/write_number() via start_write_()
 
 #ifdef USE_TIME
   time::RealTimeClock *time_{nullptr};
@@ -253,13 +313,25 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
 #ifdef USE_BINARY_SENSOR
   std::array<binary_sensor::BinarySensor *, static_cast<size_t>(BinaryKey::COUNT)> binary_sensors_{};
 #endif
+#ifdef USE_SWITCH
+  std::array<switch_::Switch *, static_cast<size_t>(SwitchKey::COUNT)> switches_{};
+#endif
+#ifdef USE_NUMBER
+  std::array<number::Number *, static_cast<size_t>(NumberKey::COUNT)> numbers_{};
+#endif
 
-  // "Last published" caches so publish_sensor_/publish_binary_ can skip a
-  // republish when nothing actually changed -- see their comments. Separate
-  // from status_'s own state because status_ is the portable core and must
-  // not know about ESPHome entities or publish cadence.
+  // "Last published" caches so publish_sensor_/publish_binary_/
+  // publish_switch_/publish_number_ can skip a republish when nothing
+  // actually changed -- see their comments. Separate from status_'s own
+  // state because status_ is the portable core and must not know about
+  // ESPHome entities or publish cadence. Declared unconditionally, same as
+  // last_sensor_value_/last_binary_value_ below: the *Key::COUNT enums are
+  // portable (entities.h), so these cost nothing to keep simple even when
+  // the corresponding platform is absent from a given build.
   std::array<std::optional<int>, static_cast<size_t>(SensorKey::COUNT)> last_sensor_value_{};
   std::array<std::optional<bool>, static_cast<size_t>(BinaryKey::COUNT)> last_binary_value_{};
+  std::array<std::optional<bool>, static_cast<size_t>(SwitchKey::COUNT)> last_switch_value_{};
+  std::array<std::optional<int>, static_cast<size_t>(NumberKey::COUNT)> last_number_value_{};
 };
 
 #ifdef USE_BUTTON
@@ -286,12 +358,56 @@ class KeypadButton final : public button::Button, public Parented<VentAxiaHub> {
 /// Starts a Runner root sequence rather than tapping a raw key --
 /// press_action() ends up at VentAxiaHub::fetch_diagnostics(), which refuses
 /// (and logs why) if another sequence is already running or the link is
-/// down, same as every other way of starting one. Only fetch_diagnostics
-/// uses this shape so far; ReadSettings/SyncClock/ResetFilter (stages 6-7)
-/// are expected to reuse it rather than growing a parallel pattern.
+/// down, same as every other way of starting one.
 class FetchDiagnosticsButton final : public button::Button, public Parented<VentAxiaHub> {
  protected:
   void press_action() override { this->parent_->fetch_diagnostics(); }
+};
+
+/// Stage 6's sibling of FetchDiagnosticsButton, same shape -- see
+/// VentAxiaHub::read_settings().
+class ReadSettingsButton final : public button::Button, public Parented<VentAxiaHub> {
+ protected:
+  void press_action() override { this->parent_->read_settings(); }
+};
+#endif
+
+#ifdef USE_SWITCH
+/// The one bypass switch (switch.py's summer_mode). write_state() only ever
+/// starts a WriteSetting run through the hub -- it deliberately never calls
+/// publish_state() itself (PLAN.md §6 "Not optimistic"). What Home Assistant
+/// shows comes solely from what ReadSettings observes on the unit, whether
+/// that is this write's own read-back (WriteSetting's last step) or a later
+/// read_settings button press -- see VentAxiaHub::write_switch().
+class VentAxiaSwitch final : public switch_::Switch, public Parented<VentAxiaHub> {
+ public:
+  void set_key(SwitchKey key) { this->key_ = key; }
+
+ protected:
+  void write_state(bool state) override { this->parent_->write_switch(this->key_, state); }
+
+  SwitchKey key_{SwitchKey::SUMMER_MODE};
+};
+#endif
+
+#ifdef USE_NUMBER
+/// The two bypass temperatures (number.py's bypass_indoor_temp/
+/// bypass_outdoor_temp) -- same "not optimistic" shape as VentAxiaSwitch
+/// above: control() only ever starts a WriteSetting run, it never publishes
+/// a value itself.
+class VentAxiaNumber final : public number::Number, public Parented<VentAxiaHub> {
+ public:
+  void set_key(NumberKey key) { this->key_ = key; }
+
+ protected:
+  // number::NumberCall (number_call.cpp) has already validated `value` is
+  // within [min_value, max_value] before control() is ever reached -- an
+  // out-of-range request from Home Assistant never gets here at all, it is
+  // refused (and logged) by NumberCall itself. Both temperature entities are
+  // whole degrees, step 1 (number.py), so the truncation is exact, not lossy.
+  void control(float value) override { this->parent_->write_number(this->key_, static_cast<int>(value)); }
+
+  NumberKey key_{NumberKey::BYPASS_INDOOR_TEMP};
 };
 #endif
 

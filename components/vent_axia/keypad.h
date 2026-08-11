@@ -170,6 +170,9 @@ class Keypad {
   /// Drops back to IDLE with the mask cleared and the queue emptied. Shared
   /// by release(), the watchdog and a fresh press() pre-empting whatever
   /// came before -- all three mean "stop everything, right now".
+  /// Stops whatever is currently asserted without touching the tap queue.
+  void stop_assertion_();
+  void clear_queue_();
   void hard_release_();
 
   QueuedTap pop_queued_tap_();

@@ -19,12 +19,21 @@
 //  - The primitives every later sequence is built from: Tap, HoldUntil,
 //    GotoMenu, LeaveMenu.
 //
-// FetchDiagnostics (the one concrete sequence this stage adds) is declared
-// here too, alongside the primitives, rather than in its own header -- see
-// entities.h for the same "one growing file, not one file per addition"
-// choice. seq_fetch_diagnostics.cpp carries only its method bodies; later
-// stages add ReadSettings, WriteSetting, SyncClock, SetAirflowMode,
-// ResetFilter and ManualKey the same way, each getting its own seq_*.cpp.
+// FetchDiagnostics (stage 5) and ReadSettings/WriteSetting (stage 6) are
+// declared here too, alongside the primitives, rather than in their own
+// headers -- see entities.h for the same "one growing file, not one file per
+// addition" choice. Each gets only its method bodies in its own seq_*.cpp
+// (seq_fetch_diagnostics.cpp, seq_read_settings.cpp, seq_write_setting.cpp);
+// stage 7 adds SyncClock, SetAirflowMode, ResetFilter and ManualKey the same
+// way.
+//
+// Stage 6 also adds three primitives on top of stage 5's Tap/HoldUntil/
+// GotoMenu/LeaveMenu: OpenEditor, AdjustField and ExitEditChain -- the three
+// pieces PLAN.md's "editing model" section is about. Set is the only key
+// that is safe once an editor is open (walking Up out of one silently took a
+// 14C setpoint to 19C on the real unit), so these three primitives are the
+// only things in this component that are allowed to open one, adjust a value
+// inside one, or walk one closed.
 //
 // Driven entirely by Runner::loop(uint32_t now_ms), the same discipline as
 // Keypad (see keypad.h): a Sequence never calls millis() itself, it asks its
@@ -35,9 +44,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 
 #include "display.h"
+#include "entities.h"
 #include "keypad.h"
 #include "protocol.h"
 
@@ -335,7 +346,17 @@ class HoldUntil final : public Sequence {
 /// Clock, 2 Summer Mode, 3 Indoor Temp.
 class GotoMenu final : public Sequence {
  public:
+  GotoMenu() = default;
   explicit GotoMenu(uint8_t index) : index_(index) {}
+
+  /// Reconfigures for a fresh target. Must only be called while this
+  /// instance is NOT on the Runner's stack, same rule as HoldUntil::reset()
+  /// (see its comment). Added in stage 6 so ReadSettings/WriteSetting can
+  /// reuse ONE long-lived GotoMenu across several different targets in their
+  /// own steps (their own menu entry, then 0 to go home) rather than needing
+  /// one member per target -- see PLAN.md's "no dynamic allocation in steady
+  /// state".
+  void reset(uint8_t index) { this->index_ = index; }
 
   const char *name() const override { return "GotoMenu"; }
   Poll poll() override;
@@ -343,7 +364,7 @@ class GotoMenu final : public Sequence {
  private:
   enum Step : uint8_t { QUEUE_UP, WAIT_UP, SETTLE_UP, QUEUE_DOWN, WAIT_DOWN, SETTLE_DOWN };
 
-  uint8_t index_;
+  uint8_t index_{0};
 };
 
 /// Exactly ONE Up tap, then -- if the display is still showing a menu screen
@@ -364,6 +385,182 @@ class LeaveMenu final : public Sequence {
   // not a guess -- PLAN.md §3.
   static constexpr uint32_t WAIT_TIMEOUT_MS = 130000;
 };
+
+// ---------------------------------------------------------- editing model --
+// Stage 6's three new primitives, per PLAN.md's "The unit's editing model":
+// OpenEditor (tap Set, confirm it actually opened, retry once), AdjustField
+// (the closed loop every field this component writes shares) and
+// ExitEditChain (the walk-out, Set only). Ported from the old
+// mhrv_orig/summer_bypass.yaml's open_editor/adjust loops/exit_edit_chain
+// scripts -- the comments there record real observations on the physical
+// unit, carried into the class comments below rather than just the code.
+
+/// Taps Set and confirms an editor actually opened (Display::editor_open()),
+/// retrying once before giving up -- the old open_editor script's
+/// `repeat: count: 2`. Worth the trouble because a dropped Set is the one
+/// failure here with teeth: every primitive that runs after this one
+/// (AdjustField in particular) presses Up/Down expecting to adjust a value,
+/// and if no editor actually opened those same presses are navigation
+/// instead, walking the display back up the menu while the value being
+/// "adjusted" never budges -- observed exactly once on the real unit, before
+/// gap_ms went up to 400ms (PLAN.md §3).
+class OpenEditor final : public Sequence {
+ public:
+  const char *name() const override { return "OpenEditor"; }
+  void on_start() override;
+  Poll poll() override;
+
+ private:
+  enum Step : uint8_t { TAP, WAIT_TAP, SETTLE, CHECK };
+
+  // Matches the old open_editor script's `delay: 700ms` -- long enough for
+  // the unit to start blinking the value if an editor really opened.
+  static constexpr uint32_t SETTLE_MS = 700;
+  static constexpr uint8_t MAX_ATTEMPTS = 2;
+
+  uint8_t attempt_{0};
+};
+
+/// The closed loop behind every field this component writes, and (stage 7)
+/// the clock's day/hour/minute too -- shared rather than copy-pasted per
+/// field the way the old YAML's three apply_* scripts were (PLAN.md §2/§3).
+/// ValueParser/DirectionFn are what varies per field; see
+/// parse_summer_mode_field()/parse_temp_field()/direction_no_wrap() below for
+/// the concrete ones this stage uses, and read_fresh_value() for the sibling
+/// helper WriteSetting's VERIFY step and ReadSettings share with this class.
+///
+/// One iteration, run from poll():
+///  1. Bail (FAILED) if the guard is already exhausted -- bounds the loop so
+///     a misread, or a value the unit refuses (PLAN.md risk 6, Outdoor
+///     Temp's guessed range), cannot become a key-mashing runaway.
+///  2. Read and parse line2. A frame that fails to parse is NOT an error and
+///     does not count against the guard: an open editor blanks its value on
+///     alternate frames, and a blank temperature frame renders "   C", which
+///     parse_field correctly rejects -- this just waits for the next frame.
+///  3. If the parsed value already equals the target, done.
+///  4. Otherwise tap Up or Down once -- direction_ decides which.
+///  5. Wait -- up to ~900ms -- for line2 to actually change before looping,
+///     so a dropped or doubled press self-corrects instead of the next tap
+///     firing blind.
+class AdjustField final : public Sequence {
+ public:
+  /// Parses the field currently on line2 into out; false (out left
+  /// untouched) for anything that doesn't parse. A stateless function
+  /// pointer rather than std::function: every concrete parser this
+  /// component has is a free function, and a SettingSpec table of these
+  /// (seq_write_setting.cpp) costs nothing at steady state.
+  using ValueParser = bool (*)(const std::string &line2, int &out);
+
+  /// True if the field needs to move UP to get from cur towards want, false
+  /// for DOWN. Only ever called once cur != want (see step 3 above). A
+  /// parameter rather than a hardcoded `cur < want` because it is NOT always
+  /// that simple: every field this stage writes is a plain sign comparison
+  /// (none of the three wrap -- PLAN.md is explicit that parser::wrapped_delta
+  /// would be actively wrong on all three, see direction_no_wrap() below),
+  /// but stage 7's clock fields DO wrap and need a shortest-path version
+  /// instead, and this is the seam that lets them reuse this same class.
+  using DirectionFn = bool (*)(int cur, int want);
+
+  AdjustField() = default;
+
+  /// Reconfigures for a fresh field. Must only be called while this instance
+  /// is NOT on the Runner's stack, same rule as HoldUntil::reset(). A single
+  /// long-lived instance serves every field WriteSetting can write (and,
+  /// stage 7, every clock field SyncClock can) -- see PLAN.md's "no dynamic
+  /// allocation in steady state".
+  void reset(ValueParser parse, DirectionFn direction, int target, int guard_limit);
+
+  const char *name() const override { return "AdjustField"; }
+  void on_start() override;
+  Poll poll() override;
+
+ private:
+  enum Step : uint8_t { CHECK, WAIT_CHANGE };
+
+  static constexpr uint32_t CHANGE_TIMEOUT_MS = 900;
+
+  ValueParser parse_{nullptr};
+  DirectionFn direction_{nullptr};
+  int target_{0};
+  int guard_limit_{0};
+  int guard_count_{0};
+};
+
+/// The walk-out: leaves any open editor without changing a thing, by
+/// committing with Set until the chain falls off its end. Set is the only
+/// key that is safe here -- see this file's class comment -- so this NEVER
+/// presses Up or Down, unlike every other navigation primitive above.
+///
+/// Up to 4 times: if Display::editor_open() is true, tap Set and wait 1800ms
+/// (deliberately longer than editor_open()'s own ~1200ms default settle
+/// window, so the following check means something) before looking again;
+/// stops as soon as editor_open() reads false, which is the common case once
+/// the chain has actually been walked off its end. If it is STILL open after
+/// 4 commits -- more than the documented chain is ever expected to need --
+/// this logs it and falls back to waiting out the unit's own ~2-minute
+/// timeout (up to 150s), documented to close any editor without committing
+/// (PLAN.md). Only fails if editor_open() is STILL true once that fallback
+/// itself elapses -- same shape as LeaveMenu's own timeout, and for the same
+/// reason: a FAILED here cascades straight to the shared Runner::recover()
+/// path, which presses Up **at most once**, which is safer than letting a
+/// caller's own next step (a plain GotoMenu, say) mash Up five times against
+/// a display state this primitive was never able to confirm was safe.
+class ExitEditChain final : public Sequence {
+ public:
+  using LogSink = Keypad::LogSink;
+  void set_log_sink(LogSink sink) { this->log_ = std::move(sink); }
+
+  const char *name() const override { return "ExitEditChain"; }
+  void on_start() override;
+  Poll poll() override;
+
+ private:
+  enum Step : uint8_t { CHECK, WAIT_TAP, SETTLE, WAIT_TIMEOUT };
+
+  static constexpr uint8_t MAX_COMMITS = 4;
+  static constexpr uint32_t COMMIT_SETTLE_MS = 1800;
+  // The old YAML's own number (mhrv_orig/summer_bypass.yaml's
+  // exit_edit_chain): comfortably above the unit's own ~2-minute timeout.
+  static constexpr uint32_t FALLBACK_TIMEOUT_MS = 150000;
+
+  uint8_t commits_{0};
+  LogSink log_;
+};
+
+// ------------------------------------------------------- settings fields --
+// Shared by ReadSettings and WriteSetting (seq_read_settings.cpp,
+// seq_write_setting.cpp): the three bypass fields' value encoding, shaped to
+// match AdjustField::ValueParser/DirectionFn so the exact same functions
+// serve both a plain read and a WriteSetting SettingSpec table row -- see
+// PLAN.md §2's "one class... three table rows, not three near-identical
+// copies".
+
+/// Summer Mode as 0/1 -- AdjustField and the read path both want an int to
+/// compare/step, not a bool. See parser::parse_on_off for the actual parse
+/// (blank/blinking frames correctly fail, not read as Off).
+bool parse_summer_mode_field(const std::string &line2, int &out);
+
+/// Indoor Temp and Outdoor Temp share one 2-digit field at [0,2) --
+/// mhrv_orig/summer_bypass.yaml used this exact position for both. See
+/// parser::parse_field for blank-vs-zero handling: a blank temperature frame
+/// renders "   C", which this correctly rejects rather than reading as 0.
+bool parse_temp_field(const std::string &line2, int &out);
+
+/// Plain sign comparison -- correct for Summer Mode, Indoor Temp and Outdoor
+/// Temp, none of which wrap (PLAN.md is explicit that parser::wrapped_delta
+/// would be actively wrong on all three; it is for the clock's hour/minute
+/// only, stage 7).
+bool direction_no_wrap(int cur, int want);
+
+/// True once line2 has published something NEWER than `since_ms` (the moment
+/// navigation to the CURRENT screen started) that also parses -- see
+/// PLAN.md "Reading a value off the screen": a change strictly after
+/// `since_ms` is what proves a reading belongs to the screen just arrived
+/// at, rather than being a stale value left over from wherever the display
+/// was before. Returns nullopt while still waiting; callers apply their own
+/// timeout. Shared because ReadSettings' plain screens and WriteSetting's
+/// VERIFY step both need exactly this.
+std::optional<int> read_fresh_value(const Display &display, uint32_t since_ms, AdjustField::ValueParser parse);
 
 /// PLAN.md §3: Up+Main to enter the diagnostic menu, hold Down 8s to auto-
 /// scroll through every page, then the verified two-stage exit (release,
@@ -422,6 +619,208 @@ class FetchDiagnostics final : public Sequence {
   SuccessSink on_success_;
   int highest_page_seen_{-1};
   std::array<bool, MAX_PAGE_INDEX> seen_pages_{};
+};
+
+// -------------------------------------------------------------- settings --
+// Stage 6: ReadSettings and WriteSetting, PLAN.md §3's remaining two
+// sequences that were not FetchDiagnostics. Both drive the same three
+// screens (Summer Mode, Indoor Temp, Outdoor Temp) via the editing-model
+// primitives just above.
+
+/// One pass reading Summer Mode, Indoor Temp, then Outdoor Temp via the
+/// edit-chain hop (PLAN.md §3/§6) -- see this file's class comment for the
+/// primitives it is built from. Publishes whatever it manages to read via
+/// on_switch()/on_number(); a value that doesn't parse (blank/blinking, or a
+/// screen that was never reached) is logged and simply left unpublished,
+/// same "never hard-fail a read" philosophy as the rest of this component --
+/// one unreadable value is not a reason to withhold the other two.
+///
+/// Reading Outdoor Temp requires opening Indoor Temp's editor and stepping
+/// past it, so a read can leave the display mid-edit whether or not it
+/// landed where it meant to (PLAN.md: the chain's shape is not guaranteed --
+/// a commit has been observed closing the editor outright rather than
+/// advancing). Both the "landed on Outdoor Temp" and "did not" branches of
+/// that hop fall through to the SAME EXIT_CHAIN step below -- a single
+/// funnel every path passes through structurally, not a per-branch call the
+/// old YAML's indentation had to be trusted to get right in both an `if` and
+/// an `else` (mhrv_orig/summer_bypass.yaml's read_summer_settings).
+///
+/// Finishes by returning the display to the status screen (GotoMenu(0)).
+/// A long-lived hub member, reused on every button press -- see on_start()
+/// for what resets between runs.
+class ReadSettings final : public Sequence {
+ public:
+  using LogSink = Keypad::LogSink;
+  using SwitchSink = std::function<void(SwitchKey, bool)>;
+  using NumberSink = std::function<void(NumberKey, int)>;
+
+  void set_log_sink(LogSink sink) {
+    this->log_ = sink;
+    // Forwarded once, here, rather than every run -- ExitEditChain is a
+    // private member (see below) the hub cannot reach directly.
+    this->exit_chain_.set_log_sink(std::move(sink));
+  }
+  void set_on_switch(SwitchSink sink) { this->on_switch_ = std::move(sink); }
+  void set_on_number(NumberSink sink) { this->on_number_ = std::move(sink); }
+
+  const char *name() const override { return "ReadSettings"; }
+  void on_start() override;
+  Poll poll() override;
+  void on_finish(Poll result) override;
+
+  // The outdoor hop nests ExitEditChain's own up-to-~157s fallback wait (4
+  // commits, ~7.2s, plus up to 150s waiting out the unit's own timeout) --
+  // see Sequence::timeout_ms()'s comment on why anything nesting a wait like
+  // that needs a root budget with real headroom above it. The default 180s
+  // leaves only ~23s for two GotoMenus, three value-waits and the hop's own
+  // navigation on top of that -- not comfortable, so this is raised.
+  uint32_t timeout_ms() const override { return 240000; }
+
+ private:
+  enum Step : uint8_t {
+    NAV_SUMMER,
+    WAIT_SUMMER,
+    NAV_INDOOR,
+    WAIT_INDOOR,
+    OPEN_OUTDOOR,
+    HOP_COMMIT,
+    WAIT_HOP_TAP,
+    WAIT_OUTDOOR_SCREEN,
+    WAIT_OUTDOOR_VALUE,
+    EXIT_CHAIN,
+    HOME,
+    FINISHED,
+  };
+
+  // mhrv_orig/summer_bypass.yaml's own wait_until timeouts for these same
+  // four reads.
+  static constexpr uint32_t SUMMER_TIMEOUT_MS = 2000;
+  static constexpr uint32_t INDOOR_TIMEOUT_MS = 3000;
+  static constexpr uint32_t OUTDOOR_SCREEN_TIMEOUT_MS = 3000;
+  static constexpr uint32_t OUTDOOR_VALUE_TIMEOUT_MS = 2000;
+
+  GotoMenu goto_menu_;      // reused for NAV_SUMMER, NAV_INDOOR and HOME -- reset() before each
+  OpenEditor open_editor_;  // the outdoor hop's opening move
+  ExitEditChain exit_chain_;
+
+  uint32_t nav_started_ms_{0};
+  // Gates the outdoor hop: opening an editor on a screen that could not be
+  // identified is exactly the situation WriteSetting aborts on, so a read
+  // that never saw a clean Indoor Temp value does not attempt it either --
+  // mhrv_orig/summer_bypass.yaml's own guard on enter_outdoor_editor.
+  bool indoor_read_ok_{false};
+
+  LogSink log_;
+  SwitchSink on_switch_;
+  NumberSink on_number_;
+};
+
+/// Which of the three settings a WriteSetting instance targets -- selects a
+/// row of the SettingSpec table in seq_write_setting.cpp. Public because the
+/// hub names one when configuring the shared, long-lived WriteSetting
+/// instance before request()ing it.
+enum class SettingId : uint8_t { SUMMER_MODE, INDOOR_TEMP, OUTDOOR_TEMP };
+
+// Kept out of this header (defined in seq_write_setting.cpp) -- WriteSetting
+// only ever needs a pointer to one, never a complete type.
+struct SettingSpec;
+
+/// Writes one of the three bypass settings, then reads all three back as
+/// confirmation (PLAN.md §2's WriteSetting body). configure() selects the
+/// row (SettingId) and target value before this instance is request()ed; the
+/// STEPS below are the same for all three -- see seq_write_setting.cpp's
+/// SettingSpec table for what actually differs between them. This is the
+/// first sequence in this component that presses Set: see this file's class
+/// comment, and PLAN.md's editing-model section, for why every step past
+/// OPEN below only ever does so through OpenEditor/AdjustField/ExitEditChain.
+///
+/// Outdoor Temp is reached through Indoor Temp's editor rather than by
+/// direct navigation, and that hop can leave an editor open whether or not
+/// it landed on the right screen -- so, exactly like ReadSettings, EXIT_CHAIN
+/// is a single funnel every path (hop landed or not) falls through to, never
+/// a per-branch call. ok_ carries whether the write actually happened
+/// through that funnel to FINISHED, where it decides DONE vs FAILED.
+///
+/// A long-lived hub member, reused for every write -- configure() before
+/// each request(), see on_start() for what else resets.
+class WriteSetting final : public Sequence {
+ public:
+  using LogSink = Keypad::LogSink;
+
+  void set_log_sink(LogSink sink) {
+    this->log_ = sink;
+    // Forwarded once, here -- exit_chain_ and read_back_ are private members
+    // the hub cannot reach directly. read_back_ is a full ReadSettings, so
+    // this also reaches ITS OWN exit_chain_ (see ReadSettings::set_log_sink).
+    this->exit_chain_.set_log_sink(sink);
+    this->read_back_.set_log_sink(std::move(sink));
+  }
+  void set_on_switch(ReadSettings::SwitchSink sink) { this->read_back_.set_on_switch(std::move(sink)); }
+  void set_on_number(ReadSettings::NumberSink sink) { this->read_back_.set_on_number(std::move(sink)); }
+
+  /// Selects which row to write and the value to write it to -- call before
+  /// request()ing this instance. target uses the same 0/1 encoding
+  /// parse_summer_mode_field() does for Summer Mode, plain whole degrees C
+  /// for the two temperatures.
+  void configure(SettingId id, int target);
+
+  const char *name() const override { return "WriteSetting"; }
+  void on_start() override;
+  Poll poll() override;
+  void on_finish(Poll result) override;
+
+  // Nests ExitEditChain's own up-to-~157s fallback wait potentially TWICE --
+  // once directly (EXIT_CHAIN below) and once more inside read_back_'s own
+  // outdoor hop (READ_BACK) -- on top of AdjustField's own worst case
+  // (guard_limit 40 taps for a temperature, each up to ~1.35s, so up to
+  // ~54s) and the rest of the navigation/verify/settle steps. ~400s is the
+  // realistic worst-case sum; this leaves comfortable headroom above it
+  // rather than cutting it close, for the same reason Sequence::timeout_ms()
+  // gives LeaveMenu's 130s wait headroom: a root budget that expires WHILE
+  // ExitEditChain is patiently waiting out a genuinely still-open editor
+  // would abandon the run at the worst possible moment.
+  uint32_t timeout_ms() const override { return 480000; }
+
+ private:
+  enum Step : uint8_t {
+    NAVIGATE,
+    VERIFY,
+    OPEN,
+    HOP_COMMIT,
+    WAIT_HOP_TAP,
+    WAIT_HOP_SCREEN,
+    ADJUST,
+    COMMIT,
+    WAIT_COMMIT_TAP,
+    SETTLE,
+    EXIT_CHAIN,
+    HOME,
+    READ_BACK,
+    FINISHED,
+  };
+
+  static constexpr uint32_t VERIFY_TIMEOUT_MS = 3000;      // PLAN.md §2's WriteSetting body
+  static constexpr uint32_t HOP_SCREEN_TIMEOUT_MS = 3000;  // matches ReadSettings' own outdoor hop
+  static constexpr uint32_t SETTLE_MS = 1800;              // PLAN.md §2's WriteSetting body
+
+  SettingId id_{SettingId::SUMMER_MODE};
+  const SettingSpec *spec_{nullptr};
+  int target_{0};
+  uint32_t nav_started_ms_{0};  // for VERIFY's read_fresh_value() -- see PLAN.md "Reading a value off the screen"
+  // False only if the Outdoor Temp hop does not land -- see class comment.
+  // Every other failure in this sequence (VERIFY, OPEN, AdjustField's guard,
+  // ExitEditChain itself) returns Poll::FAILED directly instead: at those
+  // points nothing has been committed and/or the failure already cascades
+  // correctly, so there is nothing this flag needs to remember for them.
+  bool ok_{true};
+
+  GotoMenu goto_menu_;        // reused for NAVIGATE and HOME -- reset() before each
+  OpenEditor open_editor_;
+  AdjustField adjust_field_;
+  ExitEditChain exit_chain_;
+  ReadSettings read_back_;
+
+  LogSink log_;
 };
 
 }  // namespace vent_axia

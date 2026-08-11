@@ -89,6 +89,30 @@ void VentAxiaHub::setup() {
       [](const std::string &msg) { ESP_LOGE(TAG, "%s", msg.c_str()); },
   });
   this->fetch_diagnostics_.set_on_success([this] { this->stamp_diagnostics_updated_(); });
+
+  // Stage 6: read_settings_ (the button's own instance) and write_setting_
+  // (shared by write_switch()/write_number(), whose own read-back step is a
+  // SEPARATE ReadSettings member -- see sequence.h) both publish through the
+  // exact same two sinks, so a value read by either path reaches the same
+  // entities the same way.
+  auto publish_switch = [this](SwitchKey key, bool value) { this->publish_switch_(key, value); };
+  auto publish_number = [this](NumberKey key, int value) { this->publish_number_(key, value); };
+
+  this->read_settings_.set_log_sink({
+      [](const std::string &msg) { ESP_LOGI(TAG, "%s", msg.c_str()); },
+      [](const std::string &msg) { ESP_LOGW(TAG, "%s", msg.c_str()); },
+      [](const std::string &msg) { ESP_LOGE(TAG, "%s", msg.c_str()); },
+  });
+  this->read_settings_.set_on_switch(publish_switch);
+  this->read_settings_.set_on_number(publish_number);
+
+  this->write_setting_.set_log_sink({
+      [](const std::string &msg) { ESP_LOGI(TAG, "%s", msg.c_str()); },
+      [](const std::string &msg) { ESP_LOGW(TAG, "%s", msg.c_str()); },
+      [](const std::string &msg) { ESP_LOGE(TAG, "%s", msg.c_str()); },
+  });
+  this->write_setting_.set_on_switch(publish_switch);
+  this->write_setting_.set_on_number(publish_number);
 }
 
 void VentAxiaHub::loop() {
@@ -168,6 +192,34 @@ void VentAxiaHub::tap_key(protocol::KeyMask mask, uint32_t duration_ms) {
 
 void VentAxiaHub::hold_key(protocol::KeyMask mask) { this->runner_.press(mask); }
 
+void VentAxiaHub::write_switch(SwitchKey key, bool state) {
+  switch (key) {
+    case SwitchKey::SUMMER_MODE:
+      this->start_write_(SettingId::SUMMER_MODE, state ? 1 : 0);
+      return;
+    default:
+      // Unreachable today -- SwitchKey has exactly one member -- but logged
+      // rather than silently doing nothing if that ever changes without a
+      // matching case here.
+      ESP_LOGE(TAG, "write_switch: no WriteSetting mapping for this SwitchKey");
+      return;
+  }
+}
+
+void VentAxiaHub::write_number(NumberKey key, int value) {
+  switch (key) {
+    case NumberKey::BYPASS_INDOOR_TEMP:
+      this->start_write_(SettingId::INDOOR_TEMP, value);
+      return;
+    case NumberKey::BYPASS_OUTDOOR_TEMP:
+      this->start_write_(SettingId::OUTDOOR_TEMP, value);
+      return;
+    default:
+      ESP_LOGE(TAG, "write_number: no WriteSetting mapping for this NumberKey");
+      return;
+  }
+}
+
 // Each publish_ helper compiles to a no-op when its platform is absent from
 // the build, so the decode path calls them unconditionally and stays free of
 // preprocessor noise. The (void) casts keep unused parameters quiet.
@@ -237,6 +289,40 @@ void VentAxiaHub::publish_binary_(BinaryKey key, std::optional<bool> value) {
   binary_sensor::BinarySensor *sens = this->binary_sensors_[idx];
   if (sens != nullptr) {
     sens->publish_state(*value);
+  }
+#endif
+}
+
+void VentAxiaHub::publish_switch_(SwitchKey key, bool value) {
+#ifndef USE_SWITCH
+  (void) key;
+  (void) value;
+#else
+  const size_t idx = static_cast<size_t>(key);
+  if (this->last_switch_value_[idx].has_value() && *this->last_switch_value_[idx] == value) {
+    return;  // unchanged since the last read -- nothing to republish
+  }
+  this->last_switch_value_[idx] = value;
+  switch_::Switch *sw = this->switches_[idx];
+  if (sw != nullptr) {
+    sw->publish_state(value);
+  }
+#endif
+}
+
+void VentAxiaHub::publish_number_(NumberKey key, int value) {
+#ifndef USE_NUMBER
+  (void) key;
+  (void) value;
+#else
+  const size_t idx = static_cast<size_t>(key);
+  if (this->last_number_value_[idx].has_value() && *this->last_number_value_[idx] == value) {
+    return;  // unchanged since the last read -- nothing to republish
+  }
+  this->last_number_value_[idx] = value;
+  number::Number *num = this->numbers_[idx];
+  if (num != nullptr) {
+    num->publish_state(static_cast<float>(value));
   }
 #endif
 }

@@ -2,6 +2,7 @@
 
 #include <utility>
 
+#include "parser.h"
 #include "screens.h"
 
 namespace esphome {
@@ -190,6 +191,26 @@ void Runner::recover() {
     return;  // already back on the status loop -- nothing to walk out of
   }
 
+  // If an editor is still open, do NOTHING further. Up inside an editor
+  // adjusts the value under the cursor rather than navigating -- that is the
+  // 14 C walked to 19 C failure, and it applies to the FIRST Up just as much
+  // as to any later one. Only Set is safe inside an editor, and pressing Set
+  // here would commit whatever half-finished value the failed sequence left
+  // behind, which is worse than doing nothing.
+  //
+  // Doing nothing is the right answer: the unit closes an abandoned editor
+  // itself after ~2 minutes and commits nothing when it does, so a failed
+  // write leaves the setting untouched -- exactly what a failed write should
+  // do. This path became reachable in stage 6, where a guard-exhausted
+  // AdjustField can abandon an open editor.
+  if (this->display_.editor_open(this->now_ms_)) {
+    if (this->log_.warn) {
+      this->log_.warn("recover: editor still open, leaving it to the unit's own ~2min timeout -- pressing "
+                      "anything here would either adjust or commit a half-finished value");
+    }
+    return;
+  }
+
   // The VERIFIED exit gesture, not "mash Up": PLAN.md is explicit that a
   // second Up press while an editor is still open silently adjusts the
   // value under the cursor (observed on the real unit: a 14°C setpoint
@@ -315,6 +336,165 @@ Poll LeaveMenu::poll() {
     default:
       return Poll::DONE;
   }
+}
+
+// ---------------------------------------------------------- editing model --
+
+void OpenEditor::on_start() { this->attempt_ = 0; }
+
+Poll OpenEditor::poll() {
+  switch (this->step_) {
+    case TAP:
+      if (!this->runner_->tap(protocol::key_mask(protocol::Key::SET), MENU_TAP_MS)) {
+        return Poll::FAILED;  // refused by the Set interlock -- see Runner::tap()
+      }
+      return this->goto_step(WAIT_TAP);
+
+    case WAIT_TAP:
+      return this->runner_->keypad_busy() ? Poll::RUNNING : this->goto_step(SETTLE);
+
+    case SETTLE:
+      return this->elapsed() >= SETTLE_MS ? this->goto_step(CHECK) : Poll::RUNNING;
+
+    case CHECK:
+      if (this->runner_->display().editor_open(this->runner_->now_ms())) {
+        return Poll::DONE;
+      }
+      this->attempt_++;
+      // Exactly one retry -- see class comment. MAX_ATTEMPTS is 2, so this
+      // fires once (attempt_ goes 0 -> 1 -> retry) and fails on the second
+      // miss.
+      return this->attempt_ >= MAX_ATTEMPTS ? Poll::FAILED : this->goto_step(TAP);
+
+    default:
+      return Poll::DONE;
+  }
+}
+
+void AdjustField::reset(ValueParser parse, DirectionFn direction, int target, int guard_limit) {
+  this->parse_ = parse;
+  this->direction_ = direction;
+  this->target_ = target;
+  this->guard_limit_ = guard_limit;
+}
+
+void AdjustField::on_start() { this->guard_count_ = 0; }
+
+Poll AdjustField::poll() {
+  switch (this->step_) {
+    case CHECK: {
+      // Step 1: the guard, not a timeout, is what bounds this loop -- see
+      // the class comment. Reaching it means either the field genuinely
+      // cannot get to target_ (PLAN.md risk 6: Outdoor Temp's guessed range
+      // rejecting a value looks identical to a dropped press from here) or
+      // something is very wrong; either way the caller still needs to walk
+      // the editor out afterwards, same as every other failure in this
+      // component.
+      if (this->guard_count_ >= this->guard_limit_) {
+        return Poll::FAILED;
+      }
+      // Step 2: NOT an error if this fails to parse -- see class comment.
+      int cur = 0;
+      if (!this->parse_(this->runner_->display().line2(), cur)) {
+        return Poll::RUNNING;
+      }
+      // Step 3.
+      if (cur == this->target_) {
+        return Poll::DONE;
+      }
+      // Step 4.
+      this->guard_count_++;
+      const bool up = this->direction_(cur, this->target_);
+      const protocol::KeyMask mask =
+          up ? protocol::key_mask(protocol::Key::UP) : protocol::key_mask(protocol::Key::DOWN);
+      this->runner_->tap(mask, MENU_TAP_MS);  // never Set -- always accepted, see Runner::tap()
+      return this->goto_step(WAIT_CHANGE);
+    }
+
+    // Step 5: never fires the next tap blind. Loops back to CHECK once line2
+    // has actually changed since the tap above, or after CHANGE_TIMEOUT_MS
+    // regardless -- the guard in CHECK is what stops a genuinely stuck field
+    // from looping forever, not this per-tap timeout.
+    case WAIT_CHANGE:
+      if (this->runner_->display().line2_changed_at_ms() > this->entered_) {
+        return this->goto_step(CHECK);
+      }
+      return this->elapsed() >= CHANGE_TIMEOUT_MS ? this->goto_step(CHECK) : Poll::RUNNING;
+
+    default:
+      return Poll::DONE;
+  }
+}
+
+void ExitEditChain::on_start() { this->commits_ = 0; }
+
+Poll ExitEditChain::poll() {
+  switch (this->step_) {
+    case CHECK:
+      if (!this->runner_->display().editor_open(this->runner_->now_ms())) {
+        return Poll::DONE;  // the common case: the chain has already been walked off its end
+      }
+      if (this->commits_ >= MAX_COMMITS) {
+        if (this->log_.warn) {
+          this->log_.warn("sequence: editor still open after " + std::to_string(static_cast<int>(MAX_COMMITS)) +
+                           " commits -- waiting out the unit's own ~2-minute timeout");
+        }
+        return this->goto_step(WAIT_TIMEOUT);
+      }
+      this->commits_++;
+      // Set only -- see class comment. This is the one place in the whole
+      // component that commits an edit-in-progress on purpose.
+      if (!this->runner_->tap(protocol::key_mask(protocol::Key::SET), MENU_TAP_MS)) {
+        return Poll::FAILED;  // refused by the Set interlock -- see Runner::tap()
+      }
+      return this->goto_step(WAIT_TAP);
+
+    case WAIT_TAP:
+      return this->runner_->keypad_busy() ? Poll::RUNNING : this->goto_step(SETTLE);
+
+    case SETTLE:
+      // Longer than editor_open()'s own settle_ms_ (1200ms default) so the
+      // next CHECK's answer actually means something -- see class comment.
+      return this->elapsed() >= COMMIT_SETTLE_MS ? this->goto_step(CHECK) : Poll::RUNNING;
+
+    case WAIT_TIMEOUT:
+      if (!this->runner_->display().editor_open(this->runner_->now_ms())) {
+        return Poll::DONE;  // the unit's own timeout closed it, as documented
+      }
+      // See class comment for why this is FAILED, not a silent DONE:
+      // cascading through Runner::recover()'s single verified Up tap is
+      // safer than letting whatever runs next press Up unconditionally.
+      return this->elapsed() >= FALLBACK_TIMEOUT_MS ? Poll::FAILED : Poll::RUNNING;
+
+    default:
+      return Poll::DONE;
+  }
+}
+
+// ------------------------------------------------------- settings fields --
+
+bool parse_summer_mode_field(const std::string &line2, int &out) {
+  bool on = false;
+  if (!parser::parse_on_off(line2, on)) {
+    return false;
+  }
+  out = on ? 1 : 0;
+  return true;
+}
+
+bool parse_temp_field(const std::string &line2, int &out) { return parser::parse_field(line2, 0, 2, out); }
+
+bool direction_no_wrap(int cur, int want) { return cur < want; }
+
+std::optional<int> read_fresh_value(const Display &display, uint32_t since_ms, AdjustField::ValueParser parse) {
+  if (display.line2_changed_at_ms() <= since_ms) {
+    return std::nullopt;
+  }
+  int v = 0;
+  if (!parse(display.line2(), v)) {
+    return std::nullopt;
+  }
+  return v;
 }
 
 }  // namespace vent_axia

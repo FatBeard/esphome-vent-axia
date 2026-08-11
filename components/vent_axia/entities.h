@@ -11,9 +11,12 @@
 // Stage 1 needed only TextKey, for the two raw display-line text sensors.
 // Stage 2 (status line decode) added SensorKey and BinaryKey members and one
 // more TextKey. Stage 3 (diagnostics table) adds the bulk of both -- one
-// member per page/field the table decodes, see diagnostics.cpp -- and later
-// stages keep going (unit clock, diagnostics-updated timestamp, ...); this
-// file is expected to keep growing rather than being considered done.
+// member per page/field the table decodes, see diagnostics.cpp. Stage 6
+// (settings read/write, sequence.h's ReadSettings/WriteSetting) adds
+// SwitchKey and NumberKey, the first two enums here that back a WRITABLE
+// entity rather than a read-only one -- and later stages keep going (unit
+// clock, diagnostics-updated timestamp, ...); this file is expected to keep
+// growing rather than being considered done.
 
 #include <cstdint>
 
@@ -91,6 +94,28 @@ enum class BinaryKey : uint8_t {
   // flight (PLAN.md risk 3: airflow_mode transitions can take ~25-30s) rather
   // than the entity just appearing to sit still.
   BUSY,
+  COUNT,
+};
+
+enum class SwitchKey : uint8_t {
+  // The bypass On/Off setting, user menu entry 2 -- PLAN.md §6's "Summer
+  // Mode (Enable Bypass)". Written via sequence.h's WriteSetting, read back
+  // via ReadSettings; see switch.py for why this is deliberately not
+  // optimistic.
+  SUMMER_MODE,
+  COUNT,
+};
+
+enum class NumberKey : uint8_t {
+  // The bypass target: the unit calls this screen "Indoor Temp", but it is a
+  // SETPOINT (16-40 C, default 25), not a measurement -- SensorKey::INDOOR_TEMP
+  // above is the real, measured reading from diagnostic page 4. Renamed here
+  // to keep the two apart, same reasoning as mhrv_orig/summer_bypass.yaml.
+  BYPASS_INDOOR_TEMP,
+  // The outdoor cut-off, off the end of the documented menu -- reachable only
+  // by stepping past Indoor Temp's editor (sequence.h's AdjustField/
+  // ExitEditChain). Its range (5-25 C) is a guess -- see number.py.
+  BYPASS_OUTDOOR_TEMP,
   COUNT,
 };
 

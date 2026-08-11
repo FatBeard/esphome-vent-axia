@@ -59,6 +59,12 @@ void Keypad::release() {
   // a press() followed by a release() before the next tick would leave the key
   // *held* -- the opposite of what the caller last asked for.
   this->have_pending_hold_ = false;
+  // Drop the queue NOW rather than when loop() applies the release, so that a
+  // tap() issued later in this same tick survives. Runner::recover() does
+  // exactly that -- release everything, then queue one Up to walk out of a
+  // menu -- and deferring the queue clear to the next loop() would silently
+  // eat that tap, which meant recovery never actually walked out of anything.
+  this->clear_queue_();
 }
 
 void Keypad::tap(protocol::KeyMask mask, uint32_t duration_ms) {
@@ -78,12 +84,20 @@ bool Keypad::busy() const {
   return this->state_ != State::IDLE || this->queue_count_ > 0 || this->have_pending_hold_;
 }
 
-void Keypad::hard_release_() {
+void Keypad::stop_assertion_() {
   this->state_ = State::IDLE;
   this->asserted_mask_ = 0;
+  this->have_tx_mask_ = false;
+}
+
+void Keypad::clear_queue_() {
   this->queue_head_ = 0;
   this->queue_count_ = 0;
-  this->have_tx_mask_ = false;
+}
+
+void Keypad::hard_release_() {
+  this->stop_assertion_();
+  this->clear_queue_();
 }
 
 Keypad::QueuedTap Keypad::pop_queued_tap_() {
@@ -111,7 +125,10 @@ void Keypad::loop(uint32_t now_ms) {
 
   if (this->pending_release_) {
     this->pending_release_ = false;
-    this->hard_release_();
+    // Only stops the current assertion -- release() already emptied the queue
+    // at call time, so clearing it again here would discard anything the
+    // caller queued *after* the release in that same tick. See release().
+    this->stop_assertion_();
   }
 
   if (this->have_pending_hold_) {

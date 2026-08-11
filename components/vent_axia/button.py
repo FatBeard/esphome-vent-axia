@@ -1,7 +1,7 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import button
-from esphome.const import ENTITY_CATEGORY_CONFIG
+from esphome.const import ENTITY_CATEGORY_CONFIG, ENTITY_CATEGORY_DIAGNOSTIC
 
 from . import CONF_VENT_AXIA_ID, KEY_MASKS, VentAxiaHub, vent_axia_ns
 
@@ -9,6 +9,7 @@ DEPENDENCIES = ["vent_axia"]
 
 KeypadButton = vent_axia_ns.class_("KeypadButton", button.Button)
 FetchDiagnosticsButton = vent_axia_ns.class_("FetchDiagnosticsButton", button.Button)
+ReadSettingsButton = vent_axia_ns.class_("ReadSettingsButton", button.Button)
 
 # The manual key buttons (PLAN.md §6): key_up/key_down/key_set/key_main, each
 # a momentary tap_duration tap of the matching bit in KEY_MASKS (__init__.py)
@@ -33,13 +34,20 @@ BUTTONS = {
 # Sequence-triggering buttons (PLAN.md §3/§6): each one starts a Runner root
 # sequence (sequence.h) rather than tapping a raw key, so pressing it while
 # another sequence is already running is refused (and logged), not queued.
-# Stage 5 adds just fetch_diagnostics; read_settings/sync_clock/reset_filter
-# (stages 6-7) are expected to join this dict the same way, since none of
-# them need any per-instance data either -- see to_code() below.
+# Stage 5 added fetch_diagnostics; stage 6 adds read_settings the same way.
+# sync_clock/reset_filter (stage 7) are expected to join this dict too, since
+# none of them need any per-instance data either -- see to_code() below.
 SEQUENCE_BUTTONS = {
     "fetch_diagnostics": button.button_schema(
         FetchDiagnosticsButton,
         icon="mdi:file-search-outline",
+    ),
+    # "Refresh Summer Settings" in the old YAML -- same icon, same
+    # entity_category (mhrv_orig/summer_bypass.yaml's button block).
+    "read_settings": button.button_schema(
+        ReadSettingsButton,
+        icon="mdi:sun-clock",
+        entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
     ),
 }
 
