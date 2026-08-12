@@ -1,0 +1,23 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        working-directory: tests
+        run: cmake -B build -S .
+
+      - name: Build
+        working-directory: tests
+        run: cmake --build build
+
+      - name: Run tests
+        working-directory: tests
+        run: ./build/run_tests
