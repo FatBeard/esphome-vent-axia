@@ -33,6 +33,15 @@ Under construction. See `PLAN.md` for the design and the staged rollout.
 - **Clock sync** — a weekly scheduled job keeps the unit's clock correct; it
   has no daylight-saving awareness and drifts after ~2 weeks without mains
   power.
+- **Boost and purge as a set-point** — an `airflow_mode` select (Normal /
+  Boost 30 min / Boost 60 min / Purge) rather than key presses, since the
+  unit's Main key is a cumulative counter. **Continuous boost is deliberately
+  not an option**, and this has a visible consequence: the unit shows no
+  countdown for it, so a continuous boost — which is what a wired wall switch
+  triggers, the common everyday case, not just a keypad press at the unit —
+  reads as `boosting` true with `airflow_mode` saying `Normal`. The boost
+  binary sensor is the honest answer there; the select only describes states
+  this component can itself command and confirm.
 - **Raw keypad escape hatch** — Up/Down/Set/Main exposed as bounded-duration
   buttons (never hold-switches, which could stick a key down forever across a
   reboot) for cases the decoded entities don't cover.
