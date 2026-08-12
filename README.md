@@ -94,6 +94,47 @@ dependency" -- not "tested on a unit".
   necessary work.
 - **Not** the separate BMS/MODBUS socket, which is untested.
 
+## Home Assistant card
+
+`lovelace-card/sentinel-remote-card.js` is a custom Lovelace card that
+reinterprets the physical wired remote (16x2 display, Boost/Down/Select/Up)
+as a dashboard panel.
+
+![Sentinel Remote Card showing Boost Airflow at 48%, 22 minutes remaining](lovelace-card/MHRV-Card.png)
+
+### Installation
+
+1. Download `lovelace-card/sentinel-remote-card.js` and copy it into
+   `<config>/www/sentinel-remote-card.js` (create the `www` folder in your
+   Home Assistant config directory if it doesn't exist yet — you can use the
+   Studio Code Server / File Editor add-on, or Samba/SSH).
+2. In Home Assistant: **Settings -> Dashboards -> ⋮ (top right) -> Resources
+   -> Add Resource**.
+   - URL: `/local/sentinel-remote-card.js`
+   - Resource type: `JavaScript Module`
+3. Reload the dashboard (or do a hard browser refresh).
+4. Add a new card, choose **Manual** / **Edit in YAML**, and paste in a
+   config like the one below.
+
+For your "Vent-Axia MHRV" ESPHome device specifically, this is ready to
+paste as-is (entity IDs pulled from your live device page):
+
+```yaml
+type: custom:sentinel-remote-card
+title: Hallway MVHR
+line1_entity: sensor.house_vent_axia_mhrv_display_line_1_top
+line2_entity: sensor.house_vent_axia_mhrv_display_line_2_bottom
+boost_button: button.house_vent_axia_mhrv_key_main
+down_button: button.house_vent_axia_mhrv_key_down
+select_button: button.house_vent_axia_mhrv_key_set
+up_button: button.house_vent_axia_mhrv_key_up
+humidity_entity: sensor.house_vent_axia_mhrv_indoor_humidity_in_extract_air
+filter_entity: sensor.house_vent_axia_mhrv_filter_hours_remaining
+boost_remaining_entity: sensor.house_vent_axia_mhrv_boost_time_remaining
+boost_active_entity: binary_sensor.house_vent_axia_mhrv_boost_active
+running_entity: binary_sensor.house_vent_axia_mhrv_boost_active
+```
+
 ## Running the tests
 
 ```sh

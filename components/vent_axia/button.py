@@ -1,7 +1,7 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import button
-from esphome.const import ENTITY_CATEGORY_CONFIG, ENTITY_CATEGORY_DIAGNOSTIC
+from esphome.const import ENTITY_CATEGORY_CONFIG
 
 from . import CONF_VENT_AXIA_ID, KEY_MASKS, VentAxiaHub, vent_axia_ns
 
@@ -48,12 +48,12 @@ SEQUENCE_BUTTONS = {
         FetchDiagnosticsButton,
         icon="mdi:file-search-outline",
     ),
-    # "Refresh Summer Settings" in the old YAML -- same icon, same
-    # entity_category (mhrv_orig/summer_bypass.yaml's button block).
+    # No entity_category: like fetch_diagnostics above, this is a control a
+    # human presses directly (the same "not filed under Diagnostic where it's
+    # easy to miss" reasoning as the raw key buttons), not a passive reading.
     "read_settings": button.button_schema(
         ReadSettingsButton,
         icon="mdi:sun-clock",
-        entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
     ),
     # "Sync MVHR Clock" in the old YAML -- same icon, same entity_category
     # (mhrv_orig/controls.yaml's button block): a clock sync is a

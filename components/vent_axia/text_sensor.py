@@ -13,12 +13,12 @@ TextKey = vent_axia_ns.enum("TextKey", is_class=True)
 # sensor. A later stage adding a text sensor extends this dict and nothing
 # else -- CONFIG_SCHEMA and to_code are generic over its keys.
 TEXT_SENSORS = {
-    "display_line_1": text_sensor.text_sensor_schema(
-        entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
-    ),
-    "display_line_2": text_sensor.text_sensor_schema(
-        entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
-    ),
+    # No entity_category: these are the two lines the unit's own screen is
+    # showing right now, meant to be glanced at directly rather than filed
+    # under Diagnostic -- same "top-level, not easy to miss" reasoning as the
+    # raw key buttons in button.py.
+    "display_line_1": text_sensor.text_sensor_schema(),
+    "display_line_2": text_sensor.text_sensor_schema(),
     # The current status-loop message (see status.h), e.g. "Normal Airflow"
     # or "Summer Bypass On" -- a friendlier, non-diagnostic-category sibling
     # of display_line_1 for the one line that is actually meant to be read.

@@ -1,20 +1,9 @@
-# Full-featured Vent-Axia Sentinel Kinetic B (firmware V32/05) wired-remote
-# replacement config. This is the config actually running the author's unit
-# (see the project README) -- every entity the component exposes, plus the
-# scheduled diagnostics/clock jobs -- with the component pulled in from this
-# repo's git source rather than a local checkout, so it's a working starting
-# point for anyone else's install.
-#
-# Unlike example/esp8266.yaml (a minimal smoke-test config CI compiles),
-# this one is not built by CI: it needs real `!secret` values (see
-# secrets.yaml.example) that don't exist in this repo.
-
 substitutions:
-  device_name: vent-axia-sentinel-remote
+  device_name: vent-axia-mhrv
 
 esphome:
   name: ${device_name}
-  friendly_name: "Vent-Axia Sentinel Remote"
+  friendly_name: "Vent-Axia MHRV"
   min_version: 2024.11.0
 
 esp8266:
@@ -40,25 +29,41 @@ ota:
   - platform: esphome
     password: !secret ota_password
 
+# Local dashboard, independent of Home Assistant. ESPHome's own docs warn
+# this "will take up a lot of memory and may decrease stability, especially
+# on ESP8266" -- kept deliberately minimal: no `local: true` (that embeds the
+# UI's JS/CSS in flash; we're already at ~51% per the last compile, so it's
+# cheaper to let a LAN browser fetch ESPHome's CDN-hosted assets at load time
+# than to store them on-device). Auth is set because this exposes the same
+# writes (key presses, settings) that read_only: false already allows
+# through the API -- unauthenticated LAN access to that would be worse than
+# the OTA password protects against.
+web_server:
+  port: 80
+  auth:
+    username: admin
+    password: !secret web_server_password
+
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
   ap:
-    ssid: "Vent-Axia Sentinel Fallback"
-    password: !secret fallback_password
+    ssid: Vent-Axia MHRV Fallback
+    password: !secret fallback_wifi_password
 
 captive_portal:
 
 external_components:
-  # Pulled from this repo instead of a local checkout, since that's what
-  # anyone outside the author's dev tree needs. Pinned to main until a
-  # release is tagged -- switch `ref` to a tag once one exists so a
-  # `git pull` on this repo can't change your build out from under you.
   - source:
-      type: git
-      url: https://github.com/FatBeard/esphome-vent-axia
-      ref: main
+      type: local
+      path: ../components
     components: [vent_axia]
+  # Release builds pin the tag instead:
+  # - source:
+  #     type: git
+  #     url: https://github.com/FatBeard/esphome-vent-axia
+  #     ref: v1.0.0
+  #   components: [vent_axia]
 
 uart:
   id: vask_uart
@@ -71,33 +76,37 @@ time:
     id: ha_time
     # Pinned rather than left to auto-detect: the build host is Etc/UTC and
     # has no DST rules of its own, so autodetection would get this wrong --
-    # PLAN.md §6. Set this to your own timezone.
+    # PLAN.md §6.
     timezone: Europe/Dublin
     on_time:
-      # Every 15 min around the clock rather than once nightly. PLAN.md §9
-      # risk 5's "unlikely, not impossible" collision analysis assumed one
-      # 04:30 window a night; this deliberately trades that margin for
-      # fresher diagnostics -- a run can occupy the Runner for up to 120s,
-      # so a same-slot manual button press is refused rather than queued.
+      # Every 15 min around the clock rather than once nightly (changed
+      # 2026-08-12). PLAN.md §9 risk 5's "unlikely, not impossible" collision
+      # analysis assumed one 04:30 window a night; this deliberately trades
+      # that margin for fresher diagnostics -- a run can occupy the Runner
+      # for up to 120s, so a same-slot manual button press is refused rather
+      # than queued. Accepted knowingly, not an oversight.
       - seconds: 0
         minutes: [0, 15, 30, 45]
         then:
           - vent_axia.fetch_diagnostics: { id: vask }
       # The bypass settings, re-read nightly. They only change when someone
-      # presses buttons at the unit itself (every change made from Home
-      # Assistant already ends in WriteSetting's own read-back), so once a day
-      # is enough to catch that. Spaced well clear of the fetch above: only
-      # one root sequence runs at a time (sequence.h's Runner) and the loser
-      # of a collision is refused rather than queued.
+      # presses buttons at the unit itself (every change made from here
+      # already ends in WriteSetting's own read-back), so once a day is
+      # enough to catch that and to keep the three entities from sitting on a
+      # stale value indefinitely. 04:45 rather than alongside the fetch
+      # above: only one root sequence runs at a time (sequence.h's Runner) and
+      # the loser of a collision is simply refused, so the two schedules are
+      # spaced by more than FetchDiagnostics' own 120s worst case.
       - seconds: 0
         minutes: 45
         hours: 4
         then:
           - vent_axia.read_settings: { id: vask }
-      # PLAN.md §7's weekly clock correction. Sunday, not daily -- the unit
-      # does not follow daylight saving and loses its clock entirely after
-      # about two weeks without mains power, so weekly is enough to keep it
-      # right without hammering the editor.
+      # Stage 7: weekly clock correction. Sunday, not daily -- the unit does
+      # not follow daylight saving and loses its clock entirely after about
+      # two weeks without mains power, so weekly is enough to keep it right
+      # without hammering the editor. Live along with everything else now
+      # that read_only below is false.
       - seconds: 0
         minutes: 5
         hours: 4
@@ -109,12 +118,17 @@ vent_axia:
   id: vask
   uart_id: vask_uart
   time_id: ha_time
-  # false means every wired entity below -- summer_mode, the bypass numbers,
-  # the raw key buttons, fetch_diagnostics/read_settings/sync_clock, and the
-  # two on_time schedules above -- actually transmits to the unit. Start
-  # with this set to `true` on a new install (PLAN.md §8's staged rollout):
-  # run read-only first and confirm the decode tracks your unit's display
-  # before letting anything write to it.
+  # Past stage 1 of the rollout (PLAN.md §8): read-only soak ran clean
+  # (145 frames, 0 bad-CRC, decode tracked the live display) before this
+  # flipped. read_only: false now means every wired entity below --
+  # summer_mode, the bypass numbers, the raw key buttons, fetch_diagnostics/
+  # read_settings/sync_clock, and the two on_time schedules above -- can
+  # actually transmit to the unit. PLAN.md §8's intended order past this
+  # point is FetchDiagnostics, then ReadSettings, SyncClock, WriteSetting,
+  # airflow_mode, and ResetFilter last (irreversible) -- keep exercising
+  # entities roughly in that order even though nothing here enforces it.
+  # A known-good rollback build of mhrv_orig lives in ../../rollback/.
+
   read_only: false
 
 # text_sensor can only be declared once per file (ESPHome errors on a
@@ -138,7 +152,7 @@ text_sensor:
     # for whichever diagnostic page was last seen, decoded or not -- useful
     # while extending the table, otherwise safe to delete.
     raw_diagnostic_page: {name: "Raw Diagnostic Page (Debug)"}
-    # Stamped by the hub after each successful FetchDiagnostics run
+    # Stage 5: stamped by the hub after each successful FetchDiagnostics run
     # (entities.h's TextKey::DIAGNOSTICS_UPDATED) -- stays unknown until the
     # first one completes.
     diagnostics_updated: {name: "Diagnostics Last Updated"}
@@ -148,61 +162,64 @@ text_sensor:
 # select/number that follow.
 button:
   - platform: vent_axia
-    # The four raw key taps, kept as an escape hatch for a human -- see
-    # PLAN.md §6. Deliberately buttons (one bounded tap_duration tap), not
-    # hold-switches: a switch restored on at boot could come back holding a
-    # key down forever, a button cannot. Before scripting Up/Down, check
-    # PLAN.md's device invariants section -- Up/Down adjust a value instead
-    # of navigating whenever an editor is open on the unit's display, and
-    # Main is cumulative Boost, not a menu key.
+    # Stage 4: the four raw key taps, kept as an escape hatch for a human --
+    # see PLAN.md §6. Deliberately buttons (one bounded tap_duration tap),
+    # not the old setup's hold-switches: a switch restored on at boot could
+    # come back holding a key down forever, a button cannot. Now that
+    # read_only above is false these actually transmit -- see the device
+    # invariants in ../CLAUDE.md before pressing Up/Down (editor safety) or
+    # Main (cumulative Boost, not a menu key).
     key_up:   {name: "Key Up"}
     key_down: {name: "Key Down"}
     key_set:  {name: "Key Set"}
     key_main: {name: "Key Main"}
-    # Manual trigger for the same sequence the 04:30 schedule above runs.
-    # Refused (and logged) rather than queued if a sequence is already in
-    # flight or the link is down -- see sequence.h's Runner::request().
+    # Stage 5: manual trigger for the same sequence the 04:30 schedule above
+    # runs. Refused (and logged) rather than queued if a sequence is already
+    # in flight or the link is down -- see sequence.h's Runner::request().
     fetch_diagnostics: {name: "Refresh Diagnostic Sensors"}
-    # Manual refresh for the three bypass settings above -- same
+    # Stage 6: manual refresh for the three bypass settings above -- same
     # refuse-and-log arbitration as fetch_diagnostics.
     read_settings: {name: "Refresh Summer Settings"}
-    # Manual trigger for the same sequence the Sunday 04:05 schedule above
-    # runs.
+    # Stage 7: manual trigger for the same sequence the Sunday 04:05 schedule
+    # above runs.
     sync_clock: {name: "Sync MVHR Clock"}
-    # The one irreversible operation in this component (PLAN.md §7/§8):
-    # restarts the unit's filter service countdown with no way back from
-    # software. Press this *after* cleaning or changing the filters, not
-    # before -- and only this button reaches it: unlike fetch_diagnostics/
-    # sync_clock above, there is no vent_axia.reset_filter action and no
-    # schedule anywhere in this file, on purpose. Verifies the status screen
-    # first and self-confirms against diagnostic page 23 afterwards (~65s
-    # worst case).
+    # Stage 7's other deliverable, and the last sequence in this component by
+    # design (PLAN.md §8): the one irreversible operation, restarting the
+    # unit's filter service countdown with no way back from software. Press
+    # this *after* cleaning or changing the filters, not before -- and only
+    # this button reaches it: unlike fetch_diagnostics/sync_clock above,
+    # there is no vent_axia.reset_filter action and no schedule anywhere in
+    # this file, on purpose. Verifies the status screen first and
+    # self-confirms against diagnostic page 23 afterwards (~65s worst case),
+    # see PLAN.md §7 and CLAUDE.md's device invariants.
     reset_filter: {name: "Reset Filter Timer"}
 
 switch:
   - platform: vent_axia
-    # The bypass On/Off setting, user menu entry 2. NOT optimistic -- see
-    # switch.py -- so this shows whatever ReadSettings last confirmed was
-    # actually on the unit, not what was last requested.
+    # Stage 6: the bypass On/Off setting, user menu entry 2. NOT optimistic --
+    # see switch.py -- so this shows whatever ReadSettings last confirmed was
+    # actually on the unit, not what was last requested. Live now that
+    # read_only above is false -- toggling this presses real keys on the
+    # unit (PLAN.md §8 says exercise ReadSettings before relying on this).
     summer_mode: {name: "Summer Mode (Enable Bypass)"}
 
 select:
   - platform: vent_axia
-    # Boost/purge as an absolute set-point (PLAN.md §3/§6) -- Normal /
+    # Stage 7: boost/purge as an absolute set-point (PLAN.md §3/§6) -- Normal /
     # Boost 30 min / Boost 60 min / Purge. Continuous boost is deliberately
     # NOT an option (PLAN.md §4/CLAUDE.md device invariants). NOT optimistic,
     # same shape as summer_mode above -- see select.py -- so this reflects
     # whatever the unit's own status line last confirmed, whether that came
     # from a Home Assistant command or a press at the unit's own keypad; a
-    # transition can take ~25-30s (PLAN.md risk 3), during which `busy`
-    # below stays on.
+    # transition can take ~25-30s (PLAN.md risk 3), during which `busy` below
+    # stays on. Live now that read_only above is false.
     airflow_mode: {name: "Airflow Mode"}
 
 number:
   - platform: vent_axia
-    # The bypass target and outdoor cut-off. Same "not optimistic" shape as
-    # summer_mode above. bypass_outdoor_temp's 5-25 C range is a guess
-    # (PLAN.md risk 6) -- see number.py.
+    # Stage 6: the bypass target and outdoor cut-off. Same "not optimistic"
+    # shape as summer_mode above. bypass_outdoor_temp's 5-25 C range is a
+    # guess (PLAN.md risk 6) -- see number.py.
     bypass_indoor_temp:  {name: "Bypass Minimum Indoor Temperature"}
     bypass_outdoor_temp: {name: "Bypass Minimum Outdoor Temperature"}
 
@@ -248,15 +265,21 @@ binary_sensor:
       # so until a ReadSettings run happens they have no state at all.
       # Hung off link_up rather than on_boot because Runner::request() refuses
       # to start anything while the link is down, and at on_boot time it
-      # always is. A later link recovery re-reads too, which is harmless: a
-      # refused request is logged, not queued.
+      # always is -- the link only comes up once frames are arriving. The
+      # delay lets the status screen settle first; a later link recovery
+      # re-reads too, which is harmless (a refused request is logged, not
+      # queued).
       on_press:
         then:
           - delay: 15s
           - vent_axia.read_settings: { id: vask }
-    # True while the keypad is mid-tap/hold, so a slow operation (PLAN.md
-    # risk 3 -- airflow_mode transitions can take ~25-30s) is visible on a
-    # dashboard rather than looking like nothing is happening.
+    # Stage 4: true while Keypad::busy() is -- a tap (including its trailing
+    # gap) or a hold in progress. Stage 5 broadens this to Keypad::busy() OR
+    # Runner::busy(): a sequence can be between keypresses (e.g. FetchDiagnostics'
+    # settle steps) and still very much be "doing something" as far as a
+    # dashboard is concerned. Lets a dashboard show that a slow operation is in
+    # flight (PLAN.md risk 3: airflow_mode transitions can take ~25-30s) rather
+    # than the entity just appearing to sit still.
     busy:               {name: "MVHR Busy"}
     # Diagnostics -- diagnostic pages 2/3/11/19/24, only refreshed by
     # fetch_diagnostics (~15 min) -- see diagnostics.cpp.

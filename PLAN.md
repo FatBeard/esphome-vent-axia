@@ -303,7 +303,7 @@ time:
     id: ha_time
     timezone: Europe/Dublin      # pinned: build host is Etc/UTC, no DST rules
     on_time:
-      - seconds: 0, minutes: 30, hours: 4
+      - seconds: 0, minutes: [0, 15, 30, 45]   # every 15 min, wall-clock aligned
         then: {vent_axia.fetch_diagnostics: {id: vask}}
       - seconds: 0, minutes: 45, hours: 4        # the bypass settings, nightly
         then: {vent_axia.read_settings: {id: vask}}
@@ -469,7 +469,7 @@ What the flash confirmed on the unit, 12 Aug 2026:
 2. **Continuous boost is unsupported by decision, not oversight** (§4). Residual consequence: continuous boost shows as `boosting` true with `airflow_mode` reading `Normal`. Accepted, and now documented in the README's feature list rather than only here. **This is more routine than "set at the unit's own keypad" implied when it was written**: the house's wired wall switches produce exactly this state, confirmed 12 Aug 2026 when one was pressed mid-capture during stage 8's testing. So the `Normal`-while-boosting reading is an everyday occurrence, not an edge case — `boosting` (and the SW1/SW2/SW3 flags, though those only refresh with the daily diagnostics scrape) is where the truth lives. Still the right trade: it removes what would otherwise have been the design's least reliable decode.
 3. **`airflow_mode` transitions are slow and asymmetric.** Purge → Boost 30 is a 5.5s cancel hold, an 8s probe, up to four normalising taps with probes, then one tap: ~25–30s during which HA shows the old value. The `busy` binary sensor exists to surface this.
 4. **The purge screen layout is not established** — the notes record `Purge      120 m` / `100%` without settling which line is which. Parser accepts `Purge` on either line; the countdown mapping is a guess until stage 6.
-5. **Auto-recovery cannot distinguish us from a human at the unit's keypad.** Gating recovery on a long-unchanged menu screen makes a collision unlikely, not impossible. Scheduled work is at 04:05/04:30.
+5. **Auto-recovery cannot distinguish us from a human at the unit's keypad.** Gating recovery on a long-unchanged menu screen makes a collision unlikely, not impossible. `read_settings` and `sync_clock` are still confined to 04:05/04:45, but `fetch_diagnostics` moved (2026-08-12) from a single 04:30 window to every 15 minutes around the clock -- a deliberate widening of this collision window in exchange for fresher diagnostics, not an oversight (see the `on_time` comment in §6 / `mhrv.yaml`).
 6. **`Outdoor Temp`'s real range is unknown** (14 °C observed; 5–25 is a guess) and the open question from the old notes stands: whether it is a pure setpoint or also *reports* something. The stated test — write a distinctive value, check it at the next daily read with nobody touching the unit — was written as falling out of stage 5 for free, but there was no daily read until stage 8 added one (04:45) and no way to see the result until the same stage fixed the publish path. It is genuinely available now, and is the obvious first thing to do with the fix once it is flashed.
 7. **A second dongle (ESP8266 + RJ9 lead) is the cheapest real risk reduction**, removing "the house's ventilation is the dev target". It would pay for itself by stage 5.
 

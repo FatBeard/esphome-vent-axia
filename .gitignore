@@ -1,15 +1,22 @@
-# Real secrets, if anyone copies example/secrets.yaml.example here
+# Real secrets, if anyone copies example/secrets.yaml.example or
+# mhrv/secrets.yaml.example here
 secrets.yaml
 example/secrets.yaml
+mhrv/secrets.yaml
 
 # Host test build output
 tests/build/
 
-# ESPHome build output from the example configs
+# ESPHome build output from the example and live device configs
 .esphome/
+.pioenvs/
+.piolibdeps/
 *.bin
 *.elf
 
 # Python
 __pycache__/
 *.py[cod]
+
+# Local notes not intended for the repo.
+project_discord.md
