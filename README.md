@@ -100,7 +100,7 @@ dependency" -- not "tested on a unit".
 reinterprets the physical wired remote (16x2 display, Boost/Down/Select/Up)
 as a dashboard panel.
 
-![Sentinel Remote Card showing Boost Airflow at 48%, 22 minutes remaining](lovelace-card/MHRV-Card.png)
+<img src="lovelace-card/MHRV-Card.png" alt="Sentinel Remote Card showing Boost Airflow at 48%, 22 minutes remaining" width="196">
 
 ### Installation
 
