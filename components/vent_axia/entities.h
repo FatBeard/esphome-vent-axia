@@ -108,15 +108,17 @@ enum class SwitchKey : uint8_t {
 };
 
 enum class SelectKey : uint8_t {
-  // Normal / Boost 30 min / Boost 60 min / Purge (PLAN.md §3/§6) -- the
-  // Main key's cumulative press counter, exposed as an absolute set-point
-  // rather than four separate "press N times" buttons. Written via
-  // sequence.h's SetAirflowMode; NOT read back through it, unlike
-  // SwitchKey/NumberKey above -- see select.py and
+  // Normal / Boost 30 min / Boost 60 min / Boost Continuous / Purge
+  // (PLAN.md §3/§6) -- the Main key's cumulative press counter, exposed as
+  // an absolute set-point rather than five separate "press N times"
+  // buttons. Written via sequence.h's SetAirflowMode; NOT read back through
+  // it, unlike SwitchKey/NumberKey above -- see select.py and
   // VentAxiaHub::publish_airflow_mode_() for why the confirmed value comes
-  // from the passive status-line decode instead. Continuous boost is
-  // deliberately not a fifth option here -- PLAN.md §4/CLAUDE.md are
-  // explicit that this is a decision, not an oversight.
+  // from the passive status-line decode instead. Continuous boost was
+  // excluded here until 13 Aug 2026 (a decision, not an oversight, per
+  // CLAUDE.md/PLAN.md §4 at the time) -- reopened against live evidence
+  // from 192.168.1.200; see select.py and status.h's continuous_boost() for
+  // the discriminator that makes it decodable after all.
   AIRFLOW_MODE,
   COUNT,
 };

@@ -22,12 +22,14 @@ cmake -B build -S . && cmake --build build && ./build/run_tests
 
 The framework is hand-rolled (`tests/test_framework.h`) and has **no name filter** — `main()` runs the whole suite, which takes well under a second. To isolate a case, comment out others or add a temporary `TEST_CASE`; don't go looking for a `--filter` flag. `CMakeLists.txt` globs `test_*.cpp` and every component `.cpp` except `vent_axia.cpp`, so new files are picked up automatically. Warnings are errors (`-Wall -Wextra -Wpedantic -Werror`).
 
-Firmware builds go through Docker (no local ESPHome install). Run from `/home/brian/docker/esphome` (the parent of this repo):
+Firmware builds go through Docker (no local ESPHome install). **The mount is `/home/brian/docker`, not `/home/brian/docker/esphome`** — this repo is a *sibling* of `esphome/`, not a child of it, so the older `-v /home/brian/docker/esphome:/config` form fails with `No such file or directory` before the compiler is ever invoked (corrected 13 Aug 2026, having wasted a build round on it):
 
 ```sh
-docker run --rm -v /home/brian/docker/esphome:/config ghcr.io/esphome/esphome:latest compile esphome-vent-axia/mhrv/mhrv.yaml
-docker run --rm -v /home/brian/docker/esphome:/config ghcr.io/esphome/esphome:latest compile esphome-vent-axia/example/esp32-idf.yaml
+docker run --rm -v /home/brian/docker:/config ghcr.io/esphome/esphome:latest compile esphome-vent-axia/mhrv/mhrv.yaml
+docker run --rm -v /home/brian/docker:/config ghcr.io/esphome/esphome:latest compile esphome-vent-axia/example/esp32-idf.yaml
 ```
+
+Both can run concurrently — different build directories, and only `mhrv.yaml` needs secrets (resolved from `mhrv/secrets.yaml`, next to the config). Each takes well under a minute warm.
 
 Compile **both** an ESP8266 and an ESP32-IDF target before calling a change done. The IDF example declares no `time:` platform, so it is the only thing that exercises the `USE_TIME`-undefined paths; `esphome config` does not invoke the C++ compiler and catches neither that nor ESPHome signature mismatches. When compiling in a shell pipeline, capture the exit code explicitly (`EXIT=$?`) — a trailing `grep` will otherwise mask a failed build.
 
@@ -61,7 +63,7 @@ Each of these was paid for in debugging on real hardware. They carry explanatory
 ## Constraints
 
 - **The rollout is underway, not hypothetical.** The live unit has been flashed with the `vent_axia` component and runs `mhrv.yaml` with `read_only: false`: every currently-implemented entity and sequence (fetch_diagnostics, read_settings, sync_clock, the raw key buttons, summer_mode, the bypass numbers) transmits to the real unit and has been exercised against it. PLAN.md §8's staged order is the record of what's been tried and in what sequence — keep extending it as new features go live rather than treating it as pre-rollout planning. Flashing (`esphome upload`/`run`) is a real, deliberate action now, not a forbidden one: compile and validate first (see Commands above), and confirm with the user before flashing rather than doing it as a matter of course, since it's still a physical, hard-to-reverse action on hardware that ventilates an occupied house.
-- **Continuous boost is out of scope by decision, not oversight** (PLAN.md §4, risk 2) — it is indistinguishable from a high normal rate on the display. Do not "fix" this by adding a select option or a decode.
+- **Continuous boost IS supported** as of 13 Aug 2026 — the old "out of scope by decision" constraint was retired after the assumption behind it was re-tested on the live unit (PLAN.md §4 and §8 stage 9). It was never truly indistinguishable: only *line2* is ambiguous, and line2 was never the discriminator. Line1's `Boost Airflow` is, and the component already rested `boosting`, `airflow_mode`'s whole Boost-vs-Normal split and `SetAirflowMode`'s normalise probe on catching exactly that. The live invariant that replaces it: **`StatusTracker::CONTINUOUS_CONFIRM_MS` must exceed `ALTERNATION_TIMEOUT_MS`.** At a timed boost's expiry the countdown vanishes from line2 while `boosting_` stays sticky-true for up to the alternation timeout; anything shorter reports continuous boost on *every* timed-boost expiry. Measured on the unit: 14.0s from the last `Boost Airflow` frame to `boosting()` dropping, hence 20000 against a nominal 12000 — do not "tidy" the two constants toward each other.
 - Work proceeds one stage at a time: implement with a Sonnet subagent plus host tests, review as Opus, apply findings with regression tests, then commit. A review after ten files exist is a rewrite, not a review.
 
 ## Conventions

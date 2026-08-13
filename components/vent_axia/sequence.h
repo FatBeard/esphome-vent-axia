@@ -1081,18 +1081,25 @@ class SyncClock final : public Sequence {
 // SetAirflowMode's own class comment (seq_set_airflow_mode.cpp) for the full
 // step-by-step reasoning.
 
-/// The four targets `airflow_mode` (select.py) can be set to -- deliberately
-/// ordered to match select.py's AIRFLOW_MODE_OPTIONS list index-for-index, so
-/// VentAxiaSelect::control(size_t index) (vent_axia.h) can hand the raw
+/// The five targets `airflow_mode` (select.py) can be set to -- deliberately
+/// ordered to match select.py's AIRFLOW_MODE_OPTIONS list index-for-index,
+/// so VentAxiaSelect::control(size_t index) (vent_axia.h) can hand the raw
 /// index straight to SetAirflowMode::configure() with no separate lookup
-/// table. Continuous boost is NOT a fifth member here -- PLAN.md §4 and
-/// CLAUDE.md's device invariants are explicit that this is a decision, not
-/// an oversight: it is the one boost mode with no reliable evidence on the
-/// display (a plain airflow percentage indistinguishable from a high normal
-/// rate), so it is not selectable and not decoded. Normalising below may
-/// still pass THROUGH it transiently on the way back to Normal -- that is
-/// harmless and deliberate, see SetAirflowMode's own comment.
-enum class AirflowTarget : uint8_t { NORMAL, BOOST_30, BOOST_60, PURGE };
+/// table. THE ORDER IS LOAD-BEARING: vent_axia.cpp's write_select() casts
+/// the select's raw option index straight to this enum, so
+/// BOOST_CONTINUOUS must sit between BOOST_60 and PURGE in BOTH this enum
+/// and select.py's list, or the two silently drift out of sync. Reopened
+/// 13 Aug 2026 against live evidence from 192.168.1.200 (see the plan this
+/// shipped under): continuous boost was excluded here on the grounds it had
+/// no reliable evidence on the display; status::StatusTracker::
+/// continuous_boost() now decodes it from the same "Boost Airflow" line1
+/// signal boosting() already trusts, confirmed only after
+/// CONTINUOUS_CONFIRM_MS to rule out a timed boost's own trailing sticky
+/// window (status.h). Normalising below may still pass THROUGH it
+/// transiently on the way back to Normal when the TARGET is something else
+/// -- that remains harmless and deliberate, see SetAirflowMode's own
+/// comment.
+enum class AirflowTarget : uint8_t { NORMAL, BOOST_30, BOOST_60, BOOST_CONTINUOUS, PURGE };
 
 /// Sets the Main-key boost/purge state to an ABSOLUTE target. Main is a
 /// cumulative press counter with no usable timeout (1 press = 30 min boost,
@@ -1151,10 +1158,10 @@ enum class AirflowTarget : uint8_t { NORMAL, BOOST_30, BOOST_60, PURGE };
 ///     -- mirrors mhrv_orig's own boost_set, which silently skipped
 ///     applying anything in exactly this situation.
 ///  5. APPLY_TAP / APPLY_WAIT: once confirmed Normal, tap Main exactly as
-///     many times as the target needs from there -- 0/1/2 for
-///     Normal/Boost30/Boost60 -- queued as a batch and drained via Keypad's
-///     own queue, the same batching GotoMenu uses for its own taps
-///     (sequence.cpp).
+///     many times as the target needs from there -- 0/1/2/3 for
+///     Normal/Boost30/Boost60/Continuous -- queued as a batch and drained
+///     via Keypad's own queue, the same batching GotoMenu uses for its own
+///     taps (sequence.cpp).
 ///
 /// Accepted edge, chosen deliberately rather than left implicit: purging()'s
 /// sticky ALTERNATION_TIMEOUT_MS window (~12s, status.h) means a purge that
@@ -1218,8 +1225,9 @@ class SetAirflowMode final : public Sequence {
   // Worst case: CANCEL_PURGE/OPEN_PURGE (5.5s) + CANCEL_SETTLE (0.4s) + the
   // normalise loop's own worst case (4 guard iterations, each up to
   // ~8s probe + ~0.45s tap+key_gap + 1s settle =~ 9.45s -- 4*9.45 =~ 37.8s)
-  // + APPLY's own worst case (2 taps, ~0.9s) -- about 44.6s. Comfortable
-  // headroom above that, same "don't cut it close" reasoning as every other
+  // + APPLY's own worst case (3 taps, for BOOST_CONTINUOUS, ~1.35s) -- about
+  // 45s. Comfortable headroom above that, same "don't cut it close"
+  // reasoning as every other
   // timeout_ms() override in this file -- and in practice unreachable, since
   // every RUNNING state in this sequence is already internally bounded (see
   // the class comment), unlike e.g. WriteSetting's VERIFY/OPEN steps which
@@ -1262,7 +1270,7 @@ class SetAirflowMode final : public Sequence {
   /// APPLY_TAP/FINISHED -- see the class comment, steps 3-5.
   Poll after_probe_(bool boosting_now);
 
-  /// 0/1/2 Main taps from Normal to reach `target` -- PURGE never reaches
+  /// 0/1/2/3 Main taps from Normal to reach `target` -- PURGE never reaches
   /// here, see CHECK_CURRENT/hold_main_ above.
   static uint8_t presses_for_(AirflowTarget target);
 

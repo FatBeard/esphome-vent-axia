@@ -183,12 +183,21 @@ TEST_CASE(status_tracker_purging_flag_from_purge_keyword_on_either_line) {
 
 TEST_CASE(status_tracker_boost_time_remaining_unpublished_without_a_countdown) {
   StatusTracker t;
-  // Continuous boost (or plain normal airflow): a percentage with no
-  // countdown anywhere. boost_time_remaining must stay unpublished -- this
-  // is the documented, deliberate behaviour, not a bug.
+  // A percentage with no countdown anywhere -- boost_time_remaining must
+  // stay unpublished regardless of whether this turns out to be a genuine
+  // continuous episode or just the first frame of one: that is still the
+  // documented, deliberate behaviour (there really is no countdown to
+  // report), not a bug. What CHANGED 13 Aug 2026 (see the plan this shipped
+  // under) is that continuous boost is no longer left undecoded elsewhere --
+  // continuous_boost() answers that question separately, and on a single
+  // frame like this one it correctly answers "not yet confirmed" rather than
+  // guessing ahead of CONTINUOUS_CONFIRM_MS -- see the dedicated
+  // continuous_boost() tests below for the confirmed case.
   t.update("Boost Airflow   ", "48%             ", true, 0);
   CHECK(*t.boosting());
   CHECK(!t.boost_time_remaining().has_value());
+  CHECK(t.continuous_boost().has_value());
+  CHECK(!*t.continuous_boost());
 }
 
 TEST_CASE(status_tracker_airflow_percent_frozen_while_parked) {
@@ -198,4 +207,149 @@ TEST_CASE(status_tracker_airflow_percent_frozen_while_parked) {
 
   t.update("Diagnostic  05  ", "0000            ", false, 1000);
   CHECK_EQ(*t.airflow_percent(), 18);  // unchanged while off the status screen
+}
+
+// ------------------------------------------------------ continuous_boost --
+// Reopened 13 Aug 2026 against live evidence from 192.168.1.200 (see the
+// plan this shipped under). The central hazard: a timed boost's own expiry
+// looks, for up to ALTERNATION_TIMEOUT_MS (plus a few seconds of observed
+// real-world jitter), identical to the trailing edge of a genuine
+// continuous episode -- countdown gone, boosting_ still sticky-true.
+// CONTINUOUS_CONFIRM_MS (20s), required to exceed ALTERNATION_TIMEOUT_MS
+// (12s) by a healthy margin, is what tells them apart.
+
+TEST_CASE(continuous_boost_false_before_the_confirm_window_elapses) {
+  StatusTracker t;
+  t.update("Boost Airflow   ", "48%             ", true, 0);
+  CHECK(t.continuous_boost().has_value());
+  CHECK(!*t.continuous_boost());
+
+  // "Boost Airflow" keeps reappearing (keeping boosting_ genuinely sticky,
+  // the way real hardware alternates) but well under CONTINUOUS_CONFIRM_MS
+  // of total elapsed time with no countdown ever parsed.
+  t.update("Summer Bypass On", "48%             ", true, 5000);
+  t.update("Boost Airflow   ", "48%             ", true, 9000);
+  CHECK(!*t.continuous_boost());
+}
+
+TEST_CASE(continuous_boost_true_once_past_the_confirm_window) {
+  StatusTracker t;
+  t.update("Boost Airflow   ", "48%             ", true, 0);       // ms_without_countdown_ = 0
+  t.update("Summer Bypass On", "48%             ", true, 6000);    // += 6000 = 6000
+  t.update("Boost Airflow   ", "48%             ", true, 13000);   // += 7000 = 13000 (re-matches, stays sticky)
+  CHECK(!*t.continuous_boost());
+
+  t.update("Summer Bypass On", "48%             ", true, 19000);   // += 6000 = 19000, still under 20000
+  CHECK(!*t.continuous_boost());
+
+  // Past CONTINUOUS_CONFIRM_MS of total elapsed time with no countdown ever
+  // parsed, and boosting_ has never gone inactive (last real "Boost Airflow"
+  // sighting only 7900ms ago at this point, well inside ALTERNATION_TIMEOUT_MS)
+  // -- now genuinely confirmed continuous.
+  t.update("Summer Bypass On", "48%             ", true, 20900);   // += 1900 = 20900
+  CHECK(*t.boosting());
+  CHECK(t.continuous_boost().has_value());
+  CHECK(*t.continuous_boost());
+}
+
+TEST_CASE(continuous_boost_never_true_across_a_timed_boosts_own_expiry) {
+  // THE KEY REGRESSION. A 30-minute boost (compressed to 3m -> 2m -> 1m
+  // ticks so the test doesn't need to simulate 30 real minutes) that
+  // genuinely expires must never report continuous. Live evidence (13 Aug
+  // 2026, 192.168.1.200) shows a real expiry moves line1 AND line2 together
+  // in the SAME frame -- "Boost Airflow"/"NN% NNm" straight to (e.g.)
+  // "Low Airflow"/"18%" -- so unlike a genuine continuous episode (where
+  // "Boost Airflow" keeps reappearing every 6-8s indefinitely with line2
+  // never showing a countdown at all), there is no drawn-out stretch of
+  // "Boost Airflow" persisting with no countdown here. The only residual
+  // hazard is boosting_'s own stickiness: it stays active for up to
+  // ALTERNATION_TIMEOUT_MS (measured live at up to 14.0s, see
+  // CONTINUOUS_CONFIRM_MS's own comment) after that last real "Boost
+  // Airflow" sighting, during which this accumulator keeps advancing from
+  // wherever the last countdown reset it to.
+  StatusTracker t;
+  t.update("Boost Airflow   ", "48%       3m    ", true, 0);
+  CHECK(!*t.continuous_boost());
+  t.update("Boost Airflow   ", "48%       2m    ", true, 60000);
+  CHECK(!*t.continuous_boost());
+  t.update("Boost Airflow   ", "48%       1m    ", true, 120000);
+  CHECK(!*t.continuous_boost());  // still ticking -- each tick resets the accumulator
+
+  // Genuine expiry, same-frame transition, a few seconds after the last
+  // tick (the boost had under a minute left showing "1m"): line1 stops
+  // saying "Boost Airflow" and line2 loses its countdown in the same
+  // update(). boosting_ stays sticky-true (last real match only 4000ms ago,
+  // comfortably under ALTERNATION_TIMEOUT_MS), so the accumulator starts
+  // climbing from the 0 the last tick reset it to.
+  t.update("Low Airflow     ", "18%             ", true, 124000);  // +4000 without a countdown
+  CHECK(*t.boosting());  // still sticky-true -- the real cessation hasn't aged out yet
+  CHECK(!*t.continuous_boost());
+
+  // Right at the edge of ALTERNATION_TIMEOUT_MS since the last real "Boost
+  // Airflow" match (120000): 11900ms elapsed, boosting_ still (barely)
+  // active, accumulator at its peak for this episode -- nowhere near
+  // CONTINUOUS_CONFIRM_MS's 20000ms threshold, which is exactly the margin
+  // the constant exists to guarantee.
+  t.update("Low Airflow     ", "18%             ", true, 131900);
+  CHECK(*t.boosting());
+  CHECK(!*t.continuous_boost());
+
+  // 200ms later boosting_ finally ages out (12100ms since the last real
+  // match) -- the accumulator resets to 0 on the very same frame, so
+  // continuous_boost() never had a chance to cross the threshold at any
+  // point in this whole episode.
+  t.update("Low Airflow     ", "18%             ", true, 132100);
+  CHECK(!*t.boosting());
+  CHECK(!*t.continuous_boost());
+}
+
+TEST_CASE(continuous_boost_never_flashes_when_a_timed_boosts_countdown_lands_a_frame_late) {
+  // Closes the second race the plan documents: resetting the accumulator on
+  // "!boosting_.active" (not merely on seeing a countdown) means the clock
+  // starts at the EPISODE, not at the first countdown sighting -- so a
+  // countdown landing a frame or two after line1's "Boost Airflow" first
+  // appears can never flash Boost Continuous first, however that ordering
+  // happens to land.
+  StatusTracker t;
+  t.update("Normal Airflow  ", "18%             ", true, 0);  // not boosting -- accumulator pinned at 0
+  CHECK(!*t.continuous_boost());
+
+  // Boost starts. First frame or two show "Boost Airflow" with no countdown
+  // parsed yet (simulating the countdown landing on line2 a beat later).
+  t.update("Boost Airflow   ", "48%             ", true, 3400);
+  CHECK(!*t.continuous_boost());
+  t.update("Boost Airflow   ", "48%             ", true, 6800);
+  CHECK(!*t.continuous_boost());
+
+  // The countdown lands -- resets the accumulator again, same as any other
+  // countdown sighting.
+  t.update("Boost Airflow   ", "48%       30m   ", true, 10200);
+  CHECK(!*t.continuous_boost());
+}
+
+TEST_CASE(continuous_boost_accumulator_freezes_while_parked_on_a_menu_screen) {
+  // Mirrors status_tracker_does_not_age_a_flag_out_while_parked_on_a_menu_screen
+  // above -- a diagnostics fetch or clock sync parking the display in a menu
+  // must not spend that wall-clock time against the accumulator's budget,
+  // or a routine 15-minute scrape could itself manufacture a false Boost
+  // Continuous confirmation.
+  StatusTracker t;
+  t.update("Boost Airflow   ", "48%             ", true, 0);
+  t.update("Boost Airflow   ", "48%             ", true, 5000);
+  CHECK(!*t.continuous_boost());  // 5000ms without a countdown so far
+
+  // Parked in a menu for well over CONTINUOUS_CONFIRM_MS. is_status_screen
+  // is false throughout, so update() returns before the accumulator logic
+  // ever runs.
+  t.update("Diagnostic  05  ", "0000            ", false, 10000);
+  t.update("Diagnostic  06  ", "0000            ", false, 15000);
+  t.update("Set Clock       ", "Sun 23:49       ", false, 30000);
+  CHECK(*t.boosting());           // still sticky -- the park didn't age this out either
+  CHECK(!*t.continuous_boost());  // must not have accrued the ~25s spent parked
+
+  // Back on the status screen immediately afterwards -- only ~100ms of
+  // *visible* time has actually elapsed against the accumulator's budget
+  // (5000ms from before the park, plus ~100ms now), nowhere near 20000ms.
+  t.update("Summer Bypass On", "48%             ", true, 30100);
+  CHECK(!*t.continuous_boost());
 }

@@ -34,14 +34,24 @@ Under construction. See `PLAN.md` for the design and the staged rollout.
   has no daylight-saving awareness and drifts after ~2 weeks without mains
   power.
 - **Boost and purge as a set-point** — an `airflow_mode` select (Normal /
-  Boost 30 min / Boost 60 min / Purge) rather than key presses, since the
-  unit's Main key is a cumulative counter. **Continuous boost is deliberately
-  not an option**, and this has a visible consequence: the unit shows no
-  countdown for it, so a continuous boost — which is what a wired wall switch
-  triggers, the common everyday case, not just a keypad press at the unit —
-  reads as `boosting` true with `airflow_mode` saying `Normal`. The boost
-  binary sensor is the honest answer there; the select only describes states
-  this component can itself command and confirm.
+  Boost 30 min / Boost 60 min / Boost Continuous / Purge) rather than key
+  presses, since the unit's Main key is a cumulative counter.
+  **Continuous boost is reported and commandable.** It shows no countdown on
+  the display, so it is decoded as "boosting, not purging, and no countdown
+  seen at any point in this boost episode" — held for longer than the status
+  line's own alternation timeout before being believed, so that a timed boost
+  expiring (countdown gone, boost flag not yet aged out) is never mistaken for
+  it. That confirmation costs ~20s, so a continuous boost takes about that
+  long to appear.
+- **A `Boost Continuous` reading may not be cancellable from Home Assistant.**
+  A wired wall switch — the common everyday cause — drives the unit's own
+  overrun timer, and whether Main presses can clear one is not established.
+  If they cannot, selecting `Normal` exhausts `SetAirflowMode`'s normalise
+  guard and logs "could not normalise back to Normal" rather than silently
+  doing nothing. Note also that the `Wall Switch SW1-3` binary sensors read
+  **OFF** throughout a switch-initiated boost: the switch is momentary, so the
+  contact those diagnostic pages sample has already reopened. They are not a
+  corroborating signal for continuous boost — the status line is.
 - **Raw keypad escape hatch** — Up/Down/Set/Main exposed as bounded-duration
   buttons (never hold-switches, which could stick a key down forever across a
   reboot) for cases the decoded entities don't cover.

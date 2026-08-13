@@ -206,13 +206,16 @@ switch:
 select:
   - platform: vent_axia
     # Stage 7: boost/purge as an absolute set-point (PLAN.md §3/§6) -- Normal /
-    # Boost 30 min / Boost 60 min / Purge. Continuous boost is deliberately
-    # NOT an option (PLAN.md §4/CLAUDE.md device invariants). NOT optimistic,
-    # same shape as summer_mode above -- see select.py -- so this reflects
-    # whatever the unit's own status line last confirmed, whether that came
-    # from a Home Assistant command or a press at the unit's own keypad; a
-    # transition can take ~25-30s (PLAN.md risk 3), during which `busy` below
-    # stays on. Live now that read_only above is false.
+    # Boost 30 min / Boost 60 min / Boost Continuous / Purge. Continuous boost
+    # was excluded until 13 Aug 2026 (PLAN.md §4/CLAUDE.md device invariants
+    # at the time); reopened against live evidence from 192.168.1.200 -- see
+    # select.py and status.h's continuous_boost(). NOT optimistic, same shape
+    # as summer_mode above -- see select.py -- so this reflects whatever the
+    # unit's own status line last confirmed, whether that came from a Home
+    # Assistant command or a press at the unit's own keypad; a transition can
+    # take ~25-30s (PLAN.md risk 3), plus up to CONTINUOUS_CONFIRM_MS (20s)
+    # more specifically to confirm a continuous result, during which `busy`
+    # below stays on. Live now that read_only above is false.
     airflow_mode: {name: "Airflow Mode"}
 
 number:

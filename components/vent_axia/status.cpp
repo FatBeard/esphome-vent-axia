@@ -174,6 +174,32 @@ void StatusTracker::update(const std::string &line1, const std::string &line2, b
   touch_(this->purging_, values.purge, delta_ms);
   this->airflow_percent_ = values.airflow_percent;
   this->countdown_minutes_ = values.countdown_minutes;
+
+  // Per-episode accumulator for continuous_boost() -- see CONTINUOUS_CONFIRM_MS
+  // and continuous_boost()'s own comments (status.h). Reset to 0, rather than
+  // advanced, whenever ANY of: the episode is over (boosting_ no longer
+  // active, read POST-touch_ above -- the same reading the rest of this
+  // class already trusts), a countdown WAS parsed this frame (a timed boost,
+  // however briefly its countdown has been visible this episode), or purge
+  // was seen (a separate axis from the boost counter -- see
+  // SetAirflowMode's own class comment in sequence.h -- not to be conflated
+  // with continuous boost even though Purge also shows "Boost Airflow"-like
+  // alternation). Otherwise it advances by delta_ms, the same "time since
+  // update() last ran" interval every Flag in this class ages by, so a menu
+  // park freezes this accumulator exactly like it freezes every Flag.
+  if (!this->boosting_.active || values.countdown_minutes.has_value() || values.purge) {
+    this->ms_without_countdown_ = 0;
+  } else {
+    this->ms_without_countdown_ += delta_ms;
+  }
+}
+
+std::optional<bool> StatusTracker::continuous_boost() const {
+  if (!this->has_status_screen_) {
+    return std::nullopt;
+  }
+  return this->boosting_.active && !this->purging_.active &&
+         this->ms_without_countdown_ >= CONTINUOUS_CONFIRM_MS;
 }
 
 }  // namespace status

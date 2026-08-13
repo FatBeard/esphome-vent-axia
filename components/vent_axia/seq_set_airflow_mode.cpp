@@ -19,6 +19,25 @@ uint8_t SetAirflowMode::presses_for_(AirflowTarget target) {
       return 1;
     case AirflowTarget::BOOST_60:
       return 2;
+    case AirflowTarget::BOOST_CONTINUOUS:
+      // The manual's press table, measured on this unit (mhrv_orig/
+      // vent-axia-esphome-project.md:51): 1 = Boost 30, 2 = Boost 60,
+      // 3 = continuous, 4 = back to Normal.
+      //
+      // Three taps in one batch is the case key_gap exists for, and the
+      // evidence is specifically about THIS target
+      // (vent-axia-esphome-project.md:88-91): 400ms "is still fast enough
+      // for the Boost press-counter: three taps land exactly on
+      // 'continuous', not on three separate 30-minute boosts". Note that
+      // Keypad's key_gap_ms_ (400ms default, keypad.h) is what enforces
+      // that, NOT TAP_MS above -- TAP_MS is the 50ms duration of each
+      // individual press, a different quantity. Do not be tempted by
+      // mhrv_orig/controls.yaml:324's "Presses 250ms apart are counted
+      // individually and correctly": that comment predates the measurement
+      // that overturned it (250ms drops roughly one press in ten,
+      // vent-axia-esphome-project.md:84 and CLAUDE.md's key_gap invariant),
+      // and 250ms would silently merge taps here.
+      return 3;
     case AirflowTarget::PURGE:
     default:
       return 0;  // unreachable -- PURGE is handled entirely by CHECK_CURRENT/hold_main_, never reaches APPLY
@@ -211,13 +230,16 @@ Poll SetAirflowMode::poll() {
     // mhrv_orig's own `delay: 1s` before re-probing -- long enough for the
     // unit's own counter and display to have genuinely caught up to the tap
     // just sent, so the next probe judges the NEW state rather than stale
-    // evidence of the old one. Normalising may pass THROUGH continuous
-    // boost transiently on the way back around the cycle (e.g. Boost30 ->
-    // Boost60 -> Continuous -> Normal is one unavoidable lap starting from
-    // Boost30) -- deliberate and harmless, not a bug: continuous boost is
-    // unsupported only as a SELECTABLE TARGET (PLAN.md §4), and this
-    // sequence is never polled or read while merely passing through it, so
-    // nothing ever observes or reports that transient state.
+    // evidence of the old one. Normalising may still pass THROUGH continuous
+    // boost transiently on the way back to Normal when the TARGET is
+    // something else (e.g. Boost30 -> Boost60 -> Continuous -> Normal is one
+    // unavoidable lap starting from Boost30) -- deliberate and harmless, not
+    // a bug: this sequence is never polled or read while merely passing
+    // through it here, so nothing observes or reports that transient
+    // intermediate state. As of 13 Aug 2026 BOOST_CONTINUOUS is also a
+    // first-class TARGET in its own right (AirflowTarget's own comment,
+    // sequence.h) -- this note is only about the transient pass-through case
+    // above, not about selecting it directly.
     case NORMALISE_SETTLE:
       return this->elapsed() >= NORMALISE_SETTLE_MS ? this->goto_step(PROBE_CHECK) : Poll::RUNNING;
 

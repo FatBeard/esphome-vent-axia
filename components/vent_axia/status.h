@@ -76,15 +76,23 @@ LineValues parse_line_values(const std::string &line1, const std::string &line2)
 /// otherwise read as, say, the bypass having closed, when all that happened
 /// is the display looked elsewhere for a while.
 ///
-/// Continuous boost is deliberately NOT modelled here (PLAN.md §4, risk 2):
-/// timed boost shows a countdown and purge shows the "Purge" keyword, but
-/// continuous boost shows only a plain airflow percentage indistinguishable
-/// from a high normal rate. `boosting()` still goes true off `Boost
-/// Airflow` (a fine hint), but there is no way to add "is it continuous"
-/// without resting the whole answer on catching one 3.4s-alternating line,
-/// so nobody should try. boost_time_remaining() simply stays unpublished
-/// (nullopt) whenever no countdown was parsed -- continuous boost included
-/// -- and that is the correct state, not a gap. Do not "fix" this later.
+/// Continuous boost IS modelled here, via continuous_boost() -- reopened
+/// 13 Aug 2026 against live evidence from 192.168.1.200 (see the plan this
+/// shipped under). The original reasoning was that continuous boost shows
+/// only a plain airflow percentage on line2, indistinguishable from a high
+/// Normal rate -- true, but beside the point: line1's "Boost Airflow" is
+/// the discriminator boosting() itself already trusts, and continuous_boost()
+/// rests on nothing new -- it is boosting_ staying true for
+/// CONTINUOUS_CONFIRM_MS with no countdown ever parsed in the same episode.
+/// The one real hazard is a TIMED boost's own expiry: its countdown vanishes
+/// from line2 immediately, but boosting_ (sticky for ALTERNATION_TIMEOUT_MS)
+/// does not drop for up to that long afterwards, so a naive "no countdown"
+/// check would report continuous on every timed-boost expiry.
+/// CONTINUOUS_CONFIRM_MS, required to exceed ALTERNATION_TIMEOUT_MS (see its
+/// own comment), is what tells a genuine continuous episode apart from that
+/// trailing window. boost_time_remaining() stays unpublished (nullopt)
+/// whenever no countdown was parsed -- continuous boost included -- and
+/// that remains correct: there really is no countdown to report.
 class StatusTracker {
  public:
   /// Bypass is the one flag the old config had hard data for
@@ -99,6 +107,31 @@ class StatusTracker {
   /// it reads as obviously tunable if hardware turns out to alternate
   /// slower than observed.
   static constexpr uint32_t ALTERNATION_TIMEOUT_MS = 12000;
+
+  /// Must EXCEED ALTERNATION_TIMEOUT_MS. At a timed boost's expiry, line2's
+  /// countdown vanishes immediately, but boosting_ (a Flag whose own timeout
+  /// IS ALTERNATION_TIMEOUT_MS) stays sticky-true for up to that long
+  /// afterwards -- it only ages out once "Boost Airflow" has genuinely
+  /// stopped arriving for a full ALTERNATION_TIMEOUT_MS. Any confirm window
+  /// <= ALTERNATION_TIMEOUT_MS would therefore report continuous boost on
+  /// every single timed-boost expiry, not just a genuine continuous episode.
+  /// Measured 13 Aug 2026 on the live unit (192.168.1.200), on a real
+  /// switch-driven continuous boost actually ending: 14.0s elapsed from the
+  /// LAST "Boost Airflow" frame (21:20:49) to boosting() finally dropping to
+  /// false (21:21:03) -- against a nominal ALTERNATION_TIMEOUT_MS of 12000ms,
+  /// a full 2s over. (The extra ~2s is most likely client-side SSE/
+  /// timestamping jitter rather than the unit itself, but this is not tuned
+  /// to within 1s of an empirically observed edge on the strength of an
+  /// assumption about where that jitter came from.) The same capture also
+  /// showed line1 and line2 changing in the SAME frame at the moment boost
+  /// actually ended ("Boost Airflow"/"48%...m" -> "Low Airflow"/"18%" -- both
+  /// lines moved together) -- confirming the countdown's disappearance is
+  /// the right trigger for starting this accumulator's clock, not a separate
+  /// event that might lag it. 20000ms is the observed 14.0s worst case plus
+  /// ~6s of margin, not a round number picked for looks; a genuine switch
+  /// overrun episode runs ~10 minutes end to end, so a 20s confirm window
+  /// costs about 3% of it.
+  static constexpr uint32_t CONTINUOUS_CONFIRM_MS = 20000;
 
   /// Feeds one decoded frame. `is_status_screen` must be false whenever
   /// line1 is a menu/diagnostic screen -- see the class comment -- so a
@@ -133,6 +166,13 @@ class StatusTracker {
     return this->has_status_screen_ ? this->countdown_minutes_ : std::nullopt;
   }
 
+  /// Continuous boost: boosting_ currently active, not purging_, and no
+  /// countdown has been seen at any point in THIS boost episode for longer
+  /// than CONTINUOUS_CONFIRM_MS -- see that constant's own comment for why
+  /// the threshold must exceed ALTERNATION_TIMEOUT_MS. std::nullopt until
+  /// has_status_screen_, same as every other accessor here.
+  std::optional<bool> continuous_boost() const;
+
  private:
   struct Flag {
     explicit Flag(uint32_t timeout) : timeout_ms(timeout) {}
@@ -162,6 +202,11 @@ class StatusTracker {
 
   std::optional<int> airflow_percent_;
   std::optional<int> countdown_minutes_;
+
+  // Per-episode "how long has boosting_ been active with no countdown ever
+  // parsed" clock backing continuous_boost() -- see update()'s own comment
+  // for the reset rules and continuous_boost() for how it's read.
+  uint32_t ms_without_countdown_{0};
 };
 
 }  // namespace status

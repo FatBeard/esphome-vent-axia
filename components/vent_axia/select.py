@@ -17,14 +17,18 @@ VentAxiaSelect = vent_axia_ns.class_("VentAxiaSelect", select.Select, cg.Parente
 #
 # The list order is LOAD-BEARING, not cosmetic: vent_axia.h's
 # VentAxiaSelect::control(size_t index) hands the raw index straight through
-# to sequence.h's AirflowTarget (NORMAL=0, BOOST_30=1, BOOST_60=2, PURGE=3)
-# with no separate lookup table, so this order must keep matching that enum
-# exactly. Continuous boost is deliberately NOT a fifth option -- PLAN.md §4
-# and CLAUDE.md's device invariants are explicit that this is a decision,
-# not an oversight: it is the one boost mode with no reliable evidence on
-# the display (a plain airflow percentage indistinguishable from a high
-# Normal rate), so it is neither selectable nor decoded.
-AIRFLOW_MODE_OPTIONS = ["Normal", "Boost 30 min", "Boost 60 min", "Purge"]
+# to sequence.h's AirflowTarget (NORMAL=0, BOOST_30=1, BOOST_60=2,
+# BOOST_CONTINUOUS=3, PURGE=4) with no separate lookup table, so this order
+# must keep matching that enum exactly. Continuous boost was excluded here
+# until 13 Aug 2026, on the grounds it had no reliable evidence on the
+# display -- reopened against live evidence from 192.168.1.200 (see the plan
+# this shipped under): StatusTracker::continuous_boost() (status.h) decodes
+# it from the same "Boost Airflow" line1 signal boosting() already trusts,
+# confirmed only after CONTINUOUS_CONFIRM_MS (20s, comfortably over
+# ALTERNATION_TIMEOUT_MS's 12s sticky window -- see that constant's own
+# comment for the live measurement behind the margin) to rule out a timed
+# boost's own trailing edge.
+AIRFLOW_MODE_OPTIONS = ["Normal", "Boost 30 min", "Boost 60 min", "Boost Continuous", "Purge"]
 
 # Deliberately NOT optimistic (PLAN.md §6), same reasoning as switch.py's
 # summer_mode: control() (vent_axia.h) only ever starts a SetAirflowMode run

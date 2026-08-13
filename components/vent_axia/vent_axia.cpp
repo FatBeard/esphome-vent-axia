@@ -507,17 +507,29 @@ void VentAxiaHub::publish_airflow_mode_() {
     if (remaining.has_value() && *remaining > 30) {
       this->was_boost_60_this_episode_ = true;
     }
-    if (!remaining.has_value()) {
-      // Continuous boost: see publish_airflow_mode_()'s own comment
-      // (vent_axia.h) -- no countdown is ever shown for it, so it is
-      // indistinguishable here from a high Normal rate and reads as Normal.
-      // Deliberately leaves the latch untouched either way: continuous
-      // offers no 30-vs-60 evidence of its own, and it does not clear the
-      // episode either -- boosting() stays true straight through it (all
-      // three of Boost30/Boost60/Continuous show "Boost Airflow" on line1,
+    const std::optional<bool> continuous = this->status_.continuous_boost();
+    if (!remaining.has_value() && continuous.has_value() && *continuous) {
+      // Continuous boost, CONFIRMED -- see StatusTracker::continuous_boost()'s
+      // own comment (status.h) for the CONTINUOUS_CONFIRM_MS window this
+      // rests on. Reopened 13 Aug 2026 against live evidence from
+      // 192.168.1.200 (see the plan this shipped under). Deliberately leaves
+      // the latch untouched either way: continuous offers no 30-vs-60
+      // evidence of its own, and it does not clear the episode either --
+      // boosting() stays true straight through it (all three of
+      // Boost30/Boost60/Continuous show "Boost Airflow" on line1,
       // sequence.h's SetAirflowMode class comment), so whatever the latch
       // already knew from before continuous still applies if a countdown
       // reappears afterwards.
+      mode = "Boost Continuous";
+    } else if (!remaining.has_value()) {
+      // Not (yet) confirmed continuous: either CONTINUOUS_CONFIRM_MS hasn't
+      // elapsed yet since the countdown last disappeared (which includes the
+      // ordinary case of a timed boost whose countdown simply hasn't landed
+      // on this particular frame), or this is squarely inside the trailing
+      // ALTERNATION_TIMEOUT_MS window right after a timed boost's own expiry
+      // -- see CONTINUOUS_CONFIRM_MS's comment for why that window must not
+      // be misread as continuous. Reads as Normal until continuous_boost()
+      // itself confirms; never guess ahead of it.
       mode = "Normal";
     } else if (this->was_boost_60_this_episode_) {
       mode = "Boost 60 min";  // either >30 right now, or latched from earlier this same episode

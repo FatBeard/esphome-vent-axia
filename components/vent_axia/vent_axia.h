@@ -298,14 +298,19 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   /// rather than ageing (status.h's own class comment on is_status_screen),
   /// so they need no equivalent special case here.
   ///
-  /// Two documented approximations, both inherent to what the status line
-  /// actually shows rather than a gap in this decode:
-  ///  - Continuous boost shows only a plain airflow percentage -- no
-  ///    countdown, no distinguishing text -- so boosting() true with no
-  ///    boost_time_remaining() reads as "Normal" here. Same asymmetry
-  ///    PLAN.md §4/risk 2 already documents for the generic `boosting`
-  ///    binary sensor: set continuous boost at the unit's own keypad and
-  ///    airflow_mode may read Normal.
+  /// One remaining documented approximation, plus one latency that is new
+  /// rather than a gap:
+  ///  - Continuous boost is no longer approximated here -- reopened 13 Aug
+  ///    2026 against live evidence from 192.168.1.200 (see the plan this
+  ///    shipped under). status_.continuous_boost() (status.h) decodes it
+  ///    from the same "Boost Airflow" line1 signal boosting() already
+  ///    trusts, held for CONTINUOUS_CONFIRM_MS to rule out a timed boost's
+  ///    own trailing sticky window (see that constant's own comment). The
+  ///    cost: airflow_mode reads "Normal" for up to CONTINUOUS_CONFIRM_MS
+  ///    after a boost genuinely goes continuous, before settling on "Boost
+  ///    Continuous" -- deliberate, not a bug, since guessing ahead of the
+  ///    confirm window is exactly the failure mode CONTINUOUS_CONFIRM_MS
+  ///    exists to prevent.
   ///  - A countdown of 30 minutes or less is, ON ITS OWN, ambiguous between
   ///    an actual 30-minute boost and a 60-minute boost more than half
   ///    elapsed (both count down through the same 1-30 range) -- but it is

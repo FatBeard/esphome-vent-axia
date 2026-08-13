@@ -464,6 +464,61 @@ TEST_CASE(boost60_target_from_normal_start_needs_exactly_two_taps) {
   CHECK_EQ(episodes[1], MAIN);
 }
 
+// ============================================== BOOST_CONTINUOUS ordinals --
+// AirflowTarget's ordinal order is LOAD-BEARING (sequence.h's own comment):
+// vent_axia.cpp's write_select() casts the select's raw option index
+// straight to this enum, and no test can span the Python/C++ boundary to
+// catch select.py's AIRFLOW_MODE_OPTIONS drifting out of sync with it. This
+// pins the C++ half against the documented list: ["Normal", "Boost 30 min",
+// "Boost 60 min", "Boost Continuous", "Purge"].
+TEST_CASE(airflow_target_ordinals_match_select_pys_documented_option_list) {
+  CHECK(static_cast<AirflowTarget>(0) == AirflowTarget::NORMAL);
+  CHECK(static_cast<AirflowTarget>(1) == AirflowTarget::BOOST_30);
+  CHECK(static_cast<AirflowTarget>(2) == AirflowTarget::BOOST_60);
+  CHECK(static_cast<AirflowTarget>(3) == AirflowTarget::BOOST_CONTINUOUS);
+  CHECK(static_cast<AirflowTarget>(4) == AirflowTarget::PURGE);
+}
+
+TEST_CASE(boost_continuous_target_from_normal_start_needs_exactly_three_taps) {
+  // Behavioural equivalent of "presses_for_(BOOST_CONTINUOUS) == 3" --
+  // presses_for_ is private static with no test precedent for calling it
+  // directly (see boost30/boost60's own tests just above), so this observes
+  // the same fact through the public Runner/Keypad surface instead, exactly
+  // mirroring boost60_target_from_normal_start_needs_exactly_two_taps.
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+  RecordingSink sink;
+  RecordingLog log;
+  status::StatusTracker status;
+  Clock clock{kp, runner};
+  sink.current_now = &clock.now;
+  kp.set_frame_sink(sink.as_frame_sink());
+
+  feed(disp, status, "Normal Airflow", "18%", clock.now);
+
+  SetAirflowMode seq;
+  seq.set_log_sink(log.as_log_sink());
+  seq.set_status(&status);
+  seq.configure(AirflowTarget::BOOST_CONTINUOUS);
+  CHECK(runner.request(seq));
+
+  clock.advance(8200);  // the negative probe (8s) before APPLY_TAP ever queues anything
+  // Three taps queued as a batch (APPLY_TAP) -- Keypad's queue enforces
+  // key_gap between each, so this waits for the queue to drain, not three
+  // separate steps.
+  clock.advance(1500);
+
+  CHECK(!runner.busy());
+  CHECK(!kp.busy());
+  const auto episodes = episodes_from(sink);
+  CHECK_EQ(episodes.size(), static_cast<size_t>(3));
+  for (const auto mask : episodes) {
+    CHECK_EQ(mask, MAIN);
+  }
+}
+
 TEST_CASE(probe_catches_a_boost_frame_that_arrives_mid_wait_rather_than_only_sampling_once) {
   // Line1 alternates roughly every 3.2-3.5s while boosting (status.h) -- a
   // probe that only sampled once could catch the "wrong" half of the cycle
