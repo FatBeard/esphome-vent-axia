@@ -31,6 +31,14 @@ docker run --rm -v /home/brian/docker:/config ghcr.io/esphome/esphome:latest com
 
 Both can run concurrently — different build directories, and only `mhrv.yaml` needs secrets (resolved from `mhrv/secrets.yaml`, next to the config). Each takes well under a minute warm.
 
+Flashing the live unit is OTA over the network (add `--network host` so the container can reach it):
+
+```sh
+docker run --rm --network host -v /home/brian/docker:/config ghcr.io/esphome/esphome:latest upload esphome-vent-axia/mhrv/mhrv.yaml --device 192.168.1.200
+```
+
+**Observing and driving the live unit.** `GET /events` (HTTP basic auth, `admin` + `web_server_password`) is a Server-Sent Events stream carrying every entity state *and* the DEBUG log, without consuming one of the six native-API connection slots — the best read-only channel, and far safer than `esphome logs` (mhrv.yaml records slot exhaustion once locking out both HA and an external tool until a reboot). But this build's `web_server` exposes **no per-entity REST endpoints** — `/sensor/<id>`, `/select/<id>`, `POST /select/<id>/set` all 404 (verified 13 Aug 2026, ESPHome 2026.7.4, web_server v2). To *command* an entity outside Home Assistant, use the native API: `aioesphomeapi` is already inside the ESPHome image, so run a short script with `--entrypoint python3` and call `select_command()`/`button_command()`. Pass the API key through an env var rather than inlining it — anything echoed lands in the transcript.
+
 Compile **both** an ESP8266 and an ESP32-IDF target before calling a change done. The IDF example declares no `time:` platform, so it is the only thing that exercises the `USE_TIME`-undefined paths; `esphome config` does not invoke the C++ compiler and catches neither that nor ESPHome signature mismatches. When compiling in a shell pipeline, capture the exit code explicitly (`EXIT=$?`) — a trailing `grep` will otherwise mask a failed build.
 
 ## Architecture

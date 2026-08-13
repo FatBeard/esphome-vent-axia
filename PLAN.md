@@ -476,6 +476,23 @@ What the flash confirmed on the unit, 12 Aug 2026:
 - **The trailing edge, which set the constant.** Last `Boost Airflow` frame 21:20:49; boost ended 21:20:52 with line1 → `Low Airflow` and line2 → `18%` **in the same frame**; `boost_active` → false at 21:21:03. That is 14.0s from last boost frame to flag drop against a nominal 12s, the extra ~2s most likely client-side SSE/timestamping jitter. `CONTINUOUS_CONFIRM_MS` is 20 000 rather than 15 000 because a false-positive guard should not sit 1s clear of an observed edge on the strength of an assumption about where jitter came from.
 - **Open, and needing a human at the switch**: whether Main presses can clear a switch-driven overrun boost at all. If they cannot, selecting `Normal` during one exhausts `SetAirflowMode`'s normalise guard and logs the refusal. Worth settling, because it decides what the README promises.
 
+**Stage 9 went live the same evening.** Flashed over OTA at 22:08 with the unit idle at Normal/18%, and all three commandable legs exercised end to end:
+
+| Time | What happened |
+|---|---|
+| 22:12:02 | `Boost Continuous` commanded; `busy` on |
+| 22:12:10 | taps land in order — line2 `48%       30m`, then `48%       60m` |
+| 22:12:11 | third tap: line2 `48%` (no countdown), `boosting` true, `boost_time_remaining` → null, `busy` off (~9s run) |
+| 22:12:31 | `airflow_mode` → **`Boost Continuous`** — exactly 20s after the countdown vanished |
+| 22:14:16 | `Boost 30 min` commanded; normalises to `18%`, then `48%       30m` at 22:14:30 |
+| 22:14:30 | `airflow_mode` → `Boost 30 min` published **immediately** (countdown present, so no confirm wait), no spurious continuous in the transition |
+| 22:16:44 | `Normal` commanded; countdown gone 22:16:48, `airflow_mode` → `Normal` 22:16:57, `boosting` false 22:16:59 |
+| 22:16:59+ | 90+ seconds of steady Normal with **no spurious `Boost Continuous`** — the trailing-edge regression, confirmed on hardware rather than only in the suite |
+
+Two things worth keeping from that run. The three taps landing as three *distinct* presses (30 → 60 → continuous, visible one after another on line2) is direct confirmation of the `key_gap` reasoning `presses_for_()` cites. And a scheduled `fetch_diagnostics` ran at 22:15:01-22:15:28 squarely inside the Boost 30 — the display parked in the diagnostic pages for ~27s, `airflow_mode` did not republish, and no false continuous appeared: the `is_status_screen` freeze validated in production, not just in `continuous_boost_accumulator_freezes_while_parked_on_a_menu_screen`.
+
+**Operational note found while testing.** This build's `web_server` (v2, ESPHome 2026.7.4) exposes **no per-entity REST endpoints** — `GET /sensor/airflow`, `/select/airflow_mode`, `POST /select/airflow_mode/set` all 404. Only `/` and `/events` exist. `/events` remains the best read-only observation channel, but *commanding* an entity outside Home Assistant needs the native API; `aioesphomeapi` ships inside the `ghcr.io/esphome/esphome` image, so a short `--entrypoint python3` script against `select_command()` is the way in.
+
 `v1.0.0` is still not tagged, and `mhrv/mhrv.yaml` still points at the component through a local path rather than the pinned git ref its commented-out block shows. Stage 7 working on the unit was the condition for tagging; stage 8 then arrived and added a second one, that the control entities actually report state. Both are now met on the live unit, so **tagging `v1.0.0` is the next thing to do** — and switching `mhrv/mhrv.yaml` over to the pinned git ref its commented-out block already carries, whenever iteration on the component slows down enough to want the version bump.
 
 ---
