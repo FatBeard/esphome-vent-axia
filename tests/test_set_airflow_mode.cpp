@@ -631,12 +631,33 @@ TEST_CASE(normal_target_from_boosting_start_normalises_through_continuous_with_p
   // intervene -- checking every 20ms tick instead catches the 3rd tap's
   // first transmitted frame within one tick, comfortably before the
   // ~1.4s a full settle-then-reprobe cycle needs.
+  //
+  // line2 is ALSO advanced at every intermediate tap now (30m -> 60m -> the
+  // continuous state's own bare percentage, no countdown) -- added 13 Aug
+  // 2026 alongside the new switched-live early bail (STUCK_TAP_LIMIT,
+  // sequence.h): this test's original line2 ("48%       30m" the whole way
+  // through, since only line1 mattered to what it was proving) would now be
+  // indistinguishable from that bail's own trigger and would wrongly stop
+  // this healthy 3-tap normalise after only 2. Real hardware would show
+  // exactly this kind of movement anyway -- the countdown DOES advance
+  // 30m->60m, and continuous boost genuinely has no countdown to show
+  // (status.h's own StatusTracker::continuous_boost() comment) -- so this
+  // is a more faithful fixture, not just a workaround.
+  int taps_seen = 0;
   bool flipped = false;
   while (runner.busy()) {
     clock.advance(20);
-    if (!flipped && episodes_from(sink).size() >= 3) {
-      feed(disp, status, "Normal Airflow", "18%", clock.now);
-      flipped = true;
+    const auto count = episodes_from(sink).size();
+    if (!flipped && static_cast<int>(count) > taps_seen) {
+      taps_seen = static_cast<int>(count);
+      if (taps_seen == 1) {
+        feed(disp, status, "Boost Airflow", "48%       60m", clock.now);
+      } else if (taps_seen == 2) {
+        feed(disp, status, "Boost Airflow", "48%", clock.now);  // continuous -- no countdown to show
+      } else if (taps_seen >= 3) {
+        feed(disp, status, "Normal Airflow", "18%", clock.now);
+        flipped = true;
+      }
     }
   }
 
@@ -657,6 +678,17 @@ TEST_CASE(normalise_guard_caps_at_4_taps_and_fails_cleanly_without_ever_applying
   // (4) taps and the sequence FAILS outright rather than proceeding to tap
   // the target's own press count on top of an unknown boost state -- see
   // after_probe_()'s own comment for why that would be worse than refusing.
+  //
+  // line2's percentage is nudged by 1 at every probe cycle below -- added
+  // 13 Aug 2026 alongside the new switched-live early bail (STUCK_TAP_LIMIT,
+  // sequence.h): a line2 that is TRULY static across the whole run (the
+  // original shape of this test) is now indistinguishable from that bail's
+  // own trigger and would trip it after just 2 taps, never reaching the
+  // 4-tap NORMALISE_GUARD this test exists to exercise. See
+  // switched_live_boost_bails_early_after_two_unmoving_main_taps below for
+  // the dedicated coverage of the genuinely-static case, and
+  // normal_target_normalise_with_moving_line2_does_not_trip_the_stuck_bail
+  // for the healthy-normalise regression guard.
   Keypad kp;
   Display disp;
   Runner runner(kp, disp);
@@ -668,7 +700,8 @@ TEST_CASE(normalise_guard_caps_at_4_taps_and_fails_cleanly_without_ever_applying
   sink.current_now = &clock.now;
   kp.set_frame_sink(sink.as_frame_sink());
 
-  feed(disp, status, "Boost Airflow", "48%       30m", clock.now);  // never changes again
+  int pct = 48;
+  feed(disp, status, "Boost Airflow", std::to_string(pct) + "%", clock.now);
 
   SetAirflowMode seq;
   seq.set_log_sink(log.as_log_sink());
@@ -676,17 +709,155 @@ TEST_CASE(normalise_guard_caps_at_4_taps_and_fails_cleanly_without_ever_applying
   seq.configure(AirflowTarget::BOOST_30);  // the target is irrelevant here -- normalising never gets there
   CHECK(runner.request(seq));
 
-  // 4 guard iterations, each up to a tap+key_gap (~450ms) plus the 1s
-  // settle -- comfortably inside 12s even though every probe here resolves
-  // immediately (line1 never changes, so PROBE_CHECK's own instant read
-  // always answers "still boosting" without ever needing PROBE_WAIT's 8s).
-  clock.advance(12000);
+  // Event-driven rather than a single fixed advance (contrast the pre-13-Aug
+  // shape of this test) -- each new tap episode needs a freshly fed,
+  // DIFFERENT line2 value before the next probe reads it, so this reacts to
+  // episode count changes the same way
+  // normal_target_from_boosting_start_normalises_through_continuous_with_probed_taps
+  // above now does too. Bounded at 1000 ticks (20s) -- comfortably above the
+  // ~12s worst case (4 guard iterations, each up to a tap+key_gap plus the 1s
+  // settle) -- so a regression here fails loudly rather than hanging.
+  auto last_count = episodes_from(sink).size();
+  for (int guard = 0; guard < 1000 && runner.busy(); guard++) {
+    clock.advance(20);
+    const auto count = episodes_from(sink).size();
+    if (count != last_count) {
+      last_count = count;
+      pct--;
+      feed(disp, status, "Boost Airflow", std::to_string(pct) + "%", clock.now);
+    }
+  }
 
   CHECK(!runner.busy());
   CHECK(!kp.busy());
   CHECK(log.error_count >= 1);
   const auto episodes = episodes_from(sink);
   CHECK_EQ(episodes.size(), static_cast<size_t>(4));  // exactly the guard limit, then FAILED -- no 5th tap, no apply
+  for (const auto mask : episodes) {
+    CHECK_EQ(mask, MAIN);
+  }
+}
+
+// ============================================ Switched-live early bail --
+// Established live on 192.168.1.200, 13 Aug 2026: a toilet boost driven by a
+// light-linked SWITCHED LIVE (the wired wall/toilet switch stays asserted
+// for as long as the light is on) cannot be cancelled from Home Assistant --
+// selecting Normal ran the full NORMALISE_GUARD (4 Main taps) probing
+// between each, then failed with a generic message, having spent ~38s to
+// tell the person driving it nothing more than "I don't know what state
+// this is in". Captured evidence: line1 alternated "Boost Airflow"/"Summer
+// Bypass On" unbroken the whole time (the unit was genuinely alive, still
+// cycling its own status loop), but line2 never once showed 30m or 60m --
+// it stayed pinned at 48% before, during and after every tap. STUCK_TAP_LIMIT
+// (sequence.h) now catches this: two CONSECUTIVE Main taps with zero
+// observed movement in (airflow_percent, countdown_minutes) is that
+// signature, and bails with a named cause well before the 4-tap guard.
+
+TEST_CASE(switched_live_boost_bails_early_after_two_unmoving_main_taps) {
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+  RecordingSink sink;
+  RecordingLog log;
+  status::StatusTracker status;
+  Clock clock{kp, runner};
+  sink.current_now = &clock.now;
+  kp.set_frame_sink(sink.as_frame_sink());
+
+  // Alternates line1 between the two halves the real capture showed, on an
+  // arbitrary (much faster than the real ~3.2-3.5s) cadence -- what this
+  // test needs is only that "Boost Airflow" keeps recurring often enough for
+  // PROBE_CHECK/PROBE_WAIT to keep confirming boosting (PROBE_WAIT already
+  // tolerates up to 8s of the "wrong" half, proven separately by
+  // probe_catches_a_boost_frame_that_arrives_mid_wait_rather_than_only_sampling_once
+  // above), while line2 -- the actual subject of this test -- never moves at
+  // all.
+  bool showing_boost = true;
+  const auto feed_current = [&]() { feed(disp, status, showing_boost ? "Boost Airflow" : "Summer Bypass On", "48%", clock.now); };
+  feed_current();
+
+  SetAirflowMode seq;
+  seq.set_log_sink(log.as_log_sink());
+  seq.set_status(&status);
+  seq.configure(AirflowTarget::NORMAL);
+  CHECK(runner.request(seq));
+
+  // Generously bounded (400s of simulated time) well above the 90s root
+  // timeout -- the run is expected to conclude in a couple of normalise
+  // cycles (a few seconds), so this bound exists only to fail loudly instead
+  // of hanging if the early bail regresses and normalising has to fall all
+  // the way through to the 90s root timeout instead.
+  for (int guard = 0; guard < 2000 && runner.busy(); guard++) {
+    clock.advance(200);
+    showing_boost = !showing_boost;
+    feed_current();
+  }
+
+  CHECK(!runner.busy());
+  CHECK(!kp.busy());
+  CHECK(log.error_count >= 1);
+  CHECK(log.last_error.find("switched live") != std::string::npos);
+  // Bails STRICTLY before the full 4-tap NORMALISE_GUARD -- the whole point
+  // of an earlier exit, not a replacement for it (STUCK_TAP_LIMIT's own
+  // comment, sequence.h).
+  const auto episodes = episodes_from(sink);
+  CHECK(episodes.size() < static_cast<size_t>(4));
+  CHECK(episodes.size() >= static_cast<size_t>(1));
+  for (const auto mask : episodes) {
+    CHECK_EQ(mask, MAIN);
+  }
+}
+
+TEST_CASE(normal_target_normalise_with_moving_line2_does_not_trip_the_stuck_bail) {
+  // Regression guard for the switched-live early bail just above: a HEALTHY
+  // normalise, where line2 visibly steps with each tap exactly the way a
+  // real Boost30->Normal transition would (48%       30m -> 48%       60m,
+  // then the unit settles on Normal), must still reach the target in the
+  // ordinary 2 taps here and must NOT be mistaken for a stuck counter just
+  // because both probes happen to land on the same line1 text ("Boost
+  // Airflow" -- shared by every non-Normal boost state, this file's own
+  // class comment). A bug that only compared line1 (not line2) could pass
+  // every other test in this file while still wrongly tripping here, which
+  // is exactly what this test exists to catch.
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+  RecordingSink sink;
+  RecordingLog log;
+  status::StatusTracker status;
+  Clock clock{kp, runner};
+  sink.current_now = &clock.now;
+  kp.set_frame_sink(sink.as_frame_sink());
+
+  feed(disp, status, "Boost Airflow", "48%       30m", clock.now);
+
+  SetAirflowMode seq;
+  seq.set_log_sink(log.as_log_sink());
+  seq.set_status(&status);
+  seq.configure(AirflowTarget::NORMAL);
+  CHECK(runner.request(seq));
+
+  int taps_seen = 0;
+  while (runner.busy()) {
+    clock.advance(20);
+    const auto count = episodes_from(sink).size();
+    if (static_cast<int>(count) > taps_seen) {
+      taps_seen = static_cast<int>(count);
+      if (taps_seen == 1) {
+        feed(disp, status, "Boost Airflow", "48%       60m", clock.now);
+      } else if (taps_seen >= 2) {
+        feed(disp, status, "Normal Airflow", "18%", clock.now);
+      }
+    }
+  }
+
+  CHECK(!runner.busy());
+  CHECK(!kp.busy());
+  CHECK_EQ(log.error_count, 0);  // neither the stuck bail nor the 4-tap guard fired -- a clean normalise
+  const auto episodes = episodes_from(sink);
+  CHECK_EQ(episodes.size(), static_cast<size_t>(2));  // exactly the two normalising taps that were needed
   for (const auto mask : episodes) {
     CHECK_EQ(mask, MAIN);
   }

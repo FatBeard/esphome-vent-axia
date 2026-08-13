@@ -44,7 +44,17 @@ uint8_t SetAirflowMode::presses_for_(AirflowTarget target) {
   }
 }
 
-void SetAirflowMode::on_start() { this->guard_ = 0; }
+void SetAirflowMode::on_start() {
+  this->guard_ = 0;
+  // Reset alongside guard_ -- see STUCK_TAP_LIMIT's own comment (sequence.h)
+  // for why this belongs here and not the constructor: this Sequence is a
+  // long-lived hub member reused across runs, and a run's stuck-detection
+  // state must not carry over from whatever the previous run last observed.
+  this->last_airflow_percent_.reset();
+  this->last_countdown_minutes_.reset();
+  this->have_stuck_sample_ = false;
+  this->stuck_taps_ = 0;
+}
 
 Poll SetAirflowMode::hold_main_(uint8_t next_step) {
   // never Set -- always accepted, see Runner::press(). Re-asserted every
@@ -68,6 +78,45 @@ Poll SetAirflowMode::after_probe_(bool boosting_now) {
     const uint8_t presses = presses_for_(this->target_);
     return presses > 0 ? this->goto_step(APPLY_TAP) : this->goto_step(FINISHED);
   }
+  // Stuck-tap detection (STUCK_TAP_LIMIT's own comment, sequence.h): sample
+  // the SAME instantaneous read PROBE_CHECK/PROBE_WAIT just used to conclude
+  // "still boosting" -- status::parse_line_values() on the CURRENT frame,
+  // deliberately not status_'s sticky purging()-style tracker. This is the
+  // same asymmetry PROBE_CHECK's own defensive re-check above already relies
+  // on (seq_set_airflow_mode.cpp:186-201): staleness here only costs one
+  // wasted comparison against a value about to be overwritten anyway,
+  // whereas a STICKY read could paper over a genuinely stuck counter for up
+  // to StatusTracker::ALTERNATION_TIMEOUT_MS, which is exactly the kind of
+  // false confidence this check exists to avoid.
+  const status::LineValues probe_values =
+      status::parse_line_values(this->runner_->display().line1(), this->runner_->display().line2());
+  if (this->have_stuck_sample_ && probe_values.airflow_percent == this->last_airflow_percent_ &&
+      probe_values.countdown_minutes == this->last_countdown_minutes_) {
+    this->stuck_taps_++;
+  } else {
+    this->stuck_taps_ = 0;
+  }
+  this->have_stuck_sample_ = true;
+  this->last_airflow_percent_ = probe_values.airflow_percent;
+  this->last_countdown_minutes_ = probe_values.countdown_minutes;
+
+  if (this->stuck_taps_ >= STUCK_TAP_LIMIT) {
+    // Named cause, not the generic "refusing to guess" wording below -- this
+    // path has POSITIVE evidence of what's wrong (line2 provably did not
+    // move across two taps that line1's own continued alternation shows the
+    // unit was still alive and responding to), not merely an exhausted
+    // guard with no theory attached. Captured live on 192.168.1.200, 13 Aug
+    // 2026: a toilet boost held on by a light-linked switched live.
+    if (this->log_.error) {
+      this->log_.error(
+          "SetAirflowMode: boost appears held on by an external switched live (a wired wall/toilet switch) -- "
+          "the display has not moved across " +
+          std::to_string(static_cast<int>(this->stuck_taps_)) +
+          " consecutive Main taps, so this cannot be cleared from Home Assistant until that switch releases");
+    }
+    return Poll::FAILED;
+  }
+
   if (this->guard_ >= NORMALISE_GUARD) {
     // mirrors mhrv_orig's own boost_set, which silently skipped applying
     // anything in exactly this situation -- refusing is safer than layering

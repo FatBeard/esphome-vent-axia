@@ -111,6 +111,61 @@ constexpr Field PAGE_3_FIELDS[] = {
     nonzero_field(6, 2, BinaryKey::EXTRACT_TEMP_FAULT),
 };
 
+// Page 5: "1 00 05 0 00 030" -- switch-line sampler internals for the
+// SWITCHED LIVE boost input (a wired switched live, e.g. a light switch's
+// pull-cord, held on for as long as the light is on) -- distinct from the
+// SW1/SW2/SW3 wall-switch inputs on pages 6/7/8 below, which are
+// byte-identical ("0000 1 0 000 00 ") whether this switch is asserted or
+// released, so they have no column to retarget onto it (verified 13 Aug
+// 2026) and are left as-is.
+//
+// Captured live from 192.168.1.200 (firmware V32/05, 13 Aug 2026), all
+// exactly 16 chars:
+//
+//           0123456789012345
+// switched  1 00 05 0 00 030    <- boosting, held on by a light-linked switched live (toilet light on)
+// switched  1 00 05 0 01 030    <- same episode, cols 10-11 ticking
+// commanded 0 00 00 0 00 000    <- boosting on a Boost 30 min commanded from Home Assistant, light off
+// commanded 0 00 00 0 05 000    <- same episode, cols 10-11 ticking
+// idle      0 00 00 0 00 000    <- not boosting, light off
+// idle      0 00 00 0 02 000
+// idle      0 00 00 0 04 000
+//
+// Column 0 is the only field decoded here: it reads 1 only when the
+// switched live is asserted, and stayed 0 right through a genuine
+// HA-commanded boost (the "commanded" rows above, captured alongside line2
+// `48%       30m`, Boost Active ON, airflow_mode Boost 30 min) -- so this is
+// a switch-INPUT flag, not a "boosting" flag. Do not confuse it with
+// BinaryKey::BOOSTING (the status-line decode, status.cpp), which is true
+// for both switched and commanded boosts.
+//
+// Cols 5-6 ("05" asserted / "00" otherwise) and cols 13-15 ("030" asserted /
+// "000" otherwise, very likely the overrun period in minutes the switch
+// keeps the fan running after the light goes off) both correlate with the
+// switched live too, but are deliberately left UNDECODED: the two "switched"
+// captures above are about a minute apart and both still read 030, which is
+// consistent with either a *configured* overrun period (a constant that
+// would read the same every time) or a *remaining* overrun countdown (a
+// slow countdown could easily still read 030 a minute in) -- the evidence
+// in hand cannot tell those apart, and a decoded value here would carry an
+// observation the evidence doesn't actually establish. Revisit if a longer
+// capture ever catches 030 changing under the switched-live episode.
+//
+// Cols 8-9 (always "00" in every capture above) and cols 10-11 (ticking
+// 00/01/02/04/05 across ALL three episode types, switched and commanded and
+// idle alike) are unexplained and also left undecoded -- cols 10-11 look
+// like some general sample/tick counter unrelated to switch state, but with
+// only a handful of samples there's nothing safe to name it.
+//
+// STALE BY CONSTRUCTION, same as every other diagnostic-page entity: this
+// whole page reaches the component only through the ~15-minute
+// fetch_diagnostics scrape (PLAN.md §4), so a reading here can lag reality
+// by up to that long. It is useful as an explanation surfaced in Home
+// Assistant ("why is the unit boosting right now") but must never become a
+// precondition for refusing or gating a user command -- a stale "not
+// asserted" reading is not proof the switch is currently off.
+constexpr Field PAGE_5_FIELDS[] = {nonzero_field(0, 1, BinaryKey::SWITCHED_LIVE_BOOST)};
+
 // Page 6/7/8: "0000 1 0 000 00 " -- raw, link state, closed, west %, west
 // time for SW1/SW2/SW3. Only "is the contact closed" is decoded.
 constexpr Field PAGE_6_FIELDS[] = {nonzero_field(7, 1, BinaryKey::SWITCH_LINE_1)};
@@ -140,7 +195,9 @@ constexpr Page PAGES[] = {
     // to see all three fields together before publishing any of them) --
     // see page4_internal_sensor_hook below.
     {4, nullptr, 0, page4_internal_sensor_hook},
-    // 5: switch-line sampler internals -- not understood, not decoded.
+    // 5: switched-live boost input -- see PAGE_5_FIELDS' comment above for
+    // the captures and why only column 0 is decoded.
+    {5, PAGE_5_FIELDS, array_len(PAGE_5_FIELDS), nullptr},
     {6, PAGE_6_FIELDS, array_len(PAGE_6_FIELDS), nullptr},
     {7, PAGE_7_FIELDS, array_len(PAGE_7_FIELDS), nullptr},
     {8, PAGE_8_FIELDS, array_len(PAGE_8_FIELDS), nullptr},

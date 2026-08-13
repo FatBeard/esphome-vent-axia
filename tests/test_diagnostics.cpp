@@ -191,6 +191,56 @@ TEST_CASE(page4_average_alone_being_zero_does_not_trigger_the_sentinel) {
   CHECK_EQ(r.sensor_value(SensorKey::INDOOR_HUMIDITY_AVG), 0);
 }
 
+// ---------------------------------------- page 5: switched-live boost input --
+// Real captures from 192.168.1.200 (firmware V32/05, 13 Aug 2026) -- see
+// diagnostics.cpp's PAGE_5_FIELDS comment for the full evidence, including
+// why only column 0 is decoded (cols 5-6 and 13-15 correlate but can't yet
+// be told apart as "configured" vs. "remaining", and cols 8-9/10-11 are
+// unexplained).
+
+TEST_CASE(page5_switched_live_asserted_sets_the_flag) {
+  Recorder r;
+  decode_page(5, "1 00 05 0 00 030", r.sink());
+  CHECK(r.has_binary(BinaryKey::SWITCHED_LIVE_BOOST));
+  CHECK(r.binary_value(BinaryKey::SWITCHED_LIVE_BOOST));
+  CHECK_EQ(r.binaries.size(), static_cast<size_t>(1));  // only column 0 decoded
+
+  // Same episode, cols 10-11 ticking -- must not affect the decode.
+  Recorder r2;
+  decode_page(5, "1 00 05 0 01 030", r2.sink());
+  CHECK(r2.binary_value(BinaryKey::SWITCHED_LIVE_BOOST));
+}
+
+TEST_CASE(page5_commanded_boost_leaves_the_flag_clear) {
+  // The decisive capture: boosting on a HA-commanded Boost 30 min, switched
+  // live released (light off) -- column 0 must read false even though the
+  // unit genuinely is boosting (BinaryKey::BOOSTING, from the status-line
+  // decode, is the flag for that; this one is specifically the switch
+  // input).
+  Recorder r;
+  decode_page(5, "0 00 00 0 00 000", r.sink());
+  CHECK(r.has_binary(BinaryKey::SWITCHED_LIVE_BOOST));
+  CHECK(!r.binary_value(BinaryKey::SWITCHED_LIVE_BOOST));
+
+  Recorder r2;
+  decode_page(5, "0 00 00 0 05 000", r2.sink());
+  CHECK(!r2.binary_value(BinaryKey::SWITCHED_LIVE_BOOST));
+}
+
+TEST_CASE(page5_idle_leaves_the_flag_clear) {
+  Recorder r;
+  decode_page(5, "0 00 00 0 00 000", r.sink());
+  CHECK(!r.binary_value(BinaryKey::SWITCHED_LIVE_BOOST));
+
+  Recorder r2;
+  decode_page(5, "0 00 00 0 02 000", r2.sink());
+  CHECK(!r2.binary_value(BinaryKey::SWITCHED_LIVE_BOOST));
+
+  Recorder r3;
+  decode_page(5, "0 00 00 0 04 000", r3.sink());
+  CHECK(!r3.binary_value(BinaryKey::SWITCHED_LIVE_BOOST));
+}
+
 // --------------------------------------------- pages 6/7/8: wall switches --
 
 TEST_CASE(page6_7_8_decode_switch_closed_from_a_captured_line) {
@@ -336,9 +386,11 @@ TEST_CASE(page26_firmware_version_trims_correctly) {
 // -------------------------------------- pages this table deliberately skips --
 
 TEST_CASE(pages_not_in_the_table_publish_nothing) {
-  // 5, 9, 10, 12-18, 20-22 -- undecoded internal/absent state. A sample
-  // across that list, all expected to be complete no-ops.
-  for (int page : {5, 9, 10, 12, 13, 17, 18, 20, 21, 22}) {
+  // 9, 10, 12-18, 20-22 -- undecoded internal/absent state. A sample across
+  // that list, all expected to be complete no-ops. Page 5 used to be in this
+  // list too, before its column 0 was decoded (see page5_* tests above) --
+  // it is deliberately no longer here.
+  for (int page : {9, 10, 12, 13, 17, 18, 20, 21, 22}) {
     Recorder r;
     decode_page(page, "0000000000000000", r.sink());
     CHECK_EQ(r.total_calls(), static_cast<size_t>(0));

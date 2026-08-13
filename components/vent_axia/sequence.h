@@ -1260,14 +1260,42 @@ class SetAirflowMode final : public Sequence {
   static constexpr uint32_t NORMALISE_SETTLE_MS = 1000;   // mhrv_orig's boost_normalise `delay: 1s`
   static constexpr uint8_t NORMALISE_GUARD = 4;           // PLAN.md §3
 
+  // Reopened 13 Aug 2026 against live evidence from 192.168.1.200: a toilet
+  // boost held on by a light-linked SWITCHED LIVE (the wired wall/toilet
+  // switch stays asserted for as long as the light is on) accepts every
+  // Main tap electrically -- line1 kept alternating "Boost Airflow"/"Summer
+  // Bypass On" throughout -- but the switched live is itself holding the
+  // unit's own boost input, so the tap counter this sequence is trying to
+  // walk back to Normal never actually moves: line2's percentage AND
+  // countdown sat dead still (48% forever, 30m/60m never once appearing)
+  // across all 4 guard taps, and the run still failed at guard exhaustion
+  // with a generic message that gave the person driving it no way to tell
+  // "the unit ignored me" from "I don't know what state this is in". TWO
+  // consecutive taps producing zero movement in (airflow_percent,
+  // countdown_minutes) is that signature -- a SINGLE unmoving sample is not
+  // enough to conclude it (a probe frame landing mid-alternation could
+  // plausibly repeat one value even on a healthy unit), so this deliberately
+  // waits for two in a row before bailing, same "don't trust one frame"
+  // caution PROBE_WAIT's own alternation timeout already carries. This is an
+  // EARLIER exit alongside NORMALISE_GUARD above, not a replacement for it --
+  // NORMALISE_GUARD stays the outer bound for every other way normalising
+  // can fail to converge (e.g. a genuinely moving but never-settling
+  // counter), and deliberately is not lowered to match: 4 taps is one full
+  // lap of the unit's own Normal->30->60->continuous counter, which is what
+  // makes an exhausted guard state-neutral (after_probe_()'s own comment on
+  // NORMALISE_GUARD) -- collapsing the two constants together would give up
+  // that property for taps that ARE moving the counter, just slowly.
+  static constexpr uint8_t STUCK_TAP_LIMIT = 2;
+
   /// Shared by CANCEL_PURGE and OPEN_PURGE: holds Main for the fixed
   /// PURGE_HOLD_MS, then releases and moves to `next_step` -- see the class
   /// comment for why this is press()+elapsed(), not HoldUntil.
   Poll hold_main_(uint8_t next_step);
 
   /// Shared by PROBE_CHECK and PROBE_WAIT once either has an answer: decides
-  /// whether to tap again (guard permitting), fail the guard, or move on to
-  /// APPLY_TAP/FINISHED -- see the class comment, steps 3-5.
+  /// whether to tap again (guard/stuck-detection permitting), fail outright,
+  /// or move on to APPLY_TAP/FINISHED -- see the class comment, steps 3-5,
+  /// and STUCK_TAP_LIMIT's own comment for the switched-live early exit.
   Poll after_probe_(bool boosting_now);
 
   /// 0/1/2/3 Main taps from Normal to reach `target` -- PURGE never reaches
@@ -1278,6 +1306,22 @@ class SetAirflowMode final : public Sequence {
   uint8_t guard_{0};
   LogSink log_;
   const status::StatusTracker *status_{nullptr};  // Finding 2 -- set_status(), CHECK_CURRENT
+
+  // Per-run stuck-tap tracking (STUCK_TAP_LIMIT above) -- reset in on_start(),
+  // NOT here, because this Sequence is a long-lived hub member reused across
+  // runs (this file's own Runner class comment): a value left over from a
+  // PREVIOUS run's last probe would let that run's history leak into this
+  // one's first comparison. last_airflow_percent_/last_countdown_minutes_
+  // hold the most recent after_probe_(true) sample (status::parse_line_values(),
+  // the same instantaneous read PROBE_CHECK's own defensive re-check uses --
+  // see seq_set_airflow_mode.cpp:186-201's asymmetry comment for why this is
+  // deliberately NOT status_'s sticky tracker); have_stuck_sample_ is false
+  // until the first sample exists, so the very first probe never has anything
+  // to compare against and can never itself count as "unmoving".
+  std::optional<int> last_airflow_percent_;
+  std::optional<int> last_countdown_minutes_;
+  bool have_stuck_sample_{false};
+  uint8_t stuck_taps_{0};
 };
 
 // ------------------------------------------------------------- ResetFilter --

@@ -43,15 +43,28 @@ Under construction. See `PLAN.md` for the design and the staged rollout.
   expiring (countdown gone, boost flag not yet aged out) is never mistaken for
   it. That confirmation costs ~20s, so a continuous boost takes about that
   long to appear.
-- **A `Boost Continuous` reading may not be cancellable from Home Assistant.**
-  A wired wall switch — the common everyday cause — drives the unit's own
-  overrun timer, and whether Main presses can clear one is not established.
-  If they cannot, selecting `Normal` exhausts `SetAirflowMode`'s normalise
-  guard and logs "could not normalise back to Normal" rather than silently
-  doing nothing. Note also that the `Wall Switch SW1-3` binary sensors read
-  **OFF** throughout a switch-initiated boost: the switch is momentary, so the
-  contact those diagnostic pages sample has already reopened. They are not a
-  corroborating signal for continuous boost — the status line is.
+- **A switch-driven `Boost Continuous` cannot be cancelled from Home
+  Assistant** — established on hardware, not merely suspected. A wired wall
+  switch (commonly a *switched live* taken off a bathroom or toilet light, so
+  it stays asserted for as long as the light is on) holds the unit's own boost
+  input directly. The unit goes on cycling its status loop and accepting key
+  presses, but the boost does not move: its tap counter is not what is holding
+  it. Nothing but the switch releasing will clear it.
+
+  Selecting `Normal` during one therefore fails, on purpose and quickly.
+  `SetAirflowMode` watches the display across its normalising taps and, after
+  two consecutive Main taps that move neither the airflow percentage nor the
+  countdown, gives up and logs that the boost appears held on by an external
+  switched live. That takes a few seconds rather than the full four-tap guard,
+  and it names the cause instead of reporting that it does not know.
+
+  A `Switched Live Boost Input` binary sensor reads this from diagnostic
+  page 05, which is the only page that reports it — the `Wall Switch SW1-3`
+  sensors read **OFF** right through a switch-initiated boost, asserted or
+  not, so they are not a corroborating signal for anything here. Note that
+  page 05 arrives on the ~15-minute diagnostics scrape and is stale by
+  construction: treat it as an explanation after the fact, not a live
+  interlock. The status line remains the live evidence.
 - **Raw keypad escape hatch** — Up/Down/Set/Main exposed as bounded-duration
   buttons (never hold-switches, which could stick a key down forever across a
   reboot) for cases the decoded entities don't cover.

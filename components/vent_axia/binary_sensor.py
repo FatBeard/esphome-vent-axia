@@ -73,6 +73,15 @@ BINARY_SENSORS = {
         icon="mdi:electric-switch",
         entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
     ),
+    # Diagnostic page 5, column 0 -- distinct from switch_line_1-3 above
+    # (which never see this input, pages 6/7/8 being byte-identical
+    # regardless of it -- see diagnostics.cpp). A wired switched live (e.g. a
+    # light switch's pull-cord) holding the unit boosting; same
+    # entity_category treatment as the switch_line entities, per the brief.
+    "switched_live_boost": binary_sensor.binary_sensor_schema(
+        icon="mdi:light-switch",
+        entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+    ),
     # Diagnostic page 24. A once-a-day snapshot of the defrost-bypass state
     # machine, not the comfort bypass (`summer_bypass` above) -- same
     # actuator, different reason for opening it, kept as separate entities

@@ -80,6 +80,17 @@ enum class BinaryKey : uint8_t {
   SWITCH_LINE_1,
   SWITCH_LINE_2,
   SWITCH_LINE_3,
+  // Diagnostic page 5, column 0: the switched-live boost input -- a wired
+  // switched live (e.g. a light switch's pull-cord) that holds the unit
+  // boosting for as long as it's asserted, distinct from SWITCH_LINE_1-3
+  // above (pages 6/7/8 never report this input -- byte-identical whether it
+  // is asserted or not, see diagnostics.cpp) and from BOOSTING above (true
+  // for both switched and commanded boosts; this flag is 0 through a
+  // genuine HA-commanded boost -- see diagnostics.cpp for the captures that
+  // established that). Reaches this component only through the ~15-minute
+  // fetch_diagnostics scrape, so it is stale by construction -- useful as
+  // an explanation in Home Assistant, never a precondition for a command.
+  SWITCHED_LIVE_BOOST,
   // Diagnostic page 24: antifrost mode != 0. ANTIFROST_MODE (TextKey, below)
   // carries the human-readable form of the same field.
   ANTIFROST_ACTIVE,

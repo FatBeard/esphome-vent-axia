@@ -294,3 +294,7 @@ binary_sensor:
     switch_line_1:      {name: "Wall Switch SW1 (Boost Input)"}
     switch_line_2:      {name: "Wall Switch SW2 (Boost Input)"}
     switch_line_3:      {name: "Wall Switch SW3 (Boost Input)"}
+    # Diagnostic page 5, column 0 -- a wired switched live (e.g. a light
+    # switch's pull-cord) holding the unit boosting, distinct from SW1-3
+    # above which never see this input -- see diagnostics.cpp.
+    switched_live_boost: {name: "Switched Live Boost Input"}
