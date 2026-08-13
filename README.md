@@ -153,7 +153,7 @@ work of others:
   — the original reverse-engineering of the Sentinel Kinetic's wired-remote
   serial protocol. The framing and command decode here builds directly on
   that work.
-- **[alextrical](https://github.com/alextrical)** — the original ESPHome
+- **[alextrical](https://github.com/alextrical/ESPHome-Vent-Axia-Sentinel-Kinetic)** — the original ESPHome
   component for this device, and the
   [ESP32-Sentinel-Kinetic-Wireless-Dongle](https://github.com/alextrical/ESP32-Sentinel-Kinetic-Wireless-Dongle)
   hardware this component runs on.
