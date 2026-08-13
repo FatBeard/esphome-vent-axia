@@ -140,16 +140,26 @@ constexpr Field PAGE_3_FIELDS[] = {
 // for both switched and commanded boosts.
 //
 // Cols 5-6 ("05" asserted / "00" otherwise) and cols 13-15 ("030" asserted /
-// "000" otherwise, very likely the overrun period in minutes the switch
-// keeps the fan running after the light goes off) both correlate with the
-// switched live too, but are deliberately left UNDECODED: the two "switched"
-// captures above are about a minute apart and both still read 030, which is
-// consistent with either a *configured* overrun period (a constant that
-// would read the same every time) or a *remaining* overrun countdown (a
-// slow countdown could easily still read 030 a minute in) -- the evidence
-// in hand cannot tell those apart, and a decoded value here would carry an
-// observation the evidence doesn't actually establish. Revisit if a longer
-// capture ever catches 030 changing under the switched-live episode.
+// "000" otherwise, presumably the overrun period in minutes the switch keeps
+// the fan running after the light goes off) both correlate with the switched
+// live too, but are deliberately left UNDECODED, and a third capture that
+// evening is why. Sampled across ONE continuous switched-live episode
+// (23:1x-23:22, the light on throughout), cols 13-15 read 030, then 029,
+// then 030 again. That is neither a constant nor a monotonic countdown, so
+// both of the obvious readings are wrong as stated:
+//
+//   - not a fixed *configured* period, or it could not have shown 029;
+//   - not a *remaining* countdown, or it could not have gone back up.
+//
+// The reading that fits is an overrun timer being continuously RELOADED for
+// as long as the switch is held -- 029 being the one sample that landed
+// between a tick and its reload -- which would mean the field only becomes a
+// meaningful countdown once the switch RELEASES. That is untested: every
+// sample so far was taken with the light on, because that is the only state
+// in which the field is nonzero at all and the scrape takes ~90s to reach
+// this page. Settling it needs a scrape started immediately after the light
+// goes off, inside the overrun. Until then a decoded value here would carry
+// an observation the evidence does not establish.
 //
 // Cols 8-9 (always "00" in every capture above) and cols 10-11 (ticking
 // 00/01/02/04/05 across ALL three episode types, switched and commanded and
