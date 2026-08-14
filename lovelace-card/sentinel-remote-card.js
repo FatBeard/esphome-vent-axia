@@ -9,15 +9,24 @@
  * press-and-hold fast-scroll on Up/Down) but rebuilds it as a clean glass/metal
  * panel that fits a modern dashboard, in both light and dark Home Assistant themes.
  *
- * Beyond the remote itself the card carries three status surfaces, all optional:
+ * Beyond the remote itself the card carries these surfaces, all optional:
  *   - the header vent glyph, which spins at a rate proportional to airflow_entity
- *   - an alert rail that renders nothing at all until summer bypass opens or the
- *     filter needs changing, so a healthy unit shows a quiet card
- *   - a chip row of numeric readouts (supply/extract air temperature, and so on)
+ *   - an alert rail that renders nothing at all while the unit is healthy, so a
+ *     quiet card is a well unit
+ *   - a single-line chip row of numeric readouts
+ *   - an airflow-mode segmented control (Normal / boost durations / Purge), which
+ *     is also the only way to start and stop a purge
+ *   - a row of maintenance actions (refresh diagnostics, sync clock, reset filter)
  *
  * Every status entity is opt-in by presence: name the entity in the config and
- * the feature appears, omit it and it disappears. There are no separate show/hide
- * flags -- deleting the config line is the off switch.
+ * the feature appears, omit it and it disappears.
+ *
+ * Two ordered lists, `chips:` and `alerts:`, additionally control *which* of the
+ * configured readouts appear and in what order. Omitting either list falls back
+ * to the historical default set and order, so a config written before those keys
+ * existed renders exactly as it always did. That backward-compatibility contract
+ * is why DEFAULT_CHIP_ORDER/DEFAULT_ALERT_ORDER are spelled out as constants
+ * below rather than being derived as "everything in the catalogue".
  *
  * Install:
  *   1. Copy this file to <config>/www/sentinel-remote-card.js
@@ -40,6 +49,26 @@ const DEFAULT_ACCENT = "#3ddc84"; // LCD phosphor green, matches the original un
 const FAST_SCROLL_DELAY_MS = 550; // matches "hold >2s" spec, felt snappier at ~0.55s repeat start
 const FAST_SCROLL_REPEAT_MS = 160;
 
+// How long "Confirm?" stays armed on the reset-filter action before it lapses
+// back to its resting state. On the physical remote that operation's
+// deliberateness comes from having to hold Up+Down for 5.5 seconds; a single
+// tap on a dashboard has none of that, so this window is the whole guard in
+// front of the one irreversible operation the component exposes. Short enough
+// that a stray tap cannot arm it and then be completed minutes later by
+// someone else walking past the tablet.
+const CONFIRM_WINDOW_MS = 4000;
+
+// How long a tapped airflow-mode segment stays marked pending before the card
+// gives up waiting for the unit to confirm it. The select is deliberately not
+// optimistic (select.py): it publishes only what the unit's own status line
+// confirms, and a transition runs ~25-30s, plus up to CONTINUOUS_CONFIRM_MS
+// (20s) more to confirm a continuous boost. This is that worst case with
+// margin -- and it must expire rather than latch, because some transitions
+// legitimately never complete: selecting Normal during a switched-live boost
+// fails on purpose (see the README), and a pending mark that never cleared
+// would misreport that as still-in-flight forever.
+const MODE_PENDING_TIMEOUT_MS = 90000;
+
 // Vent glyph rotation period at 0% and 100% airflow. The unit idles around 20-30%
 // and boosts to ~50-60%, so the interesting range sits in the middle: a linear map
 // between these two keeps trickle visibly slow and boost visibly urgent without the
@@ -58,6 +87,271 @@ const SNOWFLAKE_ICON = `
     <rect x="11.25" y="2" width="1.5" height="20" rx="0.75" transform="rotate(120 12 12)"/>
   </g>
 `;
+
+// Single-path glyphs, kept as bare `d` strings and wrapped in <path> at render
+// time. Deliberately simple shapes rather than an icon-font dependency: the
+// card has no external resources at all, which is what lets it be installed by
+// copying one file.
+const ICON = {
+  // Chips
+  supplyTemp: "M12 3v10.2l-3.6-3.6L7 11l5 5 5-5-1.4-1.4-3.6 3.6V3h-2ZM4 19h16v2H4v-2Z",
+  extractTemp: "M12 21V10.8l3.6 3.6L17 13l-5-5-5 5 1.4 1.4L12 10.8V21h-2 4-2ZM4 3h16v2H4V3Z",
+  thermometer:
+    "M12 2a3 3 0 0 0-3 3v8.6a5 5 0 1 0 6 0V5a3 3 0 0 0-3-3Zm0 2a1 1 0 0 1 1 1v9.6l.6.4a3 3 0 1 1-3.2 0l.6-.4V5a1 1 0 0 1 1-1Z",
+  droplet: "M12 2s6 7.2 6 11.5a6 6 0 1 1-12 0C6 9.2 12 2 12 2Z",
+  co2: "M12 2a5 5 0 0 0-5 5c0 3 5 9 5 9s5-6 5-9a5 5 0 0 0-5-5Z",
+  tachometer: "M12 2a10 10 0 1 0 10 10h-2a8 8 0 1 1-8-8V2Zm1 4v7h6a6 6 0 0 0-6-6Z",
+  bars: "M4 14h3v6H4v-6Zm5-4h3v10H9V10Zm5-4h3v14h-3V6Zm5-4h3v18h-3V2Z",
+  funnel: "M3 4h18l-7 8v7l-4 2v-9L3 4Z",
+  clock: "M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.41V6h-2v7.41l5.29 5.3 1.42-1.42Z",
+
+  // Alert-rail pills
+  sun: "M12 7a5 5 0 1 0 5 5 5 5 0 0 0-5-5Zm0-5 1.8 3.1h-3.6L12 2Zm0 20-1.8-3.1h3.6L12 22ZM2 12l3.1-1.8v3.6L2 12Zm20 0-3.1 1.8v-3.6L22 12Z",
+  warning: "M12 2 1 21h22L12 2Zm1 14h-2v2h2v-2Zm0-7h-2v5h2V9Z",
+  // A no-entry circle: unmistakable at 12px, and the only glyph here that has
+  // to read as "nothing is getting through" rather than "something is wrong".
+  offline:
+    "M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm0 2a7.9 7.9 0 0 1 4.9 1.7L5.7 16.9A8 8 0 0 1 12 4Zm0 16a7.9 7.9 0 0 1-4.9-1.7L18.3 7.1A8 8 0 0 1 12 20Z",
+  // Two curling airstreams -- purge is the unit at full tilt, so it gets the
+  // most emphatic air glyph on the card.
+  wind: "M4 7h9a2.5 2.5 0 1 0-2.5-2.5h-2A4.5 4.5 0 1 1 13 9H4V7Zm0 4h13a2.5 2.5 0 1 1-2.5 2.5h-2A4.5 4.5 0 1 0 17 13H4v-2Z",
+  // Sun over a horizon line: a thaw, distinct from antifrost's snowflake.
+  thaw: "M12 6a4 4 0 1 1-4 4 4 4 0 0 1 4-4Zm0-5 1.5 3h-3L12 1ZM4.2 4.2 6.6 5.4 5.4 6.6 4.2 4.2Zm15.6 0-1.2 2.4-1.2-1.2 2.4-1.2ZM2 12l3-1.5v3L2 12Zm20 0-3 1.5v-3l3 1.5ZM4 19h16v2H4v-2Z",
+  // Droplet above a floor line: moisture being driven out of the fabric.
+  dryout: "M12 2s6 7.2 6 11.5a6 6 0 1 1-12 0C6 9.2 12 2 12 2Zm-5 19h10v2H7v-2Z",
+  // A rocker switch plate -- the wall switch that is holding the boost on.
+  switchPlate: "M7 2h10a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Zm2 3v6h6V5H9Z",
+
+  // Maintenance actions
+  refresh: "M12 4V1L8 5l4 4V6a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8Z",
+  sliders: "M4 6h10v2H4V6Zm12 0h4v2h-4V6Zm-4-3h2v8h-2V3ZM4 16h4v2H4v-2Zm6 0h10v2H10v-2Zm-4-3h2v8H6v-8Z",
+};
+
+// Numeric readouts, keyed by the short id used in the `chips:` config list.
+// `key` is the config key naming the entity; the chip is skipped when that key
+// is absent, so listing an id costs nothing until its entity is configured too.
+//
+// `stale: true` marks a reading that comes off the ~15 minute diagnostics
+// scrape rather than the live status frames, which adds "updated hh:mm" to the
+// tooltip from diagnostics_updated_entity. Everything sourced from a diagnostic
+// page carries it -- including humidity, which predates the flag and was
+// previously (wrongly) presented as live.
+const CHIP_CATALOGUE = {
+  supply_temp: {
+    key: "supply_temp_entity",
+    icon: ICON.supplyTemp,
+    label: "Supply air (to house)",
+    fallbackUnit: "°C",
+    stale: true,
+  },
+  extract_temp: {
+    key: "extract_temp_entity",
+    icon: ICON.extractTemp,
+    label: "Extract air (from house)",
+    fallbackUnit: "°C",
+    stale: true,
+  },
+  // Labelled "unit sensor" on purpose. The MVHR's menu has a screen called
+  // "Indoor Temp" which is the summer-bypass *setpoint*, not a reading; naming
+  // this chip just "Indoor temp" would collide with it on the same dashboard.
+  indoor_temp: {
+    key: "indoor_temp_entity",
+    icon: ICON.thermometer,
+    label: "Indoor air (unit sensor)",
+    fallbackUnit: "°C",
+    stale: true,
+  },
+  humidity: { key: "humidity_entity", icon: ICON.droplet, label: "Humidity", fallbackUnit: "%", stale: true },
+  humidity_avg: {
+    key: "humidity_avg_entity",
+    icon: ICON.droplet,
+    label: "Humidity (5 min average)",
+    fallbackUnit: "%",
+    stale: true,
+  },
+  co2: { key: "co2_entity", icon: ICON.co2, label: "CO2", fallbackUnit: "ppm" },
+  // RPM is the one readout that distinguishes "commanded 30%" from "actually
+  // turning"; drive percentage rising at constant RPM is the early signal of a
+  // blocked filter or duct.
+  supply_rpm: { key: "supply_rpm_entity", icon: ICON.tachometer, label: "Supply fan speed", fallbackUnit: "rpm", stale: true },
+  extract_rpm: { key: "extract_rpm_entity", icon: ICON.tachometer, label: "Extract fan speed", fallbackUnit: "rpm", stale: true },
+  supply_pwm: { key: "supply_pwm_entity", icon: ICON.bars, label: "Supply motor drive", fallbackUnit: "%", stale: true },
+  extract_pwm: { key: "extract_pwm_entity", icon: ICON.bars, label: "Extract motor drive", fallbackUnit: "%", stale: true },
+  // Shares filter_entity with the alert rail, which uses the same figure for
+  // its "Filter due - 312 h" detail. Listing this id promotes it to a chip of
+  // its own for people who want the countdown visible all the time.
+  filter_hours: { key: "filter_entity", icon: ICON.funnel, label: "Filter life remaining", fallbackUnit: "h", stale: true },
+  boost_remaining: {
+    key: "boost_remaining_entity",
+    icon: ICON.clock,
+    label: "Boost ends in",
+    fallbackUnit: "min",
+    hideWhenZero: true,
+  },
+};
+
+// The set and order the card shipped with before `chips:` existed. Omitting
+// `chips:` must reproduce this exactly -- see the header comment.
+const DEFAULT_CHIP_ORDER = ["supply_temp", "extract_temp", "humidity", "co2", "boost_remaining"];
+
+// Alert-rail pills, keyed by the short id used in the `alerts:` config list.
+//
+// `severity` picks the pill tint: `info` (accent) for the unit protecting
+// itself or the house automatically, `warn` (amber) for something the user
+// must eventually act on, `alarm` (red) for a fault or a dead link. Bypass and
+// antifrost are deliberately `info` rather than amber -- an open bypass in
+// summer is correct behaviour and must not read as a fault.
+//
+// `invert` means the pill shows while the entity is *off*, which is what
+// "offline" needs. An unavailable entity counts as off, so a whole ESPHome
+// device dropping off the network raises it too.
+//
+// `resolve` replaces both the activity test and the label for the two pills
+// that are not a plain on/off read.
+const ALERT_CATALOGUE = {
+  offline: {
+    key: "link_entity",
+    invert: true,
+    severity: "alarm",
+    icon: ICON.offline,
+    label: "MVHR offline",
+    title: "No frames arriving from the MVHR — the unit, the dongle or the link is down",
+  },
+  bypass: {
+    key: "bypass_entity",
+    severity: "info",
+    icon: ICON.sun,
+    label: "Bypass",
+    title: "Summer bypass open",
+  },
+  antifrost: { key: "antifrost_entity", severity: "info", icon: SNOWFLAKE_ICON, rawIcon: true, resolve: "antifrost" },
+  defrost: {
+    key: "defrost_entity",
+    severity: "info",
+    icon: ICON.thaw,
+    label: "Defrost",
+    title: "Defrost cycle running",
+  },
+  dryout: {
+    key: "dryout_entity",
+    severity: "info",
+    icon: ICON.dryout,
+    label: "Dryout",
+    title: "Dryout mode — the unit is drying the building fabric",
+  },
+  purge: {
+    key: "purge_entity",
+    severity: "info",
+    icon: ICON.wind,
+    label: "Purge",
+    title: "Purge running — full airflow",
+  },
+  // The most valuable pill on the rail: a wall switched live (commonly taken
+  // off a bathroom light) holds the unit's own boost input directly, and
+  // nothing but that switch releasing will clear it. Without this the failure
+  // reads as the card being broken. Comes off diagnostic page 05, so it is
+  // stale by construction -- the tooltip says so, because it explains a boost
+  // after the fact rather than reporting one live.
+  switched_live: {
+    key: "switched_live_entity",
+    severity: "info",
+    icon: ICON.switchPlate,
+    label: "Switched-live boost",
+    title:
+      "A wired wall switch is holding the boost on. It cannot be cancelled from Home Assistant — only the switch releasing will clear it. Read from the ~15 minute diagnostics scrape, so this may lag.",
+  },
+  filter: { key: "filter_due_entity", severity: "warn", icon: ICON.warning, resolve: "filter" },
+  supply_fault: {
+    key: "supply_fault_entity",
+    severity: "alarm",
+    icon: ICON.warning,
+    label: "T1 sensor fault",
+    title: "Supply air temperature sensor (T1) fault",
+  },
+  extract_fault: {
+    key: "extract_fault_entity",
+    severity: "alarm",
+    icon: ICON.warning,
+    label: "T2 sensor fault",
+    title: "Extract air temperature sensor (T2) fault",
+  },
+  rail_fault: {
+    key: "rail_fault_entity",
+    severity: "alarm",
+    icon: ICON.warning,
+    label: "24 V rail fault",
+    title: "24 V rail fault — check fuse FS1",
+  },
+};
+
+// Unlike DEFAULT_CHIP_ORDER this is the full catalogue rather than a historical
+// subset: an alert only renders when its entity is both configured *and*
+// asserted, so listing every id by default costs nothing for a config that
+// names none of the new ones.
+//
+// The ordering is "faults first, then everything else" -- but note that
+// bypass/antifrost/filter appear in that relative order deliberately, because
+// it is the order the card rendered them in before `alerts:` existed. Sorting
+// the actionable amber filter pill above the informational bypass one would be
+// marginally better triage and was tried; it also silently reshuffled a rail
+// that existing dashboards already display, which is not a trade worth making
+// for a rail that rarely shows more than one pill at a time. New pills slot in
+// around that fixed trio rather than through it.
+const DEFAULT_ALERT_ORDER = [
+  "offline",
+  "supply_fault",
+  "extract_fault",
+  "rail_fault",
+  "bypass",
+  "antifrost",
+  "filter",
+  "defrost",
+  "dryout",
+  "purge",
+  "switched_live",
+];
+
+// Compact labels for the airflow-mode segments. The segment list itself is
+// always read from the select entity's own `options` attribute -- never
+// hardcoded -- because that order is load-bearing on the component side
+// (select.py maps it index-for-index onto AirflowTarget). This map only
+// shortens what is displayed, and passes anything it does not recognise
+// straight through, so a future option appears as itself rather than vanishing.
+const MODE_LABELS = {
+  Normal: "Normal",
+  "Boost 30 min": "30m",
+  "Boost 60 min": "60m",
+  "Boost Continuous": "Cont",
+  Purge: "Purge",
+};
+
+// Maintenance actions, each backing a sequence on the component side. These are
+// the card's answer to the physical remote's held key combos: rather than try
+// to reproduce a 5.5s two-key hold over a fire-and-forget service call, each
+// one presses the button that starts the sequence which already performs that
+// hold, with its own screen checks and self-verification around it.
+const ACTION_BUTTONS = [
+  {
+    key: "refresh_diagnostics_button",
+    icon: ICON.refresh,
+    label: "Refresh",
+    title: "Re-scan the unit's diagnostic pages (~15 min of staleness cleared in one pass)",
+  },
+  {
+    key: "refresh_settings_button",
+    icon: ICON.sliders,
+    label: "Settings",
+    title: "Re-read the summer bypass settings from the unit",
+  },
+  { key: "sync_clock_button", icon: ICON.clock, label: "Clock", title: "Set the unit's clock from Home Assistant" },
+  {
+    key: "reset_filter_button",
+    icon: ICON.funnel,
+    label: "Filter",
+    confirm: true,
+    title: "Restart the filter service countdown. Irreversible — press only after actually changing the filters.",
+  },
+];
 
 class SentinelRemoteCard extends HTMLElement {
   static getStubConfig() {
@@ -92,6 +386,20 @@ class SentinelRemoteCard extends HTMLElement {
     };
     this._holdTimer = null;
     this._holdInterval = null;
+    // Which mode segment has been tapped but not yet confirmed by the unit, and
+    // when. Cleared on confirmation or after MODE_PENDING_TIMEOUT_MS -- see that
+    // constant for why it must be able to lapse.
+    this._pendingMode = null;
+    this._pendingModeAt = 0;
+    // Which action button is armed for its second, confirming tap.
+    this._armedAction = null;
+    this._armTimer = null;
+    // Signatures of the last-rendered mode row and action row. Both contain
+    // live buttons, and rewriting their innerHTML out from under a pointer
+    // swallows the click, so they are only re-rendered when something they
+    // display has actually changed.
+    this._modeSig = null;
+    this._actionSig = null;
     if (!this._built) this._build();
     this._applyStaticConfig();
   }
@@ -112,6 +420,7 @@ class SentinelRemoteCard extends HTMLElement {
 
   disconnectedCallback() {
     this._clearHold();
+    this._disarmAction();
   }
 
   // ---------------------------------------------------------------- build --
@@ -145,10 +454,12 @@ class SentinelRemoteCard extends HTMLElement {
               <div class="lcd-line" id="l2">&nbsp;</div>
               <div class="lcd-scanline"></div>
             </div>
+            <div class="busy-bar" id="busyBar" style="display:none"><span></span></div>
           </div>
 
           <div class="alerts" id="alerts"></div>
           <div class="chips" id="chips"></div>
+          <div class="mode-row" id="modeRow"></div>
 
           <div class="buttons">
             <button class="btn btn-boost" data-key="boost" title="Boost">
@@ -167,6 +478,8 @@ class SentinelRemoteCard extends HTMLElement {
               </button>
             </div>
           </div>
+
+          <div class="actions" id="actions"></div>
         </div>
       </ha-card>
     `;
@@ -178,13 +491,26 @@ class SentinelRemoteCard extends HTMLElement {
       airflowPct: root.querySelector("#airflowPct"),
       l1: root.querySelector("#l1"),
       l2: root.querySelector("#l2"),
+      busyBar: root.querySelector("#busyBar"),
       alerts: root.querySelector("#alerts"),
       chips: root.querySelector("#chips"),
+      modeRow: root.querySelector("#modeRow"),
+      actions: root.querySelector("#actions"),
       boost: root.querySelector('[data-key="boost"]'),
       down: root.querySelector('[data-key="down"]'),
       select: root.querySelector('[data-key="select"]'),
       up: root.querySelector('[data-key="up"]'),
     };
+
+    // Delegated, so the handlers survive the innerHTML rewrites both rows do.
+    this._els.modeRow.addEventListener("click", (ev) => {
+      const btn = ev.target.closest("[data-option]");
+      if (btn && !btn.disabled) this._onModeSelect(btn.dataset.option);
+    });
+    this._els.actions.addEventListener("click", (ev) => {
+      const btn = ev.target.closest("[data-action]");
+      if (btn && !btn.disabled) this._onAction(btn.dataset.action);
+    });
 
     for (const key of ["boost", "down", "select", "up"]) {
       const el = this._els[key];
@@ -224,10 +550,26 @@ class SentinelRemoteCard extends HTMLElement {
     this._setLcdLine(this._els.l2, line2);
     this._fitLcd();
 
-    const anyUnavailable = this._buttonUnavailable(hass, c);
+    // `busy` is true while a keypad tap or a whole sequence is in flight. An
+    // airflow-mode change runs ~25-30s, so without this the card looks hung
+    // for half a minute after a tap; this is exactly what the component
+    // publishes that sensor for.
+    const busy = !!(c.busy_entity && hass.states[c.busy_entity] && this._isOn(hass.states[c.busy_entity]));
+    // Link down means no frames are arriving from the MVHR. Every sequence and
+    // key press is refused in that state anyway (the Runner will not start one
+    // while the link is down), so presenting the controls as live would be a
+    // lie. An unavailable entity counts as down, which also covers the whole
+    // ESPHome node dropping off the network.
+    const online = !c.link_entity || this._isOn(hass.states[c.link_entity]);
+    this._els.panel.classList.toggle("offline", !online);
+    this._els.busyBar.style.display = busy ? "" : "none";
+
     for (const key of ["boost", "down", "select", "up"]) {
       const entity = c[`${key}_button`];
-      const disabled = !entity || this._isUnavailable(hass, entity);
+      // The raw keys stay live while merely busy -- a refused tap is logged,
+      // not harmful, and these are the documented escape hatch for when
+      // something has gone wrong. Only a dead link takes them away.
+      const disabled = !entity || this._isUnavailable(hass, entity) || !online;
       this._els[key].disabled = disabled;
       this._els[key].classList.toggle("disabled", disabled);
     }
@@ -243,6 +585,8 @@ class SentinelRemoteCard extends HTMLElement {
     this._renderAirflow(hass, c, boostActive);
     this._renderAlerts(hass, c);
     this._renderChips(hass, c);
+    this._renderModeRow(hass, c, busy || !online);
+    this._renderActions(hass, c, busy || !online);
   }
 
   // Spin the vent glyph at a rate that tracks real airflow. `airflow_entity` is
@@ -285,41 +629,72 @@ class SentinelRemoteCard extends HTMLElement {
   // antifrost are both tinted with the accent rather than amber -- both are the
   // unit protecting itself/the house automatically, not a fault to act on; amber
   // is reserved for filter, the one alert that actually needs the user to do
-  // something.
+  // something, and red for the faults and a dead link.
+  //
+  // Order comes from `alerts:` when configured, otherwise DEFAULT_ALERT_ORDER,
+  // which runs most urgent first so a genuine fault is never pushed off the end
+  // of the rail by a routine bypass opening.
   _renderAlerts(hass, c) {
     const pills = [];
 
-    const bypass = c.bypass_entity ? hass.states[c.bypass_entity] : null;
-    if (bypass && this._isOn(bypass)) {
-      pills.push(
-        this._pill(
-          "info",
-          `<path fill="currentColor" d="M12 7a5 5 0 1 0 5 5 5 5 0 0 0-5-5Zm0-5 1.8 3.1h-3.6L12 2Zm0 20-1.8-3.1h3.6L12 22ZM2 12l3.1-1.8v3.6L2 12Zm20 0-3.1 1.8v-3.6L22 12Z"/>`,
-          "Summer bypass open",
-          "Bypass"
-        )
-      );
-    }
+    for (const id of this._orderedIds(c.alerts, DEFAULT_ALERT_ORDER, ALERT_CATALOGUE, "alerts")) {
+      const def = ALERT_CATALOGUE[id];
+      const entity = c[def.key];
 
-    const antifrost = this._antifrostAlert(hass, c);
-    if (antifrost) {
-      pills.push(this._pill("info", SNOWFLAKE_ICON, antifrost.title, antifrost.label));
-    }
+      let detail;
+      if (def.resolve === "antifrost") {
+        detail = this._antifrostAlert(hass, c);
+      } else if (def.resolve === "filter") {
+        detail = this._filterAlert(hass, c);
+      } else {
+        if (!entity) continue;
+        const st = hass.states[entity];
+        // For an inverted pill a missing or unavailable state counts as
+        // asserted, which is what makes `offline` fire when the whole ESPHome
+        // node drops off the network rather than only when link_up decodes as
+        // off. The `if (!entity) continue` above is what stops it firing on a
+        // config that simply never named link_entity.
+        const asserted = def.invert ? !this._isOn(st) : this._isOn(st);
+        detail = asserted ? { label: def.label, title: def.title } : null;
+      }
+      if (!detail) continue;
 
-    const filter = this._filterAlert(hass, c);
-    if (filter) {
-      pills.push(
-        this._pill(
-          "warn",
-          `<path fill="currentColor" d="M12 2 1 21h22L12 2Zm1 14h-2v2h2v-2Zm0-7h-2v5h2V9Z"/>`,
-          filter.title,
-          filter.label
-        )
-      );
+      pills.push(this._pill(def.severity, def.rawIcon ? def.icon : this._iconPath(def.icon), detail.title, detail.label));
     }
 
     this._els.alerts.innerHTML = pills.join("");
     this._els.alerts.style.display = pills.length ? "" : "none";
+  }
+
+  // Resolves a configured id list against a catalogue, falling back to the
+  // supplied default order when the key is absent (which is the whole
+  // backward-compatibility contract -- see the header comment).
+  //
+  // An unrecognised id is skipped with a one-off console warning rather than
+  // throwing: a typo in one list entry should cost that one readout, not blank
+  // the entire card on a wall tablet nobody is standing in front of.
+  _orderedIds(configured, fallback, catalogue, what) {
+    if (!Array.isArray(configured)) return fallback;
+    const out = [];
+    for (const id of configured) {
+      if (catalogue[id]) {
+        out.push(id);
+        continue;
+      }
+      this._warnOnce(`${what}: unknown id "${id}" — known ids are ${Object.keys(catalogue).join(", ")}`);
+    }
+    return out;
+  }
+
+  _warnOnce(message) {
+    this._warned = this._warned || new Set();
+    if (this._warned.has(message)) return;
+    this._warned.add(message);
+    console.warn(`${CARD_TAG}: ${message}`);
+  }
+
+  _iconPath(d) {
+    return `<path fill="currentColor" d="${d}"/>`;
   }
 
   // Diagnostic page 24's antifrost mode (PLAN.md §4 in the component repo) is
@@ -419,8 +794,153 @@ class SentinelRemoteCard extends HTMLElement {
     }
   }
 
-  _buttonUnavailable(hass, c) {
-    return ["boost", "down", "select", "up"].every((k) => this._isUnavailable(hass, c[`${k}_button`]));
+  // The airflow-mode segmented control, and the only route to purge on this
+  // card. It drives the `airflow_mode` select, which is an absolute set-point:
+  // "Boost 60 min" means put the unit into a 60 minute boost from wherever it
+  // currently is, not "add 60 minutes". That is the whole reason the component
+  // models boost as a select rather than as key presses -- the unit's Main key
+  // is a cumulative counter with no usable timeout, so only an absolute target
+  // is expressible.
+  //
+  // Segments are read from the entity's own `options` attribute rather than a
+  // hardcoded list. That order is load-bearing on the component side (it is
+  // mapped index-for-index onto AirflowTarget), so reading it at runtime is
+  // what keeps the card from silently drifting out of step with the firmware.
+  _renderModeRow(hass, c, locked) {
+    const el = this._els.modeRow;
+    const entity = c.airflow_mode_entity;
+    const st = entity ? hass.states[entity] : null;
+    const options = st && Array.isArray(st.attributes && st.attributes.options) ? st.attributes.options : [];
+
+    if (!options.length) {
+      if (this._modeSig !== "off") {
+        el.innerHTML = "";
+        el.style.display = "none";
+        this._modeSig = "off";
+      }
+      return;
+    }
+
+    const current = st.state;
+    // Drop the pending mark once the unit confirms the target -- or once it
+    // reports anything else that is not what we asked for and the window has
+    // run out. The timeout matters: a transition that legitimately never lands
+    // (selecting Normal during a switched-live boost) must stop claiming to be
+    // in flight rather than latching forever.
+    if (this._pendingMode) {
+      if (current === this._pendingMode || Date.now() - this._pendingModeAt > MODE_PENDING_TIMEOUT_MS) {
+        this._pendingMode = null;
+      }
+    }
+
+    const sig = `${options.join("")}|${current}|${this._pendingMode || ""}|${locked ? 1 : 0}`;
+    if (sig === this._modeSig) return;
+    this._modeSig = sig;
+
+    const segments = options.map((opt) => {
+      const label = MODE_LABELS[opt] || opt;
+      const classes = ["seg"];
+      if (opt === current) classes.push("active");
+      if (opt === this._pendingMode && opt !== current) classes.push("pending");
+      return `
+        <button class="${classes.join(" ")}" data-option="${this._esc(opt)}" title="${this._esc(opt)}"${
+        locked ? " disabled" : ""
+      }>${this._esc(label)}</button>
+      `;
+    });
+
+    el.innerHTML = segments.join("");
+    el.style.display = "";
+  }
+
+  _onModeSelect(option) {
+    if (!this._hass || !this._config.airflow_mode_entity) return;
+    // Marked pending immediately, because the select is not optimistic: nothing
+    // will change in `state` until the unit's own status line confirms it, up
+    // to half a minute later. Without this the tap looks ignored.
+    this._pendingMode = option;
+    this._pendingModeAt = Date.now();
+    this._modeSig = null;
+    this._hass.callService("select", "select_option", {
+      entity_id: this._config.airflow_mode_entity,
+      option,
+    });
+    this._render();
+  }
+
+  // Maintenance actions. Each is a plain button press on the component side,
+  // where a sequence performs whatever held key combination the operation
+  // actually needs -- see the README's "Button combos" section for why the card
+  // presses these rather than trying to hold keys itself.
+  _renderActions(hass, c, locked) {
+    const defs = ACTION_BUTTONS.filter((d) => c[d.key]);
+    const el = this._els.actions;
+
+    if (!defs.length) {
+      if (this._actionSig !== "off") {
+        el.innerHTML = "";
+        el.style.display = "none";
+        this._actionSig = "off";
+      }
+      return;
+    }
+
+    const sig = `${defs.map((d) => d.key).join("")}|${this._armedAction || ""}|${locked ? 1 : 0}`;
+    if (sig === this._actionSig) return;
+    this._actionSig = sig;
+
+    el.innerHTML = defs
+      .map((d) => {
+        const armed = this._armedAction === d.key;
+        const unavailable = this._isUnavailable(hass, c[d.key]);
+        const disabled = locked || unavailable;
+        return `
+          <button class="action${armed ? " armed" : ""}" data-action="${d.key}" title="${this._esc(d.title)}"${
+          disabled ? " disabled" : ""
+        }>
+            <svg viewBox="0 0 24 24" width="14" height="14">${this._iconPath(d.icon)}</svg>
+            <span>${this._esc(armed ? "Confirm?" : d.label)}</span>
+          </button>
+        `;
+      })
+      .join("");
+    el.style.display = "";
+  }
+
+  // Two-step for anything flagged `confirm`. The first tap only arms the
+  // button; nothing is sent. This stands in for the deliberateness the physical
+  // remote gets from requiring a 5.5 second two-key hold before it will restart
+  // the filter countdown -- an operation with no way back from software.
+  _onAction(key) {
+    const def = ACTION_BUTTONS.find((d) => d.key === key);
+    if (!def || !this._hass) return;
+    const entity = this._config[key];
+    if (!entity) return;
+
+    if (def.confirm && this._armedAction !== key) {
+      this._disarmAction();
+      this._armedAction = key;
+      this._actionSig = null;
+      this._armTimer = setTimeout(() => {
+        this._armedAction = null;
+        this._armTimer = null;
+        this._actionSig = null;
+        this._render();
+      }, CONFIRM_WINDOW_MS);
+      this._render();
+      return;
+    }
+
+    this._disarmAction();
+    this._hass.callService("button", "press", { entity_id: entity });
+    this._render();
+  }
+
+  _disarmAction() {
+    if (this._armTimer) clearTimeout(this._armTimer);
+    this._armTimer = null;
+    this._armedAction = null;
+    this._actionSig = null;
   }
 
   _isUnavailable(hass, entityId) {
@@ -440,45 +960,27 @@ class SentinelRemoteCard extends HTMLElement {
     return !Number.isNaN(n) && n > 0;
   }
 
-  // Numeric readouts. Filter life is deliberately absent -- it lives on the alert
-  // rail now, because the useful signal is "change it" rather than a count of
-  // hours nobody reads. Everything here is opt-in by presence of the config key.
+  // Numeric readouts, in the order given by `chips:` (or DEFAULT_CHIP_ORDER
+  // when that key is absent). Filter life is not in the default set -- the
+  // useful signal is "change it", which the alert rail carries, rather than a
+  // count of hours nobody reads -- but it is available as the `filter_hours`
+  // id for anyone who wants the countdown on screen permanently.
+  //
+  // Listing an id is necessary but not sufficient: the chip still needs its
+  // entity configured and reporting, so the original opt-in-by-presence rule
+  // survives underneath the new ordering.
   _renderChips(hass, c) {
-    const defs = [
-      {
-        key: "supply_temp_entity",
-        icon: "M12 3v10.2l-3.6-3.6L7 11l5 5 5-5-1.4-1.4-3.6 3.6V3h-2ZM4 19h16v2H4v-2Z",
-        label: "Supply air (to house)",
-        fallbackUnit: "°C",
-        stale: true,
-      },
-      {
-        key: "extract_temp_entity",
-        icon: "M12 21V10.8l3.6 3.6L17 13l-5-5-5 5 1.4 1.4L12 10.8V21h-2 4-2ZM4 3h16v2H4V3Z",
-        label: "Extract air (from house)",
-        fallbackUnit: "°C",
-        stale: true,
-      },
-      { key: "humidity_entity", icon: "M12 2s6 7.2 6 11.5a6 6 0 1 1-12 0C6 9.2 12 2 12 2Z", label: "Humidity", fallbackUnit: "%" },
-      { key: "co2_entity", icon: "M12 2a5 5 0 0 0-5 5c0 3 5 9 5 9s5-6 5-9a5 5 0 0 0-5-5Z", label: "CO2", fallbackUnit: "ppm" },
-      {
-        key: "boost_remaining_entity",
-        icon: "M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.41V6h-2v7.41l5.29 5.3 1.42-1.42Z",
-        label: "Boost ends in",
-        fallbackUnit: "min",
-        hideWhenZero: true,
-      },
-    ];
-
-    // The air temperatures come off the ~15 minute diagnostics scrape, not the
-    // live status frames, so they can legitimately be a quarter of an hour old.
-    // Rather than clutter the chip, say when it was last refreshed in the tooltip.
+    // Anything read from a diagnostic page comes off the ~15 minute scrape, not
+    // the live status frames, so it can legitimately be a quarter of an hour
+    // old. Rather than clutter the chip, say when it was last refreshed in the
+    // tooltip.
     const scrapeSt = c.diagnostics_updated_entity ? hass.states[c.diagnostics_updated_entity] : null;
     const scrapedAt =
       scrapeSt && scrapeSt.state !== "unavailable" && scrapeSt.state !== "unknown" ? scrapeSt.state : "";
 
     const chips = [];
-    for (const d of defs) {
+    for (const id of this._orderedIds(c.chips, DEFAULT_CHIP_ORDER, CHIP_CATALOGUE, "chips")) {
+      const d = CHIP_CATALOGUE[id];
       const entity = c[d.key];
       if (!entity) continue;
       const st = hass.states[entity];
@@ -491,13 +993,16 @@ class SentinelRemoteCard extends HTMLElement {
       const title = d.stale && scrapedAt ? `${d.label} — updated ${scrapedAt}` : d.label;
       chips.push(`
         <div class="chip" title="${this._esc(title)}">
-          <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="${d.icon}"/></svg>
+          <svg viewBox="0 0 24 24" width="12" height="12">${this._iconPath(d.icon)}</svg>
           <span>${this._esc(st.state)}${unit ? " " + this._esc(unit) : ""}</span>
         </div>
       `);
     }
     this._els.chips.innerHTML = chips.join("");
     this._els.chips.style.display = chips.length ? "" : "none";
+    // Single row by default; `chip_wrap: true` restores the old wrapping
+    // behaviour for dashboards that would rather have two lines than ellipsis.
+    this._els.chips.classList.toggle("wrap", c.chip_wrap === true);
   }
 
   // Chips and alerts are assembled as HTML strings, so anything sourced from an
@@ -650,14 +1155,41 @@ class SentinelRemoteCard extends HTMLElement {
 
       /* The alert rail shares the chip pill styling so the two rows read as one
          family; it is hidden outright (not just emptied) when nothing is wrong,
-         so a healthy card carries no stray gap above the chips. */
-      .alerts, .chips {
+         so a healthy card carries no stray gap above the chips.
+
+         The rail keeps wrapping: alerts are exceptional and rare, and a pill
+         like "Frost protection - Airflow 85% / 115%" is carrying detail that
+         would be lost to an ellipsis. */
+      .alerts {
         display: flex;
         flex-wrap: wrap;
         gap: 6px;
         margin-top: 10px;
       }
+      /* Chips do NOT wrap. A single row of readings is the point -- supply and
+         extract air temperature belong side by side, not stacked. Columns are
+         sized to their content but allowed to shrink (the minmax lower bound of
+         0 is what permits that), so adding readouts compresses the row and
+         eventually ellipsises rather than spilling onto a second line. */
+      .chips {
+        display: grid;
+        grid-auto-flow: column;
+        grid-auto-columns: minmax(0, max-content);
+        justify-content: start;
+        gap: 6px;
+        margin-top: 10px;
+      }
+      .chips.wrap {
+        display: flex;
+        flex-wrap: wrap;
+      }
+      .chip span {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
       .chip {
+        min-width: 0;
         display: inline-flex;
         align-items: center;
         gap: 5px;
@@ -682,8 +1214,131 @@ class SentinelRemoteCard extends HTMLElement {
         color: color-mix(in srgb, var(--accent) 70%, var(--primary-text-color));
         background: color-mix(in srgb, var(--accent) 16%, transparent);
       }
+      /* Red, above amber, for the things that are actually broken: a sensor or
+         24V rail fault, or a dead link. Mixed against --primary-text-color for
+         the same light/dark legibility reason as .chip.warn above. */
+      .chip.alarm {
+        color: color-mix(in srgb, #ef4444 62%, var(--primary-text-color, #000));
+        background: color-mix(in srgb, #ef4444 18%, transparent);
+      }
+
+      /* A sequence can run for ~25-30s. This sits under the LCD and is the only
+         thing on the card that says "still working" during it -- without it a
+         mode change looks like a tap that did nothing. */
+      .busy-bar {
+        margin-top: 8px;
+        height: 2px;
+        border-radius: 2px;
+        overflow: hidden;
+        background: color-mix(in srgb, var(--accent) 18%, transparent);
+      }
+      .busy-bar span {
+        display: block;
+        height: 100%;
+        width: 40%;
+        border-radius: 2px;
+        background: var(--accent);
+        animation: busy-slide 1.4s ease-in-out infinite;
+      }
+      @keyframes busy-slide {
+        0%   { transform: translateX(-100%); }
+        100% { transform: translateX(350%); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .busy-bar span { animation: none; width: 100%; opacity: .6; }
+      }
+
+      /* The airflow-mode segmented control. Equal columns regardless of label
+         length, so the row reads as one control rather than five buttons. */
+      .mode-row {
+        margin-top: 10px;
+        display: grid;
+        grid-auto-flow: column;
+        grid-auto-columns: 1fr;
+        gap: 4px;
+        padding: 3px;
+        border-radius: 12px;
+        background: var(--secondary-background-color, rgba(0,0,0,.05));
+      }
+      .seg {
+        appearance: none;
+        border: none;
+        cursor: pointer;
+        padding: 7px 4px;
+        border-radius: 9px;
+        font-size: 11.5px;
+        font-weight: 600;
+        font-family: inherit;
+        letter-spacing: .01em;
+        color: var(--secondary-text-color);
+        background: transparent;
+        transition: background .15s ease, color .15s ease;
+        -webkit-tap-highlight-color: transparent;
+        touch-action: manipulation;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .seg:hover:not(:disabled):not(.active) { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+      .seg.active {
+        color: #fff;
+        background: linear-gradient(165deg, color-mix(in srgb, var(--accent) 92%, #fff 8%), color-mix(in srgb, var(--accent) 70%, #000 15%));
+      }
+      /* Tapped but not yet confirmed by the unit. Deliberately an outline rather
+         than a fill: the select is not optimistic, so until the unit's own
+         status line agrees, this is a request and not a state. */
+      .seg.pending {
+        color: var(--accent);
+        border: 1px dashed color-mix(in srgb, var(--accent) 60%, transparent);
+        padding: 6px 3px;
+        animation: seg-pulse 1.6s ease-in-out infinite;
+      }
+      @keyframes seg-pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: .55; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .seg.pending { animation: none; }
+      }
+      .seg:disabled { opacity: .4; pointer-events: none; }
 
       .buttons { margin-top: 16px; display: flex; flex-direction: column; gap: 10px; }
+
+      /* Maintenance actions sit below the remote, not above it: they are
+         occasional housekeeping, and the remote is what the card is for. */
+      .actions {
+        margin-top: 12px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .action {
+        appearance: none;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-family: inherit;
+        font-size: 11.5px;
+        font-weight: 600;
+        padding: 5px 10px 5px 8px;
+        border-radius: 999px;
+        color: var(--secondary-text-color);
+        background: transparent;
+        border: 1px solid var(--divider-color, rgba(0,0,0,.12));
+        transition: background .15s ease, color .15s ease, border-color .15s ease;
+        -webkit-tap-highlight-color: transparent;
+        touch-action: manipulation;
+      }
+      .action:hover:not(:disabled) { background: var(--secondary-background-color, rgba(0,0,0,.05)); }
+      .action:disabled { opacity: .35; pointer-events: none; }
+      /* Armed for its confirming second tap. Amber and unmistakable, because
+         the only action that uses it cannot be undone. */
+      .action.armed {
+        color: color-mix(in srgb, #f59e0b 62%, var(--primary-text-color, #000));
+        background: color-mix(in srgb, #f59e0b 18%, transparent);
+        border-color: color-mix(in srgb, #f59e0b 45%, transparent);
+      }
 
       .btn {
         appearance: none;
@@ -742,6 +1397,20 @@ class SentinelRemoteCard extends HTMLElement {
       }
       .btn svg { display: block; }
 
+      /* A dead link is otherwise indistinguishable from an idle unit. Draining
+         the colour out of the panel says "this is not live" faster than any pill
+         can, and the pill then says why.
+
+         Applied to the children rather than to .panel itself, and skipping the
+         alert rail: a CSS filter on an ancestor cannot be cancelled by a
+         descendant, so greying the whole panel would take the red "MVHR
+         offline" pill down with it -- the one thing on the card that still
+         needs to be legible. */
+      .panel.offline > *:not(.alerts) {
+        filter: grayscale(.85);
+        opacity: .78;
+      }
+
       .panel.force-dark { color-scheme: dark; }
       .panel.force-light { color-scheme: light; }
     `;
@@ -764,12 +1433,21 @@ class SentinelRemoteCardEditor extends HTMLElement {
         <i>Edit in YAML</i> and see the README for the full option list.</p>
         <p><b>Required:</b> line1_entity / line2_entity (or display_entity), boost_button,
         down_button, select_button, up_button.</p>
-        <p><b>Optional status:</b> airflow_entity (spins the header vent glyph in
-        proportion to flow), bypass_entity, antifrost_entity and filter_due_entity
-        (the alert rail), antifrost_mode_entity (detail text for the antifrost
-        pill), supply_temp_entity, extract_temp_entity, humidity_entity, co2_entity,
-        boost_remaining_entity, filter_entity, filter_warning_threshold,
-        diagnostics_updated_entity, boost_active_entity, running_entity.</p>
+        <p><b>Controls:</b> airflow_mode_entity (the Normal / boost / Purge segmented
+        row — this is where purge lives), refresh_diagnostics_button,
+        refresh_settings_button, sync_clock_button, reset_filter_button.</p>
+        <p><b>Chips:</b> supply_temp_entity, extract_temp_entity, indoor_temp_entity,
+        humidity_entity, humidity_avg_entity, co2_entity, supply_rpm_entity,
+        extract_rpm_entity, supply_pwm_entity, extract_pwm_entity, filter_entity,
+        boost_remaining_entity, diagnostics_updated_entity.</p>
+        <p><b>Alerts:</b> link_entity, bypass_entity, antifrost_entity,
+        antifrost_mode_entity, defrost_entity, dryout_entity, purge_entity,
+        switched_live_entity, filter_due_entity, filter_warning_threshold,
+        supply_fault_entity, extract_fault_entity, rail_fault_entity.</p>
+        <p><b>Other status:</b> airflow_entity (spins the header vent glyph in
+        proportion to flow), busy_entity, boost_active_entity, running_entity.</p>
+        <p><b>Layout:</b> chips and alerts take ordered id lists that control which
+        readouts appear and in what order; chip_wrap lets the chip row wrap again.</p>
         <p><b>Appearance:</b> title, accent_color, theme.</p>
         <p>Each status entity is opt-in: name it and the chip or icon appears, omit
         the line and it is hidden.</p>
