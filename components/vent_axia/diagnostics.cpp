@@ -211,7 +211,19 @@ constexpr Page PAGES[] = {
     {6, PAGE_6_FIELDS, array_len(PAGE_6_FIELDS), nullptr},
     {7, PAGE_7_FIELDS, array_len(PAGE_7_FIELDS), nullptr},
     {8, PAGE_8_FIELDS, array_len(PAGE_8_FIELDS), nullptr},
-    // 9/10: SW4/SW5 -- not wired on this unit's wall-switch inputs; not decoded.
+    // 9/10: SW4/SW5 -- raw, closed (pos 5, NOT pos 7 as on pages 6/7/8),
+    // momentary time. Not decoded, but unlike every other undecoded page on
+    // this unit these are not obviously empty: the captured row is
+    // "1022 0 25 00    " -- nonzero raw and a momentary time of 25 -- where
+    // pages 6/7/8 sit inert at "0000 1 0 000 00 ". "SW4/SW5 not wired here"
+    // comes from mhrv_orig's page map and was never checked with a switch
+    // actually asserted, which is the same gap that let pages 6/7/8 look
+    // settled through two successive wrong explanations (PLAN.md §8 stage
+    // 10). The house has three switched lives and only the toilet one has
+    // ever been held during a scrape, so these pages may well carry the
+    // other two. Left undecoded until that scrape happens rather than
+    // guessing a layout off one undated capture -- PLAN.md §4 and §8 stage
+    // 10 carry the test.
     {11, PAGE_11_FIELDS, array_len(PAGE_11_FIELDS), nullptr},
     // 12-18: wireless T0-T4 timers, the security PIN digits, and the two
     // plug-in sensor sockets -- empty on this unit (no wireless receiver, no
