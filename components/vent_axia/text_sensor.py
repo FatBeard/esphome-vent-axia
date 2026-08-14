@@ -29,6 +29,14 @@ TEXT_SENSORS = {
     "antifrost_mode": text_sensor.text_sensor_schema(
         icon="mdi:snowflake-thermometer",
     ),
+    # Diagnostic page 20's tri-state field, spelled out (see diagnostics.cpp
+    # for the state -> text table). ENTITY_CATEGORY_DIAGNOSTIC because,
+    # unlike antifrost_mode, nothing on this unit is known to act on it --
+    # it is exposed for visibility, not because a user is expected to watch it.
+    "west_link_state": text_sensor.text_sensor_schema(
+        icon="mdi:lan-connect",
+        entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+    ),
     # Diagnostic pages 25/26, both ENTITY_CATEGORY_DIAGNOSTIC per the brief --
     # identifying information about the unit, not something a user watches.
     "serial_number": text_sensor.text_sensor_schema(

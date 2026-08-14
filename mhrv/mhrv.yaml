@@ -143,9 +143,12 @@ text_sensor:
     # Quick -- decoded from the status line on every frame (status.cpp), not
     # gated on any schedule.
     status_message:  {name: "Status Message"}
-    # Diagnostics -- diagnostic pages 24/25/26, only refreshed by
+    # Diagnostics -- diagnostic pages 20/24/25/26, only refreshed by
     # fetch_diagnostics (~15 min) -- see diagnostics.cpp.
     antifrost_mode:   {name: "Frost Protection Mode"}
+    # Page 20's tri-state field -- exposed for visibility even though
+    # nothing on this unit is known to depend on it (PLAN.md §4).
+    west_link_state:  {name: "West/Normal Link"}
     serial_number:    {name: "MVHR Serial Number"}
     firmware_version: {name: "MVHR Firmware Version"}
     # Optional escape hatch, not in PLAN.md §6's entity list: "NN: <line2>"

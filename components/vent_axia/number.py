@@ -41,14 +41,15 @@ NUMBERS = {
             unit_of_measurement=UNIT_CELSIUS,
             device_class=DEVICE_CLASS_TEMPERATURE,
         ),
-        # A GUESS (PLAN.md risk 6): this screen is not in the manual at all
-        # and is only reachable through Indoor Temp's editor; the one value
-        # ever observed on the real unit is 14 C. A value the unit refuses
-        # looks identical to a dropped keypress from here -- there is no
-        # separate "rejected" signal -- so AdjustField's guard (40 taps,
-        # sequence.h) is what eventually stops the loop either way, and the
-        # write then fails with a clear log message rather than hanging.
-        {"min_value": 5, "max_value": 25, "step": 1},
+        # 5-20 C -- CONFIRMED (PLAN.md risk 6, resolved 14 Aug 2026): this
+        # screen is not in the manual at all and is only reachable through
+        # Indoor Temp's editor, but the range itself is documented
+        # elsewhere and is no longer a guess. A value the unit refuses looks
+        # identical to a dropped keypress from here -- there is no separate
+        # "rejected" signal -- so AdjustField's guard (40 taps, sequence.h)
+        # is what eventually stops the loop either way, and the write then
+        # fails with a clear log message rather than hanging.
+        {"min_value": 5, "max_value": 20, "step": 1},
     ),
 }
 

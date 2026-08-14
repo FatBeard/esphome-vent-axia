@@ -70,6 +70,7 @@ struct Page {
 // Named hooks for the ~10% of pages that are not a plain field extraction --
 // forward-declared here, defined below the table.
 void page4_internal_sensor_hook(const std::string &line2, const Sink &sink);
+void page20_link_hook(const std::string &line2, const Sink &sink);
 void page23_filter_hook(const std::string &line2, const Sink &sink);
 void page24_antifrost_hook(const std::string &line2, const Sink &sink);
 void page25_serial_hook(const std::string &line2, const Sink &sink);
@@ -167,6 +168,16 @@ constexpr Field PAGE_3_FIELDS[] = {
 // like some general sample/tick counter unrelated to switch state, but with
 // only a handful of samples there's nothing safe to name it.
 //
+// PLAN.md §8 stage 11 (14 Aug 2026) tested the other two switched lives in
+// the house against this same page. Column 0 fired for both, confirming it
+// as an AGGREGATE flag rather than something specific to the toilet light.
+// Cols 5-6 read "05" for both, identical to every toilet-switch capture --
+// so they do not identify which input is asserted, ruling out the one
+// candidate PLAN.md had floated for a "which switch" field. No column on
+// this page (or on pages 9/10 -- see the PAGES table entry below) varies by
+// which switched live is held, so there is no per-input signal anywhere in
+// this unit's diagnostic pages: SWITCHED_LIVE_BOOST is the whole story.
+//
 // STALE BY CONSTRUCTION, same as every other diagnostic-page entity: this
 // whole page reaches the component only through the ~15-minute
 // fetch_diagnostics scrape (PLAN.md §4), so a reading here can lag reality
@@ -212,24 +223,28 @@ constexpr Page PAGES[] = {
     {7, PAGE_7_FIELDS, array_len(PAGE_7_FIELDS), nullptr},
     {8, PAGE_8_FIELDS, array_len(PAGE_8_FIELDS), nullptr},
     // 9/10: SW4/SW5 -- raw, closed (pos 5, NOT pos 7 as on pages 6/7/8),
-    // momentary time. Not decoded, but unlike every other undecoded page on
-    // this unit these are not obviously empty: the captured row is
-    // "1022 0 25 00    " -- nonzero raw and a momentary time of 25 -- where
-    // pages 6/7/8 sit inert at "0000 1 0 000 00 ". "SW4/SW5 not wired here"
-    // comes from mhrv_orig's page map and was never checked with a switch
-    // actually asserted, which is the same gap that let pages 6/7/8 look
-    // settled through two successive wrong explanations (PLAN.md §8 stage
-    // 10). The house has three switched lives and only the toilet one has
-    // ever been held during a scrape, so these pages may well carry the
-    // other two. Left undecoded until that scrape happens rather than
-    // guessing a layout off one undated capture -- PLAN.md §4 and §8 stage
-    // 10 carry the test.
+    // momentary time. Not decoded. Looked like a lead for a while: unlike
+    // every other undecoded page on this unit, the captured row is not
+    // obviously empty ("1022 0 25 00    " -- nonzero raw, momentary time
+    // 25 -- against pages 6/7/8's inert "0000 1 0 000 00 "), and "SW4/SW5
+    // not wired here" was inherited from mhrv_orig's page map without ever
+    // being checked against an asserted switch. PLAN.md §8 stage 11 ran
+    // that check across all three of the house's switched lives (not just
+    // the toilet one stage 10 tested) and neither page moved for any of
+    // them -- "1021-1022 0 25 00" / "1020-1021 0" every time, the small
+    // drift between samples matching a free-running counter rather than a
+    // switch flag. So the original "not wired" note holds after all, now
+    // for a checked reason instead of an assumed one.
     {11, PAGE_11_FIELDS, array_len(PAGE_11_FIELDS), nullptr},
     // 12-18: wireless T0-T4 timers, the security PIN digits, and the two
     // plug-in sensor sockets -- empty on this unit (no wireless receiver, no
     // plug-in sensors, no PIN set), not decoded.
     {19, PAGE_19_FIELDS, array_len(PAGE_19_FIELDS), nullptr},
-    // 20: west/normal link raw state -- not understood, not decoded.
+    // 20: "0410 1          " -- raw at (0,4), then the tri-state west/link
+    // field at (5,1). Only the tri-state is decoded, as text -- see
+    // page20_link_hook below. Nothing on this unit is known to consume the
+    // value; it is exposed anyway, same reasoning as antifrost_mode.
+    {20, nullptr, 0, page20_link_hook},
     // 21/22: pressure sensors 1/2 -- not fitted on this unit, not decoded.
     {23, nullptr, 0, page23_filter_hook},
     {24, nullptr, 0, page24_antifrost_hook},
@@ -303,6 +318,38 @@ void page4_internal_sensor_hook(const std::string &line2, const Sink &sink) {
   if (have_avg && sink.publish_sensor) {
     sink.publish_sensor(SensorKey::INDOOR_HUMIDITY_AVG, avg);
   }
+}
+
+// Page 20: "0410 1          " -- raw west/normal-link state, then the same
+// value collapsed to a documented tri-state at column 5: 2 == "West",
+// 1 == "Link", 0 == "No Link" (the manual's own labels; what they mean on
+// this unit's network is not established -- PLAN.md §4). A hook rather than
+// a plain Field because the value is text, not a number or a boolean, the
+// same reason page24_antifrost_hook below is a hook and not a table row.
+void page20_link_hook(const std::string &line2, const Sink &sink) {
+  int state = 0;
+  if (!parser::parse_field(line2, 5, 1, state)) {
+    return;
+  }
+  if (!sink.publish_text) {
+    return;
+  }
+  std::string text;
+  switch (state) {
+    case 0:
+      text = "No Link";
+      break;
+    case 1:
+      text = "Link";
+      break;
+    case 2:
+      text = "West";
+      break;
+    default:
+      text = "State " + std::to_string(state);
+      break;
+  }
+  sink.publish_text(TextKey::WEST_LINK_STATE, text);
 }
 
 // Page 23: "00000           " -- hours left of the configured filter service

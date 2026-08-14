@@ -290,6 +290,38 @@ TEST_CASE(page19_field_0_means_rail_fault_so_fault_is_true) {
   CHECK(r.binary_value(BinaryKey::RAIL_24V_FAULT));
 }
 
+// ---------------------------------------------- page 20: west/link --
+
+TEST_CASE(page20_state_1_is_link) {
+  Recorder r;
+  decode_page(20, "0410 1          ", r.sink());
+  CHECK_EQ(r.text_value(TextKey::WEST_LINK_STATE), std::string("Link"));
+}
+
+TEST_CASE(page20_state_0_is_no_link) {
+  Recorder r;
+  decode_page(20, "0410 0          ", r.sink());
+  CHECK_EQ(r.text_value(TextKey::WEST_LINK_STATE), std::string("No Link"));
+}
+
+TEST_CASE(page20_state_2_is_west) {
+  Recorder r;
+  decode_page(20, "0410 2          ", r.sink());
+  CHECK_EQ(r.text_value(TextKey::WEST_LINK_STATE), std::string("West"));
+}
+
+TEST_CASE(page20_unknown_state_falls_back_to_generic_state_n_text) {
+  Recorder r;
+  decode_page(20, "0410 7          ", r.sink());
+  CHECK_EQ(r.text_value(TextKey::WEST_LINK_STATE), std::string("State 7"));
+}
+
+TEST_CASE(page20_blank_field_publishes_nothing) {
+  Recorder r;
+  decode_page(20, "0410            ", r.sink());
+  CHECK(!r.has_text(TextKey::WEST_LINK_STATE));
+}
+
 // -------------------------------------------------- page 23: filter --
 
 TEST_CASE(page23_zero_hours_publishes_hours_and_reports_change_due) {
@@ -386,11 +418,11 @@ TEST_CASE(page26_firmware_version_trims_correctly) {
 // -------------------------------------- pages this table deliberately skips --
 
 TEST_CASE(pages_not_in_the_table_publish_nothing) {
-  // 9, 10, 12-18, 20-22 -- undecoded internal/absent state. A sample across
-  // that list, all expected to be complete no-ops. Page 5 used to be in this
-  // list too, before its column 0 was decoded (see page5_* tests above) --
-  // it is deliberately no longer here.
-  for (int page : {9, 10, 12, 13, 17, 18, 20, 21, 22}) {
+  // 9, 10, 12-18, 21-22 -- undecoded internal/absent state. A sample across
+  // that list, all expected to be complete no-ops. Pages 5 and 20 used to be
+  // in this list too, before their tri-state/column-0 fields were decoded
+  // (see page5_* and page20_* tests above) -- deliberately no longer here.
+  for (int page : {9, 10, 12, 13, 17, 18, 21, 22}) {
     Recorder r;
     decode_page(page, "0000000000000000", r.sink());
     CHECK_EQ(r.total_calls(), static_cast<size_t>(0));

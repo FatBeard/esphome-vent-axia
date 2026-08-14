@@ -444,8 +444,8 @@ class OpenEditor final : public Sequence {
 ///
 /// One iteration, run from poll():
 ///  1. Bail (FAILED) if the guard is already exhausted -- bounds the loop so
-///     a misread, or a value the unit refuses (PLAN.md risk 6, Outdoor
-///     Temp's guessed range), cannot become a key-mashing runaway.
+///     a misread, or a value the unit refuses (e.g. outside Outdoor Temp's
+///     5-20 C range, PLAN.md risk 6), cannot become a key-mashing runaway.
 ///  2. Re-read the target via target_ (TargetFn, see below) -- FAILED,
 ///     logged, if it is not available right now. For the fixed-target
 ///     reset() overload this call can never fail; it only matters for stage

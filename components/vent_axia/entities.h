@@ -142,7 +142,8 @@ enum class NumberKey : uint8_t {
   BYPASS_INDOOR_TEMP,
   // The outdoor cut-off, off the end of the documented menu -- reachable only
   // by stepping past Indoor Temp's editor (sequence.h's AdjustField/
-  // ExitEditChain). Its range (5-25 C) is a guess -- see number.py.
+  // ExitEditChain). Its range is 5-20 C, confirmed (PLAN.md risk 6) -- see
+  // number.py.
   BYPASS_OUTDOOR_TEMP,
   COUNT,
 };
@@ -154,6 +155,10 @@ enum class TextKey : uint8_t {
   // Diagnostic page 24's mode field, spelled out -- see diagnostics.cpp for
   // the mode -> text table.
   ANTIFROST_MODE,
+  // Diagnostic page 20's tri-state field, spelled out -- see diagnostics.cpp.
+  // What "West"/"Link" mean beyond the manual's own labels is not known;
+  // nothing on this unit is known to depend on the value (PLAN.md §4).
+  WEST_LINK_STATE,
   // Diagnostic pages 25/26: whole-line, trimmed.
   SERIAL_NUMBER,
   FIRMWARE_VERSION,
