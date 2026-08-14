@@ -189,6 +189,8 @@ supply_temp_entity: sensor.house_vent_axia_mhrv_supply_air_temperature_to_house
 extract_temp_entity: sensor.house_vent_axia_mhrv_extract_air_temperature_from_house
 diagnostics_updated_entity: sensor.house_vent_axia_mhrv_diagnostics_last_updated
 bypass_entity: binary_sensor.house_vent_axia_mhrv_summer_bypass_active
+antifrost_entity: binary_sensor.house_vent_axia_mhrv_frost_protection_active
+antifrost_mode_entity: sensor.house_vent_axia_mhrv_frost_protection_mode
 filter_due_entity: binary_sensor.house_vent_axia_mhrv_filter_change_due
 filter_entity: sensor.house_vent_axia_mhrv_filter_hours_remaining
 boost_remaining_entity: sensor.house_vent_axia_mhrv_boost_time_remaining
@@ -209,6 +211,8 @@ line and it is gone. There are no separate show/hide flags.
 | `boost_button`, `down_button`, `select_button`, `up_button` | The four keys. Up/Down repeat while held, matching the physical remote's fast-scroll. |
 | `airflow_entity` | Spins the header vent glyph in proportion to airflow, from one turn per 3.2 s at low flow to 0.8 s at 100 %, with the percentage beside it. Still when flow is zero. |
 | `bypass_entity` | Shows an accent-tinted **Bypass** pill on the alert rail while summer bypass is open. |
+| `antifrost_entity` | Shows an accent-tinted **Frost protection** pill on the alert rail while antifrost is active. Accent-tinted like bypass, not amber — this is the unit protecting itself, not a fault. |
+| `antifrost_mode_entity` | Optional detail text for the antifrost pill, e.g. "Frost protection · Airflow 85% / 115%" instead of the plain label. Has no effect without `antifrost_entity`. |
 | `filter_due_entity` | Shows an amber **Filter due** pill when a filter change is needed. Falls back to thresholding `filter_entity` if this is omitted. |
 | `filter_entity` | Filter life remaining. No longer a chip of its own — it supplies the hours shown inside the filter alert, and acts as the fallback trigger. |
 | `filter_warning_threshold` | Level at which the fallback trigger fires. Defaults to `336` when the sensor reports `h`, otherwise `14`. |

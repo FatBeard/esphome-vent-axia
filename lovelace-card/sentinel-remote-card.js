@@ -47,6 +47,18 @@ const FAST_SCROLL_REPEAT_MS = 160;
 const SPIN_SLOWEST_S = 3.2;
 const SPIN_FASTEST_S = 0.8;
 
+// Six-spoke snowflake for the antifrost alert pill: three thin rounded bars
+// through the centre, each rotated 60 deg from the last -- same rotated-copy
+// technique as the header vent glyph's three ellipses, just three bars
+// instead of three blades.
+const SNOWFLAKE_ICON = `
+  <g fill="currentColor">
+    <rect x="11.25" y="2" width="1.5" height="20" rx="0.75"/>
+    <rect x="11.25" y="2" width="1.5" height="20" rx="0.75" transform="rotate(60 12 12)"/>
+    <rect x="11.25" y="2" width="1.5" height="20" rx="0.75" transform="rotate(120 12 12)"/>
+  </g>
+`;
+
 class SentinelRemoteCard extends HTMLElement {
   static getStubConfig() {
     return {
@@ -269,9 +281,11 @@ class SentinelRemoteCard extends HTMLElement {
   }
 
   // The alert rail is silent by design: it renders nothing at all while the unit
-  // is healthy, so anything appearing here is worth a second look. Bypass is
-  // tinted with the accent rather than amber -- an open bypass in summer is the
-  // unit working correctly, not a fault.
+  // is healthy, so anything appearing here is worth a second look. Bypass and
+  // antifrost are both tinted with the accent rather than amber -- both are the
+  // unit protecting itself/the house automatically, not a fault to act on; amber
+  // is reserved for filter, the one alert that actually needs the user to do
+  // something.
   _renderAlerts(hass, c) {
     const pills = [];
 
@@ -280,20 +294,51 @@ class SentinelRemoteCard extends HTMLElement {
       pills.push(
         this._pill(
           "info",
-          "M12 7a5 5 0 1 0 5 5 5 5 0 0 0-5-5Zm0-5 1.8 3.1h-3.6L12 2Zm0 20-1.8-3.1h3.6L12 22ZM2 12l3.1-1.8v3.6L2 12Zm20 0-3.1 1.8v-3.6L22 12Z",
+          `<path fill="currentColor" d="M12 7a5 5 0 1 0 5 5 5 5 0 0 0-5-5Zm0-5 1.8 3.1h-3.6L12 2Zm0 20-1.8-3.1h3.6L12 22ZM2 12l3.1-1.8v3.6L2 12Zm20 0-3.1 1.8v-3.6L22 12Z"/>`,
           "Summer bypass open",
           "Bypass"
         )
       );
     }
 
+    const antifrost = this._antifrostAlert(hass, c);
+    if (antifrost) {
+      pills.push(this._pill("info", SNOWFLAKE_ICON, antifrost.title, antifrost.label));
+    }
+
     const filter = this._filterAlert(hass, c);
     if (filter) {
-      pills.push(this._pill("warn", "M12 2 1 21h22L12 2Zm1 14h-2v2h2v-2Zm0-7h-2v5h2V9Z", filter.title, filter.label));
+      pills.push(
+        this._pill(
+          "warn",
+          `<path fill="currentColor" d="M12 2 1 21h22L12 2Zm1 14h-2v2h2v-2Zm0-7h-2v5h2V9Z"/>`,
+          filter.title,
+          filter.label
+        )
+      );
     }
 
     this._els.alerts.innerHTML = pills.join("");
     this._els.alerts.style.display = pills.length ? "" : "none";
+  }
+
+  // Diagnostic page 24's antifrost mode (PLAN.md §4 in the component repo) is
+  // already spelled out by the component -- e.g. "Airflow 85% / 115%" -- so the
+  // mode entity, when configured, replaces the generic label with that detail
+  // rather than the card inventing its own wording. antifrost_mode_entity is
+  // optional: without it the pill still appears from antifrost_entity alone,
+  // just with a plain "Frost protection" label.
+  _antifrostAlert(hass, c) {
+    const activeSt = c.antifrost_entity ? hass.states[c.antifrost_entity] : null;
+    if (!activeSt || !this._isOn(activeSt)) return null;
+
+    const modeSt = c.antifrost_mode_entity ? hass.states[c.antifrost_mode_entity] : null;
+    const mode = modeSt && modeSt.state !== "unavailable" && modeSt.state !== "unknown" ? modeSt.state : "";
+
+    return {
+      label: mode ? `Frost protection · ${mode}` : "Frost protection",
+      title: mode ? `Frost protection active — ${mode}` : "Frost protection active",
+    };
   }
 
   // Two independent sources agree on "change the filter": the status line's
@@ -325,10 +370,13 @@ class SentinelRemoteCard extends HTMLElement {
     };
   }
 
-  _pill(kind, icon, title, label) {
+  // `iconSvg` is raw inner-SVG markup rather than a bare path `d` string, so a
+  // pill can use something richer than a single path -- SNOWFLAKE_ICON's three
+  // rotated bars, for instance -- without _pill() itself needing to know that.
+  _pill(kind, iconSvg, title, label) {
     return `
       <div class="chip ${kind}" title="${this._esc(title)}">
-        <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="${icon}"/></svg>
+        <svg viewBox="0 0 24 24" width="12" height="12">${iconSvg}</svg>
         <span>${this._esc(label)}</span>
       </div>
     `;
@@ -717,8 +765,9 @@ class SentinelRemoteCardEditor extends HTMLElement {
         <p><b>Required:</b> line1_entity / line2_entity (or display_entity), boost_button,
         down_button, select_button, up_button.</p>
         <p><b>Optional status:</b> airflow_entity (spins the header vent glyph in
-        proportion to flow), bypass_entity and filter_due_entity (the alert rail),
-        supply_temp_entity, extract_temp_entity, humidity_entity, co2_entity,
+        proportion to flow), bypass_entity, antifrost_entity and filter_due_entity
+        (the alert rail), antifrost_mode_entity (detail text for the antifrost
+        pill), supply_temp_entity, extract_temp_entity, humidity_entity, co2_entity,
         boost_remaining_entity, filter_entity, filter_warning_threshold,
         diagnostics_updated_entity, boost_active_entity, running_entity.</p>
         <p><b>Appearance:</b> title, accent_color, theme.</p>
