@@ -9,11 +9,28 @@
  * press-and-hold fast-scroll on Up/Down) but rebuilds it as a clean glass/metal
  * panel that fits a modern dashboard, in both light and dark Home Assistant themes.
  *
+ * Beyond the remote itself the card carries three status surfaces, all optional:
+ *   - the header vent glyph, which spins at a rate proportional to airflow_entity
+ *   - an alert rail that renders nothing at all until summer bypass opens or the
+ *     filter needs changing, so a healthy unit shows a quiet card
+ *   - a chip row of numeric readouts (supply/extract air temperature, and so on)
+ *
+ * Every status entity is opt-in by presence: name the entity in the config and
+ * the feature appears, omit it and it disappears. There are no separate show/hide
+ * flags -- deleting the config line is the off switch.
+ *
  * Install:
  *   1. Copy this file to <config>/www/sentinel-remote-card.js
  *   2. Settings -> Dashboards -> Resources -> Add Resource
- *        URL: /local/sentinel-remote-card.js   Type: JavaScript Module
+ *        URL: /local/sentinel-remote-card.js?v=1   Type: JavaScript Module
  *   3. Add a card with type: custom:sentinel-remote-card (see README for options)
+ *
+ * Updating: copying a newer file over the old one is often not enough. Browsers
+ * cache by URL, so the stale card can survive a dashboard reload and even a Home
+ * Assistant restart -- typically showing up as an update that lands on one device
+ * but not another, or new config keys being silently ignored. Bump the version
+ * query on the resource (?v=1 -> ?v=2) to make it a different URL. Any change to
+ * the value works; only changing it matters.
  */
 
 const CARD_TAG = "sentinel-remote-card";
@@ -22,6 +39,13 @@ const EDITOR_TAG = "sentinel-remote-card-editor";
 const DEFAULT_ACCENT = "#3ddc84"; // LCD phosphor green, matches the original unit
 const FAST_SCROLL_DELAY_MS = 550; // matches "hold >2s" spec, felt snappier at ~0.55s repeat start
 const FAST_SCROLL_REPEAT_MS = 160;
+
+// Vent glyph rotation period at 0% and 100% airflow. The unit idles around 20-30%
+// and boosts to ~50-60%, so the interesting range sits in the middle: a linear map
+// between these two keeps trickle visibly slow and boost visibly urgent without the
+// top end becoming a blur.
+const SPIN_SLOWEST_S = 3.2;
+const SPIN_FASTEST_S = 0.8;
 
 class SentinelRemoteCard extends HTMLElement {
   static getStubConfig() {
@@ -88,15 +112,18 @@ class SentinelRemoteCard extends HTMLElement {
         <div class="panel" part="panel">
           <div class="header">
             <div class="title"></div>
-            <div class="vent-icon" title="Unit status">
-              <svg viewBox="0 0 24 24" width="16" height="16">
-                <g fill="currentColor">
-                  <ellipse cx="12" cy="6.8" rx="2.5" ry="4.4" transform="rotate(0 12 12)"/>
-                  <ellipse cx="12" cy="6.8" rx="2.5" ry="4.4" transform="rotate(120 12 12)"/>
-                  <ellipse cx="12" cy="6.8" rx="2.5" ry="4.4" transform="rotate(240 12 12)"/>
-                </g>
-                <circle cx="12" cy="12" r="1.7" fill="var(--card-background-color, #fff)"/>
-              </svg>
+            <div class="airflow">
+              <div class="vent-icon" title="Unit status">
+                <svg viewBox="0 0 24 24" width="16" height="16">
+                  <g fill="currentColor">
+                    <ellipse cx="12" cy="6.8" rx="2.5" ry="4.4" transform="rotate(0 12 12)"/>
+                    <ellipse cx="12" cy="6.8" rx="2.5" ry="4.4" transform="rotate(120 12 12)"/>
+                    <ellipse cx="12" cy="6.8" rx="2.5" ry="4.4" transform="rotate(240 12 12)"/>
+                  </g>
+                  <circle cx="12" cy="12" r="1.7" fill="var(--card-background-color, #fff)"/>
+                </svg>
+              </div>
+              <span class="airflow-pct" id="airflowPct"></span>
             </div>
           </div>
 
@@ -108,6 +135,7 @@ class SentinelRemoteCard extends HTMLElement {
             </div>
           </div>
 
+          <div class="alerts" id="alerts"></div>
           <div class="chips" id="chips"></div>
 
           <div class="buttons">
@@ -135,8 +163,10 @@ class SentinelRemoteCard extends HTMLElement {
       panel: root.querySelector(".panel"),
       title: root.querySelector(".title"),
       vent: root.querySelector(".vent-icon"),
+      airflowPct: root.querySelector("#airflowPct"),
       l1: root.querySelector("#l1"),
       l2: root.querySelector("#l2"),
+      alerts: root.querySelector("#alerts"),
       chips: root.querySelector("#chips"),
       boost: root.querySelector('[data-key="boost"]'),
       down: root.querySelector('[data-key="down"]'),
@@ -198,14 +228,110 @@ class SentinelRemoteCard extends HTMLElement {
     this._els.boost.classList.toggle("active", boostActive);
     this._els.panel.classList.toggle("boost-active", boostActive);
 
-    // Spin the vent glyph gently when a fan-speed/running entity says the unit is active
-    const running =
-      c.running_entity && hass.states[c.running_entity]
-        ? this._isRunningValue(hass.states[c.running_entity])
-        : boostActive;
-    this._els.vent.classList.toggle("spinning", !!running);
-
+    this._renderAirflow(hass, c, boostActive);
+    this._renderAlerts(hass, c);
     this._renderChips(hass, c);
+  }
+
+  // Spin the vent glyph at a rate that tracks real airflow. `airflow_entity` is
+  // the only continuously-updating flow figure the component publishes (it comes
+  // off the status-line decode every frame); the RPM and PWM sensors refresh only
+  // on the ~15 minute diagnostics scrape and would animate a stale number.
+  //
+  // With no airflow_entity configured this falls back to the original behaviour
+  // exactly: a fixed-rate spin driven by running_entity, or by boost when that is
+  // absent too. Existing card configs therefore behave as they always did.
+  _renderAirflow(hass, c, boostActive) {
+    const st = c.airflow_entity ? hass.states[c.airflow_entity] : null;
+    const usable = st && st.state !== "unavailable" && st.state !== "unknown";
+    const pct = usable ? Number(st.state) : NaN;
+
+    if (!usable || Number.isNaN(pct)) {
+      this._els.airflowPct.textContent = "";
+      this._els.airflowPct.style.display = "none";
+      this._els.vent.style.removeProperty("--spin-duration");
+      const running =
+        c.running_entity && hass.states[c.running_entity]
+          ? this._isRunningValue(hass.states[c.running_entity])
+          : boostActive;
+      this._els.vent.classList.toggle("spinning", !!running);
+      return;
+    }
+
+    const clamped = Math.max(0, Math.min(100, pct));
+    const duration = SPIN_SLOWEST_S - (clamped / 100) * (SPIN_SLOWEST_S - SPIN_FASTEST_S);
+    this._els.vent.style.setProperty("--spin-duration", duration.toFixed(2) + "s");
+    this._els.vent.classList.toggle("spinning", clamped > 0);
+
+    const unit = (st.attributes && st.attributes.unit_of_measurement) || "%";
+    this._els.airflowPct.textContent = `${st.state}${unit ? " " + unit : ""}`;
+    this._els.airflowPct.style.display = "";
+  }
+
+  // The alert rail is silent by design: it renders nothing at all while the unit
+  // is healthy, so anything appearing here is worth a second look. Bypass is
+  // tinted with the accent rather than amber -- an open bypass in summer is the
+  // unit working correctly, not a fault.
+  _renderAlerts(hass, c) {
+    const pills = [];
+
+    const bypass = c.bypass_entity ? hass.states[c.bypass_entity] : null;
+    if (bypass && this._isOn(bypass)) {
+      pills.push(
+        this._pill(
+          "info",
+          "M12 7a5 5 0 1 0 5 5 5 5 0 0 0-5-5Zm0-5 1.8 3.1h-3.6L12 2Zm0 20-1.8-3.1h3.6L12 22ZM2 12l3.1-1.8v3.6L2 12Zm20 0-3.1 1.8v-3.6L22 12Z",
+          "Summer bypass open",
+          "Bypass"
+        )
+      );
+    }
+
+    const filter = this._filterAlert(hass, c);
+    if (filter) {
+      pills.push(this._pill("warn", "M12 2 1 21h22L12 2Zm1 14h-2v2h2v-2Zm0-7h-2v5h2V9Z", filter.title, filter.label));
+    }
+
+    this._els.alerts.innerHTML = pills.join("");
+    this._els.alerts.style.display = pills.length ? "" : "none";
+  }
+
+  // Two independent sources agree on "change the filter": the status line's
+  // "Check Filter" message and the page-23 hours counter reaching zero, both of
+  // which the component folds into filter_due_entity. filter_entity is kept as a
+  // fallback for configs without the binary sensor, and supplies the hours detail
+  // when both are present.
+  _filterAlert(hass, c) {
+    const hoursSt = c.filter_entity ? hass.states[c.filter_entity] : null;
+    const hoursUsable = hoursSt && hoursSt.state !== "unavailable" && hoursSt.state !== "unknown";
+    const unit = (hoursUsable && hoursSt.attributes && hoursSt.attributes.unit_of_measurement) || "";
+
+    const dueSt = c.filter_due_entity ? hass.states[c.filter_due_entity] : null;
+    let due = dueSt ? this._isOn(dueSt) : false;
+
+    if (!due && hoursUsable) {
+      // Unit-aware default: the sensor reports hours on this hardware, but the
+      // card is also used with day- and percent-remaining filter sensors.
+      const defaultThreshold = unit === "h" ? 336 : 14;
+      const threshold = c.filter_warning_threshold ?? defaultThreshold;
+      due = Number(hoursSt.state) <= threshold;
+    }
+    if (!due) return null;
+
+    const detail = hoursUsable ? `${hoursSt.state}${unit ? " " + unit : ""}` : "";
+    return {
+      label: detail ? `Filter due · ${detail}` : "Filter due",
+      title: detail ? `Filter change due — ${detail} remaining` : "Filter change due",
+    };
+  }
+
+  _pill(kind, icon, title, label) {
+    return `
+      <div class="chip ${kind}" title="${this._esc(title)}">
+        <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="${icon}"/></svg>
+        <span>${this._esc(label)}</span>
+      </div>
+    `;
   }
 
   _displayLines(hass, c) {
@@ -266,10 +392,26 @@ class SentinelRemoteCard extends HTMLElement {
     return !Number.isNaN(n) && n > 0;
   }
 
+  // Numeric readouts. Filter life is deliberately absent -- it lives on the alert
+  // rail now, because the useful signal is "change it" rather than a count of
+  // hours nobody reads. Everything here is opt-in by presence of the config key.
   _renderChips(hass, c) {
     const defs = [
+      {
+        key: "supply_temp_entity",
+        icon: "M12 3v10.2l-3.6-3.6L7 11l5 5 5-5-1.4-1.4-3.6 3.6V3h-2ZM4 19h16v2H4v-2Z",
+        label: "Supply air (to house)",
+        fallbackUnit: "°C",
+        stale: true,
+      },
+      {
+        key: "extract_temp_entity",
+        icon: "M12 21V10.8l3.6 3.6L17 13l-5-5-5 5 1.4 1.4L12 10.8V21h-2 4-2ZM4 3h16v2H4V3Z",
+        label: "Extract air (from house)",
+        fallbackUnit: "°C",
+        stale: true,
+      },
       { key: "humidity_entity", icon: "M12 2s6 7.2 6 11.5a6 6 0 1 1-12 0C6 9.2 12 2 12 2Z", label: "Humidity", fallbackUnit: "%" },
-      { key: "filter_entity", icon: "M4 4h16v4H4zm0 6h16v4H4zm0 6h10v4H4z", label: "Filter life", fallbackUnit: "" },
       { key: "co2_entity", icon: "M12 2a5 5 0 0 0-5 5c0 3 5 9 5 9s5-6 5-9a5 5 0 0 0-5-5Z", label: "CO2", fallbackUnit: "ppm" },
       {
         key: "boost_remaining_entity",
@@ -279,6 +421,14 @@ class SentinelRemoteCard extends HTMLElement {
         hideWhenZero: true,
       },
     ];
+
+    // The air temperatures come off the ~15 minute diagnostics scrape, not the
+    // live status frames, so they can legitimately be a quarter of an hour old.
+    // Rather than clutter the chip, say when it was last refreshed in the tooltip.
+    const scrapeSt = c.diagnostics_updated_entity ? hass.states[c.diagnostics_updated_entity] : null;
+    const scrapedAt =
+      scrapeSt && scrapeSt.state !== "unavailable" && scrapeSt.state !== "unknown" ? scrapeSt.state : "";
+
     const chips = [];
     for (const d of defs) {
       const entity = c[d.key];
@@ -287,24 +437,30 @@ class SentinelRemoteCard extends HTMLElement {
       if (!st || st.state === "unavailable" || st.state === "unknown") continue;
       if (d.hideWhenZero && !(Number(st.state) > 0)) continue;
       // Units are read straight from the entity when Home Assistant knows them
-      // (e.g. ESPHome's unit_of_measurement), so this works whether your filter
-      // sensor reports hours, days, or percent-remaining.
+      // (e.g. ESPHome's unit_of_measurement), so this works whether your sensor
+      // reports Celsius, Fahrenheit, minutes or percent.
       const unit = (st.attributes && st.attributes.unit_of_measurement) || d.fallbackUnit || "";
-      let warn = false;
-      if (d.key === "filter_entity") {
-        const defaultThreshold = unit === "h" ? 336 : unit === "d" ? 14 : 14;
-        const threshold = c.filter_warning_threshold ?? defaultThreshold;
-        warn = Number(st.state) <= threshold;
-      }
+      const title = d.stale && scrapedAt ? `${d.label} — updated ${scrapedAt}` : d.label;
       chips.push(`
-        <div class="chip ${warn ? "warn" : ""}" title="${d.label}">
+        <div class="chip" title="${this._esc(title)}">
           <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="${d.icon}"/></svg>
-          <span>${st.state}${unit ? " " + unit : ""}</span>
+          <span>${this._esc(st.state)}${unit ? " " + this._esc(unit) : ""}</span>
         </div>
       `);
     }
     this._els.chips.innerHTML = chips.join("");
     this._els.chips.style.display = chips.length ? "" : "none";
+  }
+
+  // Chips and alerts are assembled as HTML strings, so anything sourced from an
+  // entity state, unit or attribute has to be escaped on the way in.
+  _esc(s) {
+    return String(s ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
   }
 
   // ------------------------------------------------------------- actions --
@@ -386,14 +542,31 @@ class SentinelRemoteCard extends HTMLElement {
         color: var(--secondary-text-color);
         text-transform: uppercase;
       }
+      .airflow {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .airflow-pct {
+        font-size: 12px;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+        color: var(--secondary-text-color);
+      }
       .vent-icon {
         color: var(--secondary-text-color);
         display: flex;
         opacity: .6;
       }
-      .vent-icon.spinning svg { animation: spin 2.4s linear infinite; }
+      /* Duration is set inline from the airflow percentage; the literal here is
+         only the fallback for configs with no airflow_entity. */
+      .vent-icon.spinning svg { animation: spin var(--spin-duration, 2.4s) linear infinite; }
       .vent-icon.spinning { color: var(--accent); opacity: 1; }
+      .vent-icon.spinning + .airflow-pct { color: var(--accent); }
       @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+      @media (prefers-reduced-motion: reduce) {
+        .vent-icon.spinning svg { animation: none; }
+      }
 
       .bezel {
         border-radius: 16px;
@@ -427,7 +600,10 @@ class SentinelRemoteCard extends HTMLElement {
         mix-blend-mode: overlay;
       }
 
-      .chips {
+      /* The alert rail shares the chip pill styling so the two rows read as one
+         family; it is hidden outright (not just emptied) when nothing is wrong,
+         so a healthy card carries no stray gap above the chips. */
+      .alerts, .chips {
         display: flex;
         flex-wrap: wrap;
         gap: 6px;
@@ -444,7 +620,20 @@ class SentinelRemoteCard extends HTMLElement {
         background: var(--secondary-background-color, rgba(0,0,0,.05));
         color: var(--secondary-text-color);
       }
-      .chip.warn { color: #b45309; background: color-mix(in srgb, #f59e0b 18%, transparent); }
+      /* Mixed against --primary-text-color rather than a fixed hex so the amber
+         darkens on light themes and lightens on dark ones. The old fixed #b45309
+         was near-invisible on a dark card, which matters now that this pill is
+         the only filter-change indicator on the card. */
+      .chip.warn {
+        color: color-mix(in srgb, #f59e0b 62%, var(--primary-text-color, #000));
+        background: color-mix(in srgb, #f59e0b 18%, transparent);
+      }
+      /* Bypass is accent-tinted rather than amber: an open bypass in summer is
+         the unit behaving correctly, so it must not read as a fault. */
+      .chip.info {
+        color: color-mix(in srgb, var(--accent) 70%, var(--primary-text-color));
+        background: color-mix(in srgb, var(--accent) 16%, transparent);
+      }
 
       .buttons { margin-top: 16px; display: flex; flex-direction: column; gap: 10px; }
 
@@ -524,10 +713,17 @@ class SentinelRemoteCardEditor extends HTMLElement {
     this.innerHTML = `
       <div style="padding:12px;font-size:13px;line-height:1.5;">
         <p><b>sentinel-remote-card</b> uses a YAML-only configuration. Switch this card to
-        <i>Edit in YAML</i> and see the README for the full option list
-        (line1_entity / line2_entity or display_entity, boost_button, down_button,
-        select_button, up_button, plus optional humidity_entity, filter_entity,
-        boost_active_entity, running_entity, accent_color, theme).</p>
+        <i>Edit in YAML</i> and see the README for the full option list.</p>
+        <p><b>Required:</b> line1_entity / line2_entity (or display_entity), boost_button,
+        down_button, select_button, up_button.</p>
+        <p><b>Optional status:</b> airflow_entity (spins the header vent glyph in
+        proportion to flow), bypass_entity and filter_due_entity (the alert rail),
+        supply_temp_entity, extract_temp_entity, humidity_entity, co2_entity,
+        boost_remaining_entity, filter_entity, filter_warning_threshold,
+        diagnostics_updated_entity, boost_active_entity, running_entity.</p>
+        <p><b>Appearance:</b> title, accent_color, theme.</p>
+        <p>Each status entity is opt-in: name it and the chip or icon appears, omit
+        the line and it is hidden.</p>
       </div>
     `;
   }

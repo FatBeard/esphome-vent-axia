@@ -121,9 +121,15 @@ dependency" -- not "tested on a unit".
 
 `lovelace-card/sentinel-remote-card.js` is a custom Lovelace card that
 reinterprets the physical wired remote (16x2 display, Boost/Down/Select/Up)
-as a dashboard panel.
+as a dashboard panel, plus a few status readouts the physical remote has no
+room for: a vent glyph that spins in proportion to actual airflow, an alert
+rail that stays empty until something needs attention, and a row of chips
+carrying the supply and extract air temperatures.
 
 <img src="lovelace-card/MHRV-Card.png" alt="Sentinel Remote Card showing Boost Airflow at 48%, 22 minutes remaining" width="250">
+
+> **Note:** the screenshot above predates the status features and shows the
+> older chip row (humidity and filter hours). It needs a retake.
 
 ### Installation
 
@@ -133,30 +139,89 @@ as a dashboard panel.
    Studio Code Server / File Editor add-on, or Samba/SSH).
 2. In Home Assistant: **Settings -> Dashboards -> ⋮ (top right) -> Resources
    -> Add Resource**.
-   - URL: `/local/sentinel-remote-card.js`
+   - URL: `/local/sentinel-remote-card.js?v=1`
    - Resource type: `JavaScript Module`
+
+   The `?v=1` is not decoration — see [Updating the card](#updating-the-card)
+   below. Adding it now means later updates are a one-character edit.
 3. Reload the dashboard (or do a hard browser refresh).
 4. Add a new card, choose **Manual** / **Edit in YAML**, and paste in a
    config like the one below.
+
+### Updating the card
+
+Copying a newer `sentinel-remote-card.js` over the old one is often not enough
+on its own. Browsers cache the file aggressively, and the resource URL is what
+they key that cache on, so an unchanged URL can keep serving the old card
+indefinitely — through dashboard reloads, and sometimes through a full Home
+Assistant restart. The usual symptom is a change that appears on one device but
+not another, or new config options being silently ignored.
+
+The fix is to change the URL, which makes it a different file as far as the
+browser is concerned:
+
+1. Copy the new file over `<config>/www/sentinel-remote-card.js`.
+2. **Settings -> Dashboards -> ⋮ -> Resources**, open the card's resource, and
+   bump the version query: `?v=1` becomes `?v=2`, and so on. Any value works —
+   only *changing* it matters.
+3. Reload the dashboard.
+
+If you skipped the query string when first adding the resource, add one now
+(`/local/sentinel-remote-card.js?v=2`); it works the same as bumping an existing
+one. A hard refresh (Ctrl/Cmd-Shift-R) sometimes clears it too, but it has to be
+repeated on every browser and device that has ever loaded the dashboard, which
+is why bumping the version is the reliable route.
 
 For your "Vent-Axia MHRV" ESPHome device specifically, this is ready to
 paste as-is (entity IDs pulled from your live device page):
 
 ```yaml
 type: custom:sentinel-remote-card
-title: Hallway MVHR
+title: Vent Axia MVHR
 line1_entity: sensor.house_vent_axia_mhrv_display_line_1_top
 line2_entity: sensor.house_vent_axia_mhrv_display_line_2_bottom
 boost_button: button.house_vent_axia_mhrv_key_main
 down_button: button.house_vent_axia_mhrv_key_down
 select_button: button.house_vent_axia_mhrv_key_set
 up_button: button.house_vent_axia_mhrv_key_up
-humidity_entity: sensor.house_vent_axia_mhrv_indoor_humidity_in_extract_air
+airflow_entity: sensor.house_vent_axia_mhrv_airflow
+supply_temp_entity: sensor.house_vent_axia_mhrv_supply_air_temperature_to_house
+extract_temp_entity: sensor.house_vent_axia_mhrv_extract_air_temperature_from_house
+diagnostics_updated_entity: sensor.house_vent_axia_mhrv_diagnostics_last_updated
+bypass_entity: binary_sensor.house_vent_axia_mhrv_summer_bypass_active
+filter_due_entity: binary_sensor.house_vent_axia_mhrv_filter_change_due
 filter_entity: sensor.house_vent_axia_mhrv_filter_hours_remaining
 boost_remaining_entity: sensor.house_vent_axia_mhrv_boost_time_remaining
 boost_active_entity: binary_sensor.house_vent_axia_mhrv_boost_active
-running_entity: binary_sensor.house_vent_axia_mhrv_boost_active
+# Uncomment to show a humidity chip; omitting the line hides it.
+# humidity_entity: sensor.house_vent_axia_mhrv_indoor_humidity_in_extract_air
 ```
+
+### Options
+
+Only the display and the four buttons are required. **Every status option is
+opt-in by presence**: name the entity and the icon or chip appears, delete the
+line and it is gone. There are no separate show/hide flags.
+
+| Option | Effect |
+| --- | --- |
+| `line1_entity`, `line2_entity` | The two LCD rows. Alternatively `display_entity` for a single sensor holding both, split on `display_separator` (default `"\n"`). One form or the other is required. |
+| `boost_button`, `down_button`, `select_button`, `up_button` | The four keys. Up/Down repeat while held, matching the physical remote's fast-scroll. |
+| `airflow_entity` | Spins the header vent glyph in proportion to airflow, from one turn per 3.2 s at low flow to 0.8 s at 100 %, with the percentage beside it. Still when flow is zero. |
+| `bypass_entity` | Shows an accent-tinted **Bypass** pill on the alert rail while summer bypass is open. |
+| `filter_due_entity` | Shows an amber **Filter due** pill when a filter change is needed. Falls back to thresholding `filter_entity` if this is omitted. |
+| `filter_entity` | Filter life remaining. No longer a chip of its own — it supplies the hours shown inside the filter alert, and acts as the fallback trigger. |
+| `filter_warning_threshold` | Level at which the fallback trigger fires. Defaults to `336` when the sensor reports `h`, otherwise `14`. |
+| `supply_temp_entity`, `extract_temp_entity` | Air temperature chips. These come off the ~15 minute diagnostics scrape rather than the live status frames, so they can be a quarter of an hour old. |
+| `diagnostics_updated_entity` | Adds "updated *hh:mm*" to the temperature chip tooltips, so you can tell how stale those figures are. |
+| `humidity_entity`, `co2_entity` | Optional extra chips. This hardware has no CO2 source; the key exists for other units. |
+| `boost_remaining_entity` | Countdown chip, hidden automatically when it reads zero. |
+| `boost_active_entity` | Glows the panel edge and pulses the Boost button while a boost is running. |
+| `running_entity` | Fallback fixed-rate spin for the vent glyph when `airflow_entity` is not set. Redundant if it is. |
+| `title`, `accent_color`, `theme` | Panel heading, LCD/accent colour (default `#3ddc84`), and `auto` / `light` / `dark`. |
+
+The alert rail renders nothing at all when bypass is closed and the filter is
+healthy, so anything appearing between the LCD and the chips is worth a look.
 
 ## Running the tests
 
