@@ -116,6 +116,10 @@ LineMessage classify_line(const std::string &line1) {
   return LineMessage::NONE;
 }
 
+bool has_sensor_boost_annunciator(const std::string &line2) {
+  return line2.size() >= 16 && line2[15] == '*';
+}
+
 LineValues parse_line_values(const std::string &line1, const std::string &line2) {
   LineValues out;
   out.airflow_percent = find_in_either(line1, line2, find_percent);
@@ -169,6 +173,16 @@ void StatusTracker::update(const std::string &line1, const std::string &line2, b
   touch_(this->defrost_active_, msg == LineMessage::DEFROST_ACTIVE, delta_ms);
   touch_(this->dryout_active_, msg == LineMessage::DRYOUT_MODE, delta_ms);
   touch_(this->filter_change_due_, msg == LineMessage::CHECK_FILTER, delta_ms);
+
+  // Gated on is_status_screen the same as every touch_() call above (all of
+  // them unreachable unless is_status_screen was true -- see the early
+  // return at the top of this function): menu and diagnostic screens
+  // legitimately carry their own custom LCD glyphs (page headers and the
+  // like), which sanitize() would ALSO collapse to '*' at some column. Only
+  // the status loop's line2 is a field where "'*' at column 15" is known to
+  // mean the sensor-boost annunciator and nothing else -- see
+  // has_sensor_boost_annunciator()'s own comment.
+  touch_(this->humidity_boost_, has_sensor_boost_annunciator(line2), delta_ms);
 
   const LineValues values = parse_line_values(line1, line2);
   touch_(this->purging_, values.purge, delta_ms);

@@ -439,6 +439,7 @@ void VentAxiaHub::publish_status_() {
   this->publish_binary_(BinaryKey::DEFROST_ACTIVE, this->status_.defrost_active());
   this->publish_binary_(BinaryKey::DRYOUT_ACTIVE, this->status_.dryout_active());
   this->publish_binary_(BinaryKey::FILTER_CHANGE_DUE, this->status_.filter_change_due());
+  this->publish_binary_(BinaryKey::HUMIDITY_BOOST, this->status_.humidity_boost());
 
   this->publish_sensor_(SensorKey::AIRFLOW, this->status_.airflow_percent());
   this->publish_sensor_(SensorKey::BOOST_TIME_REMAINING, this->status_.boost_time_remaining());

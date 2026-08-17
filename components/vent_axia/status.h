@@ -39,6 +39,40 @@ enum class LineMessage {
 /// not consistent about case.
 LineMessage classify_line(const std::string &line1);
 
+/// True when the status screen's line2 is showing the sensor-boost
+/// annunciator at column 15 (the last of 16). The Sentinel Kinetic manual:
+/// "If the installation has proportional sensors or an internal humidity
+/// sensor fitted, and any of these are boosting the airflow, an alpha symbol
+/// will be displayed." Alpha is not printable ASCII, so sanitize()
+/// (display.cpp) maps it to '*' before anything downstream -- including this
+/// function -- ever sees the line; the asterisk *is* the alpha.
+///
+/// Column 15 exactly, not a scan of the whole line, because sanitize()'s
+/// mapping is many-to-one: it collapses EVERY non-printable byte to '*', so
+/// a whole-line search would also fire on, say, Mode 2's "Auto" glyph
+/// (mhrv_orig/vent-axia-esphome-project.md:496) or any other custom
+/// character the unit happens to be showing elsewhere on the line. The
+/// column itself was measured, not guessed: line1 is a full 16 characters,
+/// giving a pitch of 45.4 px/char from a captured screenshot ('S' at x=161
+/// to 'n' at x=845 in "Summer Bypass On"), and the asterisk's own glyph run
+/// sits at x=840-878 -- column 15, the last column, on a captured frame
+/// reading line1 "Summer Bypass On" / line2 "31%            *" (31% being
+/// neither this unit's Normal 18% nor Boost 48%, itself corroborating a
+/// proportional sensor rate rather than a fixed one).
+///
+/// This is deliberately NOT the same annunciator PLAN.md §8 stage 10
+/// recorded: `ls` at columns 14-15 (`48%           ls`), seen only while
+/// Main was being tapped during a switched-live boost. Checking line2[15]
+/// alone against '*' cannot match "ls" (column 15 there holds 's', not
+/// '*'), so the two are structurally distinct rather than merely
+/// coincidentally different in the captures seen so far.
+///
+/// The size guard exists because protocol::LINE_LEN is a fixed 16,
+/// space-padded characters on the wire (protocol.h:19,51), but the host
+/// tests (and conceivably a not-yet-fully-arrived frame) pass shorter
+/// strings.
+bool has_sensor_boost_annunciator(const std::string &line2);
+
 /// The numeric content of the status screen's two lines.
 struct LineValues {
   std::optional<int> airflow_percent;    // "18%", "48%       30m" -> 18, 48
@@ -151,6 +185,11 @@ class StatusTracker {
   std::optional<bool> dryout_active() const { return this->get_(this->dryout_active_); }
   std::optional<bool> filter_change_due() const { return this->get_(this->filter_change_due_); }
 
+  /// See humidity_boost_'s own comment (below) for why this rides the same
+  /// sticky-Flag machinery as summer_bypass()/boosting()/etc. rather than a
+  /// direct per-frame read of has_sensor_boost_annunciator().
+  std::optional<bool> humidity_boost() const { return this->get_(this->humidity_boost_); }
+
   /// Refreshed on every status-screen frame; frozen (not cleared) while the
   /// display is elsewhere. Not itself sticky/timeout-based like the line1
   /// flags above: line2's numeric fields do not alternate away the way
@@ -199,6 +238,20 @@ class StatusTracker {
   Flag defrost_active_{ALTERNATION_TIMEOUT_MS};
   Flag dryout_active_{ALTERNATION_TIMEOUT_MS};
   Flag filter_change_due_{ALTERNATION_TIMEOUT_MS};
+  // Sticky Flag rather than a direct per-frame read of
+  // has_sensor_boost_annunciator(), even though stage 9 measured line2 as
+  // NOT alternating for airflow_percent_/countdown_minutes_ (so in
+  // principle a direct read would do here too): stage 10 showed this exact
+  // right-hand zone of line2 IS capable of blinking -- the `ls` annunciator
+  // it recorded appeared only transiently, while Main was being tapped. A
+  // direct read of a blinking annunciator would flap this entity at up to
+  // ~3 Hz (the key-repeat rate). ALTERNATION_TIMEOUT_MS's 12s trailing lag
+  // is cheap against a state that lasts minutes -- the captured frame's 31%
+  // is a proportional rate, not a one-frame blip -- and the park-freeze
+  // behaviour on menu/diagnostic screens (a diagnostics fetch or clock sync
+  // must not be read as the annunciator clearing) comes for free from the
+  // same touch_()/update() machinery every other Flag here already uses.
+  Flag humidity_boost_{ALTERNATION_TIMEOUT_MS};
 
   std::optional<int> airflow_percent_;
   std::optional<int> countdown_minutes_;

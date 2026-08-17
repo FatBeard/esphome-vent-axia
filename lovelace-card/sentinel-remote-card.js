@@ -239,6 +239,23 @@ const ALERT_CATALOGUE = {
     label: "Dryout",
     title: "Dryout mode — the unit is drying the building fabric",
   },
+  // Status line2's alpha annunciator (column 15, rendered '*' — see
+  // status.h's has_sensor_boost_annunciator()): the internal humidity
+  // sensor (or a proportional 0-10V sensor, not fitted on this unit) has
+  // raised airflow on its own. `info`, not `warn`/`alarm`, for the same
+  // reason bypass/dryout are: the unit responding correctly to measured
+  // humidity, not a fault — and it clears itself once humidity drops.
+  // Reuses ICON.dryout rather than a new glyph: both pills are the unit
+  // moving air in response to moisture, just triggered from opposite
+  // directions (dryout pushes moisture out deliberately; this is the unit
+  // reacting to moisture already in the air).
+  humidity_boost: {
+    key: "humidity_boost_entity",
+    severity: "info",
+    icon: ICON.dryout,
+    label: "Humidity boost",
+    title: "The humidity sensor has raised airflow in proportion to measured humidity. Clears itself once humidity drops.",
+  },
   purge: {
     key: "purge_entity",
     severity: "info",
@@ -307,6 +324,7 @@ const DEFAULT_ALERT_ORDER = [
   "filter",
   "defrost",
   "dryout",
+  "humidity_boost",
   "purge",
   "switched_live",
 ];
@@ -1441,8 +1459,8 @@ class SentinelRemoteCardEditor extends HTMLElement {
         extract_rpm_entity, supply_pwm_entity, extract_pwm_entity, filter_entity,
         boost_remaining_entity, diagnostics_updated_entity.</p>
         <p><b>Alerts:</b> link_entity, bypass_entity, antifrost_entity,
-        antifrost_mode_entity, defrost_entity, dryout_entity, purge_entity,
-        switched_live_entity, filter_due_entity, filter_warning_threshold,
+        antifrost_mode_entity, defrost_entity, dryout_entity, humidity_boost_entity,
+        purge_entity, switched_live_entity, filter_due_entity, filter_warning_threshold,
         supply_fault_entity, extract_fault_entity, rail_fault_entity.</p>
         <p><b>Other status:</b> airflow_entity (spins the header vent glyph in
         proportion to flow), busy_entity, boost_active_entity, running_entity.</p>

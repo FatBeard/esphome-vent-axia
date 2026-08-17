@@ -20,9 +20,9 @@ Under construction. See `PLAN.md` for the design and the staged rollout.
   filter hours remaining, and the raw display lines, all as typed sensors
   instead of scraped strings.
 - **State flags as binary sensors** — summer bypass, boost, purge, defrost,
-  dryout, filter-change-due and MVHR link status, plus a `busy` sensor so a
-  slow keypad-driven operation (up to ~30s) is visible on a dashboard instead
-  of looking hung.
+  dryout, a humidity-sensor boost annunciator, filter-change-due and MVHR
+  link status, plus a `busy` sensor so a slow keypad-driven operation (up to
+  ~30s) is visible on a dashboard instead of looking hung.
 - **Diagnostic page scrape** — a scheduled sequence walks the unit's
   diagnostic pages and exposes frost protection state/mode, sensor and
   24V-rail fault flags, wireless-receiver and wall-switch status, serial
@@ -209,6 +209,7 @@ antifrost_entity: binary_sensor.house_vent_axia_mhrv_frost_protection_active
 antifrost_mode_entity: sensor.house_vent_axia_mhrv_frost_protection_mode
 defrost_entity: binary_sensor.house_vent_axia_mhrv_defrost_active
 dryout_entity: binary_sensor.house_vent_axia_mhrv_dryout_mode
+humidity_boost_entity: binary_sensor.house_vent_axia_mhrv_humidity_boost
 purge_entity: binary_sensor.house_vent_axia_mhrv_purge_active
 switched_live_entity: binary_sensor.house_vent_axia_mhrv_switched_live_boost_input
 filter_due_entity: binary_sensor.house_vent_axia_mhrv_filter_change_due
@@ -294,14 +295,21 @@ naming all of them costs nothing.
 | `filter` | `filter_due_entity`, falling back to thresholding `filter_entity` | Amber. |
 | `defrost` | `defrost_entity` | Accent. |
 | `dryout` | `dryout_entity` | Accent. |
+| `humidity_boost` | `humidity_boost_entity` | Accent. The unit's internal humidity sensor (or a proportional 0-10V sensor) raising airflow on its own — see below. |
 | `purge` | `purge_entity` | Accent. |
 | `switched_live` | `switched_live_entity` | Accent. **The most useful pill on the rail** — see below. |
 
-Bypass, antifrost, defrost, dryout and purge are accent-tinted rather than
-amber on purpose: each is the unit protecting itself or the house
-automatically, and must not read as a fault. Amber is for the filter, the one
-alert that needs you to do something; red is for things that are actually
-broken.
+Bypass, antifrost, defrost, dryout, humidity_boost and purge are
+accent-tinted rather than amber on purpose: each is the unit protecting
+itself or the house automatically, and must not read as a fault. Amber is
+for the filter, the one alert that needs you to do something; red is for
+things that are actually broken.
+
+`humidity_boost` decodes the alpha symbol the manual documents for a
+proportional sensor or the internal humidity sensor boosting airflow — the
+unit shows no menu message and no diagnostic page behind this, so without
+the pill the airflow simply rises with nothing on the card to explain why.
+It clears itself once humidity drops; nothing to act on.
 
 `switched_live` earns its place because a wall switched live holding the boost
 on is otherwise indistinguishable from the card being broken: selecting

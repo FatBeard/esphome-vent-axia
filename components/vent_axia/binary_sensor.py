@@ -33,6 +33,15 @@ BINARY_SENSORS = {
     "dryout_active": binary_sensor.binary_sensor_schema(
         icon="mdi:water-percent",
     ),
+    # Status line2 column 15's alpha annunciator (status.h's
+    # has_sensor_boost_annunciator()) -- the internal humidity sensor (or a
+    # proportional 0-10V sensor, not fitted on this unit -- see entities.h)
+    # raising airflow on its own, with no menu message or diagnostic page
+    # behind it otherwise. Same icon family as dryout_active above: both are
+    # humidity-driven airflow responses.
+    "humidity_boost": binary_sensor.binary_sensor_schema(
+        icon="mdi:water-percent",
+    ),
     # Second source arrives in stage 3 (diagnostic page 23's filter hours
     # reaching zero) -- see entities.h. The two are expected to agree.
     "filter_change_due": binary_sensor.binary_sensor_schema(

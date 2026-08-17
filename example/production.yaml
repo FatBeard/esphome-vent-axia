@@ -241,6 +241,13 @@ binary_sensor:
     purging:            {name: "Purge Active"}
     defrost_active:     {name: "Defrost Active"}
     dryout_active:       {name: "Dryout Mode"}
+    # Status line2 column 15's alpha annunciator -- a sensor boosting airflow
+    # on its own, with no menu message or diagnostic page behind it. The
+    # manual's alpha covers BOTH the internal humidity sensor and a
+    # proportional 0-10V sensor (CO2, external humidistat) wired to P1/P2, so
+    # on an installation with one of those fitted this fires for it too and
+    # the name below is worth changing to match. See entities.h/status.h.
+    humidity_boost:      {name: "Humidity Boost"}
     filter_change_due:  {name: "Filter Change Due"}
     link_up:
       name: "MVHR Link"

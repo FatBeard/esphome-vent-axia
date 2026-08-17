@@ -200,6 +200,126 @@ TEST_CASE(status_tracker_boost_time_remaining_unpublished_without_a_countdown) {
   CHECK(!*t.continuous_boost());
 }
 
+// ------------------------------------------------------- humidity_boost --
+// Decodes line2 column 15's '*' -- the manual's alpha annunciator for a
+// proportional 0-10V sensor or the internal humidity sensor boosting
+// airflow (PLAN.md §4/§8 stage 14). The regression that matters most here
+// is telling this apart from stage 10's `ls`, which sits in the same
+// right-hand zone of line2 but is a structurally different signal.
+
+TEST_CASE(has_sensor_boost_annunciator_true_for_star_at_column_15) {
+  // The captured frame this decode was built from: line1 "Summer Bypass On",
+  // line2 "31%            *" -- 31% being a proportional rate, neither this
+  // unit's Normal 18% nor its Boost 48%, corroborating the reading.
+  CHECK(has_sensor_boost_annunciator("31%            *"));
+}
+
+TEST_CASE(has_sensor_boost_annunciator_false_on_a_plain_status_frame) {
+  CHECK(!has_sensor_boost_annunciator("18%             "));
+}
+
+TEST_CASE(has_sensor_boost_annunciator_false_for_stage_10s_ls_regression) {
+  // THE KEY REGRESSION. Stage 10's switched-live annunciator occupies
+  // columns 14-15 ('l' then 's'), one column to the left of and including
+  // column 15 -- but column 15 itself holds 's', not '*', so a check of
+  // line2[15] alone cannot confuse the two even though both live in the
+  // same right-hand zone of the line.
+  CHECK(!has_sensor_boost_annunciator("48%           ls"));
+}
+
+TEST_CASE(has_sensor_boost_annunciator_false_for_a_short_line) {
+  // protocol::LINE_LEN is a fixed 16 on the wire, but the host tests (and a
+  // not-yet-fully-arrived frame) can pass shorter strings -- must not read
+  // past the end of a short line looking for column 15.
+  CHECK(!has_sensor_boost_annunciator("31%"));
+  CHECK(!has_sensor_boost_annunciator(""));
+}
+
+TEST_CASE(status_tracker_humidity_boost_nullopt_before_any_status_frame) {
+  StatusTracker t;
+  CHECK(!t.humidity_boost().has_value());
+}
+
+TEST_CASE(status_tracker_humidity_boost_set_by_the_annunciator_on_a_status_screen) {
+  StatusTracker t;
+  t.update("Summer Bypass On", "31%            *", true, 0);
+  CHECK(t.humidity_boost().has_value());
+  CHECK(*t.humidity_boost());
+}
+
+TEST_CASE(status_tracker_humidity_boost_false_when_the_annunciator_is_absent) {
+  StatusTracker t;
+  t.update("Normal Airflow  ", "18%             ", true, 0);
+  CHECK(t.humidity_boost().has_value());
+  CHECK(!*t.humidity_boost());
+}
+
+TEST_CASE(status_tracker_humidity_boost_not_set_by_stage_10s_ls_on_status_screen) {
+  StatusTracker t;
+  t.update("Boost Airflow   ", "48%           ls", true, 0);
+  CHECK(t.humidity_boost().has_value());
+  CHECK(!*t.humidity_boost());
+}
+
+TEST_CASE(status_tracker_humidity_boost_ignores_a_star_on_a_menu_or_diagnostic_screen) {
+  StatusTracker t;
+  // State established FIRST, deliberately. Asserting on a menu frame alone
+  // would prove nothing: before any status frame has_state() is false, so
+  // humidity_boost() returns nullopt whether or not the annunciator was
+  // read -- the assertion would still pass if the touch_() call were moved
+  // above update()'s is_status_screen early return, which is precisely the
+  // regression this test exists to catch.
+  t.update("Normal Airflow  ", "18%             ", true, 0);
+  CHECK(t.has_state());
+  CHECK(!*t.humidity_boost());
+
+  // Now a menu/diagnostic frame carrying a '*' at column 15. Those screens
+  // legitimately show their own custom glyphs, which sanitize() also
+  // collapses to '*' -- only the status loop's line2 column 15 means the
+  // annunciator, so this must not set the flag.
+  t.update("Diagnostic  05  ", "0000           *", false, 1000);
+  CHECK(!*t.humidity_boost());
+
+  // And still false back on the status screen: the menu frame left nothing
+  // behind for a later frame to inherit.
+  t.update("Normal Airflow  ", "18%             ", true, 2000);
+  CHECK(!*t.humidity_boost());
+}
+
+TEST_CASE(status_tracker_humidity_boost_stays_true_across_a_frame_where_the_annunciator_is_absent) {
+  StatusTracker t;
+  t.update("Summer Bypass On", "31%            *", true, 0);
+  CHECK(*t.humidity_boost());
+
+  // The annunciator is genuinely GONE from this frame -- not merely
+  // accompanied by the status loop's other line1 message. That is the
+  // property the sticky Flag exists for and the only thing that separates
+  // it from a direct per-frame read: stage 9 measured line2 as
+  // non-alternating, but stage 10's `ls` proved this right-hand zone can
+  // blink, and a blink must not flap the entity. A test that kept the
+  // annunciator present in every frame would pass against a direct read
+  // too, proving nothing.
+  t.update("Low Airflow     ", "18%             ", true, 1700);
+  CHECK(*t.humidity_boost());
+
+  t.update("Summer Bypass On", "31%            *", true, 3400);
+  CHECK(*t.humidity_boost());
+}
+
+TEST_CASE(status_tracker_humidity_boost_ages_out_after_its_timeout) {
+  StatusTracker t;
+  t.update("Summer Bypass On", "31%            *", true, 0);
+  CHECK(*t.humidity_boost());
+
+  // Comfortably under ALTERNATION_TIMEOUT_MS: still true, annunciator gone.
+  t.update("Normal Airflow  ", "18%             ", true, 11000);
+  CHECK(*t.humidity_boost());
+
+  // Now over it, still never having seen the annunciator again.
+  t.update("Normal Airflow  ", "18%             ", true, 12100);
+  CHECK(!*t.humidity_boost());
+}
+
 TEST_CASE(status_tracker_airflow_percent_frozen_while_parked) {
   StatusTracker t;
   t.update("Normal Airflow  ", "18%             ", true, 0);
