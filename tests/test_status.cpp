@@ -209,8 +209,11 @@ TEST_CASE(status_tracker_boost_time_remaining_unpublished_without_a_countdown) {
 
 TEST_CASE(has_sensor_boost_annunciator_true_for_star_at_column_15) {
   // The captured frame this decode was built from: line1 "Summer Bypass On",
-  // line2 "31%            *" -- 31% being a proportional rate, neither this
-  // unit's Normal 18% nor its Boost 48%, corroborating the reading.
+  // line2 "31%            *". The percentage is incidental to what is being
+  // tested here -- see has_sensor_boost_annunciator()'s comment for why the
+  // "31% is a proportional rate between Normal and Boost" reading was
+  // withdrawn on 17 Aug 2026 (18% is the LOW rate; Normal measured 30%).
+  // Only column 15 matters, whatever precedes it.
   CHECK(has_sensor_boost_annunciator("31%            *"));
 }
 

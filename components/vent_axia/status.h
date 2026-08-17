@@ -56,9 +56,23 @@ LineMessage classify_line(const std::string &line1);
 /// giving a pitch of 45.4 px/char from a captured screenshot ('S' at x=161
 /// to 'n' at x=845 in "Summer Bypass On"), and the asterisk's own glyph run
 /// sits at x=840-878 -- column 15, the last column, on a captured frame
-/// reading line1 "Summer Bypass On" / line2 "31%            *" (31% being
-/// neither this unit's Normal 18% nor Boost 48%, itself corroborating a
-/// proportional sensor rate rather than a fixed one).
+/// reading line1 "Summer Bypass On" / line2 "31%            *".
+///
+/// CORRECTED 17 Aug 2026, on the post-flash capture: that 31% was
+/// originally offered as a third line of evidence, on the reading that it
+/// was "neither this unit's Normal 18% nor Boost 48%" and therefore a
+/// proportional rate between the two. That was wrong. 18% is this unit's
+/// LOW airflow rate, not its normal one (PLAN.md §8 stage 9 records line1
+/// "Low Airflow" alongside line2 "18%"); the live capture immediately after
+/// flashing showed line1 "Normal Airflow" with line2 "30%" and column 15
+/// blank. So 31% sits one point above the normal rate, not between two
+/// rates, and carries almost no evidential weight on its own -- consistent
+/// with a proportional ramp that has barely started, but indistinguishable
+/// at that margin from ordinary variation. The decode does NOT rest on it:
+/// the manual's own wording and sanitize()'s alpha -> '*' mapping are what
+/// support this, and both are independent of any percentage. Recorded
+/// rather than quietly deleted because the mistake -- reading a Low rate as
+/// a Normal one -- is the kind that would otherwise be made again.
 ///
 /// This is deliberately NOT the same annunciator PLAN.md §8 stage 10
 /// recorded: `ls` at columns 14-15 (`48%           ls`), seen only while
