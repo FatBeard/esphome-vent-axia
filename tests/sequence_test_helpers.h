@@ -12,7 +12,7 @@
 #include <vector>
 
 #include "frame_test_helper.h"
-#include "sequence.h"
+#include "sequences.h"
 
 namespace vatest {
 

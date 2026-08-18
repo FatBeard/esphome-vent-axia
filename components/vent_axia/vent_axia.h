@@ -54,7 +54,7 @@
 #include "frame_logger.h"
 #include "keypad.h"
 #include "protocol.h"
-#include "sequence.h"
+#include "sequences.h"
 #include "status.h"
 
 namespace esphome {

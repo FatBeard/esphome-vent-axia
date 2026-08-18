@@ -5,7 +5,7 @@
 #include <vector>
 
 #include "frame_test_helper.h"
-#include "sequence.h"
+#include "sequences.h"
 #include "sequence_test_helpers.h"
 
 using namespace esphome::vent_axia;

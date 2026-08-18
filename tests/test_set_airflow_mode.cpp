@@ -4,7 +4,7 @@
 #include <vector>
 
 #include "screens.h"
-#include "sequence.h"
+#include "sequences.h"
 #include "sequence_test_helpers.h"
 #include "status.h"
 
