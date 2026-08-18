@@ -950,6 +950,25 @@ enum class SettingId : uint8_t { SUMMER_MODE, INDOOR_TEMP, OUTDOOR_TEMP };
 // only ever needs a pointer to one, never a complete type.
 struct SettingSpec;
 
+/// Maps a writable entity key onto the setting WriteSetting knows how to
+/// write, or nullopt for a key with no mapping.
+///
+/// These live in the portable core, not in the hub's write_switch()/
+/// write_number(), for one specific reason: this side of the line is
+/// compiled by the host test suite, and tests/CMakeLists.txt builds it with
+/// -Werror. A switch on the enum TYPE there turns a forgotten mapping into
+/// a hard compile error, which is the enforcement the enum-keyed design
+/// wants ("adding an entity means an enum member, a dict entry and a
+/// publish call").
+///
+/// The firmware build does NOT use -Werror -- an unhandled enumerator there
+/// is only a -Wswitch warning in a long build log, which is why keeping
+/// these switches in vent_axia.cpp would not have bought the guarantee it
+/// looks like it buys.
+std::optional<SettingId> setting_for(SwitchKey key);
+std::optional<SettingId> setting_for(NumberKey key);
+
+
 /// Writes one of the three bypass settings, then reads all three back as
 /// confirmation (PLAN.md §2's WriteSetting body). configure() selects the
 /// row (SettingId) and target value before this instance is request()ed; the
@@ -1250,6 +1269,16 @@ class SyncClock final : public Sequence {
 /// -- that remains harmless and deliberate, see SetAirflowMode's own
 /// comment.
 enum class AirflowTarget : uint8_t { NORMAL, BOOST_30, BOOST_60, BOOST_CONTINUOUS, PURGE };
+
+/// Same reasoning as setting_for() above, for the one select: this lives in
+/// the portable core so the host suite's -Werror catches a forgotten
+/// mapping. `index` is the raw option index, which select.py's
+/// AIRFLOW_MODE_OPTIONS deliberately orders to match AirflowTarget
+/// index-for-index. nullopt for an unmapped key or an out-of-range index --
+/// the latter cannot happen through select::SelectCall, which validates
+/// against traits.get_options() first, but this is the boundary where that
+/// assumption stops being someone else's to keep.
+std::optional<AirflowTarget> airflow_target_for(SelectKey key, size_t index);
 
 /// Sets the Main-key boost/purge state to an ABSOLUTE target. Main is a
 /// cumulative press counter with no usable timeout (1 press = 30 min boost,

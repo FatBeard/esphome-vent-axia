@@ -135,8 +135,25 @@ Poll FetchDiagnostics::poll() {
           UP, [this] { return !screens::is_diagnostic_screen(this->runner_->display().raw_line1()); }, EXIT_TIMEOUT_MS);
       return this->await(this->hold_, FINISHED);
 
-    default:
+    // Reached once EXIT's hold_ succeeds (await() resumes here) -- previously
+    // relied on falling through to default: below, which meant this landing
+    // case was indistinguishable from a genuinely out-of-range step_. Made
+    // explicit so default: can be reserved for that latter, actually-a-bug
+    // case (see its own comment).
+    case FINISHED:
       return Poll::DONE;
+
+    // step_ somehow outside the Step enum -- a bug (memory corruption, or a
+    // future edit that renumbers steps without updating every case), not a
+    // legitimate landing state. Previously returned DONE here, which reported
+    // success for a sequence that had gone off the rails; FAILED routes
+    // through Runner::recover() instead, so a corrupt run gets unwound rather
+    // than silently "succeeding".
+    default:
+      if (this->log().error) {
+        this->log().error("FetchDiagnostics: invalid step " + std::to_string(static_cast<int>(this->step_)));
+      }
+      return Poll::FAILED;
   }
 }
 

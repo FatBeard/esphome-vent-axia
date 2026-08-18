@@ -91,6 +91,16 @@ void VentAxiaHub::setup() {
     }
   });
 
+  // frame_logger_ is portable core too (frame_logger.h). ESP_LOGD, not
+  // ESP_LOGI/W/E like keypad_/runner_ above -- these lines are deliberately
+  // chatty (a raw frame arrives ~3.3 times a second, PLAN.md §8 stage 15)
+  // and were ESP_LOGD before this instrumentation moved out of here; wiring
+  // Keypad::LogSink::debug to anything louder would promote debug spam to a
+  // severity mhrv.yaml's default log level actually shows.
+  Keypad::LogSink frame_logger_sink;
+  frame_logger_sink.debug = [](const std::string &msg) { ESP_LOGD(TAG, "%s", msg.c_str()); };
+  this->frame_logger_.set_log_sink(frame_logger_sink);
+
   this->fetch_diagnostics_.set_on_success([this] { this->stamp_diagnostics_updated_(); });
 
   // Stage 6: read_settings_ (the button's own instance) and write_setting_
@@ -187,7 +197,7 @@ void VentAxiaHub::loop() {
       // the PREVIOUS frame at this point, not the one being logged. Placed
       // first to read that way, not because update() mutates the frame: it
       // takes const refs, so `frame` is untouched either side of it.
-      this->log_raw_frame_bytes_(frame, now);
+      this->frame_logger_.log(frame, now);
       this->display_.update(frame.line1, frame.line2, now);
       // Fed every frame, not just changed ones: StatusTracker's aging clock
       // (status.h) needs a regular heartbeat to notice time passing, and a
@@ -226,135 +236,6 @@ void VentAxiaHub::loop() {
   this->publish_binary_(BinaryKey::BUSY, this->keypad_.busy() || this->runner_.busy());
 }
 
-// Instrumentation only -- no decode behaviour depends on this. Built (stage
-// 15, DISPLAY-REVIEW.md §6/§7 and DISPLAY-INSTRUMENTATION-PLAN.md) to make a
-// live capture (GET /events during a humidity boost, per CLAUDE.md) settle
-// three questions without guessing from a datasheet. Question 1 (which byte
-// the alpha annunciator is) is now answered -- glyphs::ALPHA, display.h --
-// and stage 16 built the two-lane split on that measurement. Still open:
-// which CGRAM slots (0x00-0x07) this unit uses, and whether
-// unknown_row1_addr/unknown_row2_addr carry a cursor or blink attribute
-// (during an OPEN EDITOR specifically -- stage 15's own capture never
-// opened one) that could replace editor_open()'s 1200ms staleness heuristic
-// with a direct protocol read.
-void VentAxiaHub::log_raw_frame_bytes_(const protocol::DisplayFrame &frame, uint32_t now_ms) {
-  // (a) The six frame bytes protocol.cpp parses but nothing else reads:
-  // unknown_header[0..3] (bytes 1..4) and unknown_row1_addr/unknown_row2_addr
-  // (bytes 5 and 22, "probably an HD44780 DDRAM address" per protocol.h's own
-  // comment -- never confirmed). Gated on the 6-byte tuple changing AND a
-  // 2000ms floor rather than either alone, because nobody knows what these
-  // bytes are yet, which is the whole reason to log them: a byte that's
-  // genuinely constant gives one line and tells you everything; a byte that
-  // toggles with editor state (a cursor/blink attribute, see DISPLAY-REVIEW.md
-  // §7) stays visible; a byte that differs on every frame (a counter or
-  // frame-phase value) would flood the log at the link's ~3.3 frames/s
-  // without the floor -- with it, that case instead shows up as a steady
-  // cadence AT the 2000ms limit, and that cadence is itself the answer: it
-  // says "this byte moves every frame" without needing to prove it 3.3 times
-  // a second.
-  //
-  // The floor only bites for the 2000ms following a line that actually got
-  // logged; outside that window every frame is eligible, so a first flip is
-  // caught immediately. What it would otherwise lose is a change that also
-  // REVERTS inside that window -- and a blink attribute at the ~350ms editor
-  // cadence is precisely that shape, so losing it silently would answer
-  // question 3 "no" when the truth was "yes". unknown_change_suppressed_
-  // carries the fact forward instead: the next eligible frame logs even if
-  // the bytes are back where they started, and says that it happened.
-  const bool first_unknown_log = !this->have_logged_unknown_bytes_;
-  const bool unknown_changed = first_unknown_log ||
-                                frame.unknown_header != this->last_logged_unknown_header_ ||
-                                frame.unknown_row1_addr != this->last_logged_unknown_row1_addr_ ||
-                                frame.unknown_row2_addr != this->last_logged_unknown_row2_addr_;
-  // The first frame is exempt from the floor: one baseline line at link-up
-  // costs nothing and is the reading everything else is read against.
-  const bool unknown_floor_clear =
-      first_unknown_log || (now_ms - this->last_unknown_log_ms_) >= RAW_LOG_MIN_INTERVAL_MS;
-  if (unknown_changed && !unknown_floor_clear) {
-    this->unknown_change_suppressed_ = true;
-  }
-  // The heartbeat re-emits an unchanged tuple every RAW_LOG_HEARTBEAT_MS --
-  // see its comment in vent_axia.h for why log-on-change alone is
-  // unobservable here. It is longer than the floor, so it cannot fight it.
-  const bool unknown_heartbeat_due = (now_ms - this->last_unknown_log_ms_) >= RAW_LOG_HEARTBEAT_MS;
-  if ((unknown_changed || this->unknown_change_suppressed_ || unknown_heartbeat_due) && unknown_floor_clear) {
-    // Each byte gets an explicit static_cast<unsigned> before %02X: uint8_t
-    // undergoes default argument promotion to (signed) int across the
-    // variadic ESP_LOGD boundary, which -Wformat reads as a mismatch against
-    // %X's expected unsigned int under -Werror.
-    ESP_LOGD(TAG,
-             "raw frame: unknown_header=0x%02X 0x%02X 0x%02X 0x%02X, unknown_row1_addr=0x%02X, "
-             "unknown_row2_addr=0x%02X%s",
-             static_cast<unsigned>(frame.unknown_header[0]), static_cast<unsigned>(frame.unknown_header[1]),
-             static_cast<unsigned>(frame.unknown_header[2]), static_cast<unsigned>(frame.unknown_header[3]),
-             static_cast<unsigned>(frame.unknown_row1_addr), static_cast<unsigned>(frame.unknown_row2_addr),
-             (this->unknown_change_suppressed_ && !unknown_changed)
-                 ? "  (these bytes also moved and came back inside the rate limit)"
-                 : (unknown_changed ? "" : "  (unchanged -- heartbeat)"));
-    this->last_logged_unknown_header_ = frame.unknown_header;
-    this->last_logged_unknown_row1_addr_ = frame.unknown_row1_addr;
-    this->last_logged_unknown_row2_addr_ = frame.unknown_row2_addr;
-    this->have_logged_unknown_bytes_ = true;
-    this->unknown_change_suppressed_ = false;
-    this->last_unknown_log_ms_ = now_ms;
-  }
-
-  // (b) Non-ASCII content in the two text lines, via describe_unprintable()
-  // (display.h) -- this stage's whole reason to exist. Gated on the
-  // FORMATTER'S OUTPUT changing, not the raw line: a humidity boost ticks the
-  // airflow percentage in line2 every frame while the annunciator byte sits
-  // still in column 15 (status.cpp's humidity_boost decode), so gating on the
-  // raw line would re-log an unchanged "col 15=0x??" several times a second
-  // for as long as the boost lasts. Gating on the description means a steady
-  // annunciator logs once and stays quiet until the non-ASCII content itself
-  // actually moves.
-  //
-  // A clearing transition is logged as "(none)" rather than passed over in
-  // silence. The falling edge is a finding in its own right: PLAN.md §8
-  // stage 14 names the annunciator *clearing* as the one part of
-  // humidity_boost still unobserved, and an observer should not have to
-  // infer it from log lines that stopped arriving -- inferring from an
-  // absence is exactly what this stage was written to stop paying for.
-  //
-  // The same RAW_LOG_MIN_INTERVAL_MS floor applies here, per line. Without
-  // it the description itself can oscillate: an open editor blinks line2
-  // between its value and blank every ~350ms, so a non-ASCII byte anywhere
-  // in that value alternates the description non-empty/empty at ~1.6
-  // lines/s -- and LeaveMenu deliberately waits out the unit's ~2-minute
-  // editor timeout (see CLAUDE.md's device invariants), which is ~190 lines
-  // from one excursion on a network-only logger. The cost is that an edge
-  // can be stamped up to 2000ms late if the same line logged just before
-  // it; read the capture's timestamps with that in mind. The stored
-  // description is NOT updated when the floor suppresses a change, so the
-  // change is simply re-detected on the next eligible frame rather than
-  // lost.
-  // The heartbeat repeats a line only while it HAS non-ASCII content: that is
-  // the state a late-connecting observer needs restated (a boost already
-  // running when they connect), and it is the state whose absence would
-  // otherwise be ambiguous. An all-ASCII line stays silent -- the
-  // unknown-byte heartbeat above already proves once a minute that this
-  // function is running, so repeating "(none)" on both lines as well would
-  // be three lines a minute to say the same thing.
-  const std::string desc1 = describe_unprintable(frame.line1);
-  const bool line1_repeat = desc1 == this->last_logged_line1_unprintable_;
-  if ((!line1_repeat || (!desc1.empty() && (now_ms - this->last_line1_log_ms_) >= RAW_LOG_HEARTBEAT_MS)) &&
-      (now_ms - this->last_line1_log_ms_) >= RAW_LOG_MIN_INTERVAL_MS) {
-    ESP_LOGD(TAG, "raw frame: line1 non-ASCII: %s%s", desc1.empty() ? "(none)" : desc1.c_str(),
-             line1_repeat ? "  (unchanged -- heartbeat)" : "");
-    this->last_logged_line1_unprintable_ = desc1;
-    this->last_line1_log_ms_ = now_ms;
-  }
-  const std::string desc2 = describe_unprintable(frame.line2);
-  const bool line2_repeat = desc2 == this->last_logged_line2_unprintable_;
-  if ((!line2_repeat || (!desc2.empty() && (now_ms - this->last_line2_log_ms_) >= RAW_LOG_HEARTBEAT_MS)) &&
-      (now_ms - this->last_line2_log_ms_) >= RAW_LOG_MIN_INTERVAL_MS) {
-    ESP_LOGD(TAG, "raw frame: line2 non-ASCII: %s%s", desc2.empty() ? "(none)" : desc2.c_str(),
-             line2_repeat ? "  (unchanged -- heartbeat)" : "");
-    this->last_logged_line2_unprintable_ = desc2;
-    this->last_line2_log_ms_ = now_ms;
-  }
-}
-
 void VentAxiaHub::dump_config() {
   ESP_LOGCONFIG(TAG, "Vent-Axia:");
   ESP_LOGCONFIG(TAG, "  Read-only: %s", YESNO(this->read_only_));
@@ -386,53 +267,37 @@ void VentAxiaHub::tap_key(protocol::KeyMask mask, uint32_t duration_ms) {
 void VentAxiaHub::hold_key(protocol::KeyMask mask) { this->runner_.press(mask); }
 
 void VentAxiaHub::write_switch(SwitchKey key, bool state) {
-  switch (key) {
-    case SwitchKey::SUMMER_MODE:
-      this->start_write_(SettingId::SUMMER_MODE, state ? 1 : 0);
-      return;
-    default:
-      // Unreachable today -- SwitchKey has exactly one member -- but logged
-      // rather than silently doing nothing if that ever changes without a
-      // matching case here.
-      ESP_LOGE(TAG, "write_switch: no WriteSetting mapping for this SwitchKey");
-      return;
+  // The mapping itself lives in the portable core (setting_for(), sequence.h)
+  // so a forgotten key is caught by the host suite's -Werror rather than
+  // only warned about in a firmware build log -- see its own comment.
+  const std::optional<SettingId> id = setting_for(key);
+  if (!id.has_value()) {
+    ESP_LOGE(TAG, "write_switch: no WriteSetting mapping for this SwitchKey");
+    return;
   }
+  this->start_write_(*id, state ? 1 : 0);
 }
 
 void VentAxiaHub::write_number(NumberKey key, int value) {
-  switch (key) {
-    case NumberKey::BYPASS_INDOOR_TEMP:
-      this->start_write_(SettingId::INDOOR_TEMP, value);
-      return;
-    case NumberKey::BYPASS_OUTDOOR_TEMP:
-      this->start_write_(SettingId::OUTDOOR_TEMP, value);
-      return;
-    default:
-      ESP_LOGE(TAG, "write_number: no WriteSetting mapping for this NumberKey");
-      return;
+  const std::optional<SettingId> id = setting_for(key);
+  if (!id.has_value()) {
+    ESP_LOGE(TAG, "write_number: no WriteSetting mapping for this NumberKey");
+    return;
   }
+  this->start_write_(*id, value);
 }
 
 void VentAxiaHub::write_select(SelectKey key, size_t index) {
-  switch (key) {
-    case SelectKey::AIRFLOW_MODE:
-      // index is the AirflowTarget ordinal directly -- see write_select()'s
-      // own comment (vent_axia.h) and select.py's AIRFLOW_MODE_OPTIONS list
-      // for why no lookup table is needed here. select::SelectCall has
-      // already validated index against traits.get_options().size() before
-      // control() is ever reached, so an out-of-range value never gets
-      // here -- same "already validated upstream" reasoning as
-      // VentAxiaNumber::control()'s own comment.
-      this->set_airflow_mode_.configure(static_cast<AirflowTarget>(index));
-      this->runner_.request(this->set_airflow_mode_);
-      return;
-    default:
-      // Unreachable today -- SelectKey has exactly one member -- but logged
-      // rather than silently doing nothing if that ever changes without a
-      // matching case here, same shape as write_switch()/write_number().
-      ESP_LOGE(TAG, "write_select: no SetAirflowMode mapping for this SelectKey");
-      return;
+  // index is the AirflowTarget ordinal directly -- select.py's
+  // AIRFLOW_MODE_OPTIONS list is deliberately ordered to match, so no lookup
+  // table is needed, only the bounds check airflow_target_for() does.
+  const std::optional<AirflowTarget> target = airflow_target_for(key, index);
+  if (!target.has_value()) {
+    ESP_LOGE(TAG, "write_select: no SetAirflowMode mapping for this SelectKey/index");
+    return;
   }
+  this->set_airflow_mode_.configure(*target);
+  this->runner_.request(this->set_airflow_mode_);
 }
 
 // Each publish_ helper compiles to a no-op when its platform is absent from

@@ -41,10 +41,19 @@ class Keypad {
   /// member is optional -- an unset one is simply skipped, which is
   /// convenient for tests that only care about one severity, or none. The
   /// hub wires these to ESP_LOGI/ESP_LOGW/ESP_LOGE.
+  ///
+  /// debug added for frame_logger.h's FrameLogger, the only portable-core
+  /// user of this severity: its lines are deliberately chatty (a raw frame
+  /// arrives ~3.3 times a second) and were ESP_LOGD before that class moved
+  /// out of vent_axia.cpp. Wiring them to warn or error instead would
+  /// promote debug spam to a severity mhrv.yaml's log level shows by
+  /// default; this keeps them at DEBUG, which mhrv.yaml does run at, so
+  /// behaviour is unchanged.
   struct LogSink {
     std::function<void(const std::string &)> info;
     std::function<void(const std::string &)> warn;
     std::function<void(const std::string &)> error;
+    std::function<void(const std::string &)> debug;
   };
 
   /// Ring-buffer size for queued taps, not a std::vector: a std::vector can

@@ -300,13 +300,29 @@ cannot be defeated by two sequences sharing a name.
 ### F8 — `default:` arms defeat the exhaustiveness checking the design wants
 
 `write_switch`, `write_number` and `write_select` each end in a `default:` that
-logs "no mapping for this key". With `-Wall -Wextra -Werror`, removing those arms
-turns an unhandled enum member into a **compile error**. Keeping them converts it
-into a runtime log line nobody will read on a device with no serial console.
+logs "no mapping for this key" at runtime, on a device with no serial console.
+Removing those arms lets `-Wswitch` see an unhandled enum member instead.
 
-The enum-keyed design's stated goal is that adding an entity means "an enum
-member, a dict entry and a publish call". The compiler is willing to enforce the
-third step. These `default:` arms are what stop it.
+**Corrected during implementation.** This finding originally claimed that removing
+the `default:` arms "turns an unhandled enum member into a compile error". That is
+false as stated, and the correction matters more than the original point.
+`-Wall -Wextra -Werror` are the **host test suite's** flags
+(`tests/CMakeLists.txt`); the ESPHome firmware build does not use `-Werror`.
+Verified by adding an unmapped enum member and compiling `mhrv.yaml`: the result
+is a `-Wswitch` **warning** and `exit=0` — a line in a long build log, not a
+failure.
+
+Since `write_switch`/`write_number`/`write_select` live in `vent_axia.cpp`, the
+one file the host suite excludes, no arrangement of `default:` arms there can buy
+a compile-time guarantee. Getting one requires moving the **mapping** across the
+portable-core line, where `-Werror` actually applies — the same move F2 calls for,
+for the same reason. Re-verified after the change: an unmapped member is now
+`error: enumeration value 'DUMMY_UNMAPPED' not handled in switch [-Werror=switch]`
+in the host build.
+
+The general lesson, worth more than the specific fix: "the compiler will catch it"
+is a claim to test, not to assume. It was wrong here in the direction that feels
+safest.
 
 ### F9 — An out-of-range step reports success
 

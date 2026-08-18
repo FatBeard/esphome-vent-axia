@@ -159,6 +159,54 @@ TEST_CASE(on_finish_runs_on_a_timeout_too_and_recover_releases_the_key) {
   CHECK(!kp.busy());
 }
 
+TEST_CASE(a_step_outside_the_sequences_own_range_fails_rather_than_reporting_done) {
+  // Every real seq_*.cpp/sequence.cpp switch on step_ now ends its default:
+  // arm with `return Poll::FAILED;` (plus a log line naming the sequence and
+  // the bad step) instead of the `return Poll::DONE;` it used to -- step_
+  // somehow landing outside the Step enum is a bug, and the old behaviour
+  // reported that bug as SUCCESS (for WriteSetting specifically, a write
+  // "landing" when nothing was pressed). ScriptedSequence exists precisely
+  // to exercise the ENGINE without needing a real primitive (its own class
+  // comment), so this reproduces the pattern generically: step 0 jumps to a
+  // step number no case recognises, and the default: arm there follows the
+  // same contract every real switch now does.
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+  RecordingLog log;
+  runner.set_log_sink(log.as_log_sink());
+
+  ScriptedSequence seq;
+  seq.name_ = "OutOfRange";
+  // Runner::log(), not self.log() -- Sequence::log() is protected and only
+  // reachable from a Sequence's own member functions (ScriptedSequence's
+  // do_*() wrappers are exactly that indirection for the others), but
+  // Runner::log() is public and returns the identical sink, so the lambda
+  // (not itself a Sequence member) can log through it directly.
+  seq.on_poll = [&runner](ScriptedSequence &self) {
+    switch (self.current_step()) {
+      case 0:
+        return self.do_goto(99);  // "somehow" out of range -- see class comment above
+      default:
+        if (runner.log().error) {
+          runner.log().error("OutOfRange: invalid step 99");
+        }
+        return Poll::FAILED;
+    }
+  };
+
+  CHECK(runner.request(seq));
+  Clock clock{kp, runner};
+  clock.tick();  // step 0: do_goto(99)
+  clock.tick();  // step 99: the default: arm
+
+  CHECK(seq.last_result == Poll::FAILED);
+  CHECK_EQ(seq.finish_count, 1);
+  CHECK(!runner.busy());  // FAILED as root -> finish_top_() -> recover(), same as any other root failure
+  CHECK_EQ(log.error_count, 1);
+}
+
 TEST_CASE(request_refuses_a_second_root_while_one_is_running) {
   Keypad kp;
   Display disp;

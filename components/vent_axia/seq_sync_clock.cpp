@@ -215,8 +215,19 @@ Poll SyncClock::poll() {
       return this->await(this->leave_menu_, FINISHED);
 
     case FINISHED:
-    default:
       return Poll::DONE;
+
+    // step_ somehow outside the Step enum -- a bug, not a legitimate landing
+    // state (every real step above has its own explicit case, including
+    // FINISHED). Previously fell through to the same `return Poll::DONE;` as
+    // FINISHED, which would report a clock sync as complete when the
+    // sequence had actually gone off the rails; FAILED routes through
+    // Runner::recover() instead.
+    default:
+      if (this->log().error) {
+        this->log().error("SyncClock: invalid step " + std::to_string(static_cast<int>(this->step_)));
+      }
+      return Poll::FAILED;
   }
 }
 

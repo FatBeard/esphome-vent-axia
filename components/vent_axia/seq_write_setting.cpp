@@ -47,6 +47,48 @@ const SettingSpec *find_setting_spec(SettingId id) {
 static_assert(sizeof(kSettings) / sizeof(kSettings[0]) == 3, "one SettingSpec row per SettingId enumerator");
 }  // namespace
 
+// Switching on the enum TYPE, deliberately, with no default: arm -- see
+// setting_for()'s own comment (sequence.h) for why these live here rather
+// than in the hub. COUNT is not a real key, but the compiler cannot tell a
+// sentinel apart from a member somebody forgot, so it is named explicitly
+// and answers nullopt like any other unmapped key.
+std::optional<SettingId> setting_for(SwitchKey key) {
+  switch (key) {
+    case SwitchKey::SUMMER_MODE:
+      return SettingId::SUMMER_MODE;
+    case SwitchKey::COUNT:
+      return std::nullopt;
+  }
+  return std::nullopt;
+}
+
+std::optional<SettingId> setting_for(NumberKey key) {
+  switch (key) {
+    case NumberKey::BYPASS_INDOOR_TEMP:
+      return SettingId::INDOOR_TEMP;
+    case NumberKey::BYPASS_OUTDOOR_TEMP:
+      return SettingId::OUTDOOR_TEMP;
+    case NumberKey::COUNT:
+      return std::nullopt;
+  }
+  return std::nullopt;
+}
+
+std::optional<AirflowTarget> airflow_target_for(SelectKey key, size_t index) {
+  switch (key) {
+    case SelectKey::AIRFLOW_MODE:
+      // PURGE is the last target; anything past it is not an option this
+      // select offers.
+      if (index > static_cast<size_t>(AirflowTarget::PURGE)) {
+        return std::nullopt;
+      }
+      return static_cast<AirflowTarget>(index);
+    case SelectKey::COUNT:
+      return std::nullopt;
+  }
+  return std::nullopt;
+}
+
 void WriteSetting::configure(SettingId id, int target) {
   this->id_ = id;
   this->target_ = target;
@@ -151,8 +193,17 @@ Poll WriteSetting::poll() {
     case FINISHED:
       return this->ok_ ? Poll::DONE : Poll::FAILED;
 
+    // step_ somehow outside the Step enum -- a bug, not a legitimate landing
+    // state (every real step above has its own explicit case, including
+    // FINISHED). Previously fell through to `return Poll::DONE;`, which for
+    // THIS sequence specifically means reporting a write as landed when
+    // nothing was necessarily pressed -- the exact failure mode this whole
+    // change exists to close. FAILED routes through Runner::recover() instead.
     default:
-      return Poll::DONE;
+      if (this->log().error) {
+        this->log().error("WriteSetting: invalid step " + std::to_string(static_cast<int>(this->step_)));
+      }
+      return Poll::FAILED;
   }
 }
 

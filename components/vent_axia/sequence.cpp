@@ -332,8 +332,17 @@ Poll GotoMenu::poll() {
     case SETTLE_DOWN:
       return this->elapsed() >= SETTLE_MS ? Poll::DONE : Poll::RUNNING;
 
+    // step_ somehow outside the Step enum -- a bug, not a legitimate landing
+    // state (every real step above, QUEUE_UP through SETTLE_DOWN, has its own
+    // explicit case; SETTLE_DOWN itself returns DONE directly rather than
+    // falling through to a FINISHED case). Previously returned DONE here,
+    // reporting a menu navigation as landed when it never actually ran to
+    // completion; FAILED routes through Runner::recover() instead.
     default:
-      return Poll::DONE;
+      if (this->log().error) {
+        this->log().error("GotoMenu: invalid step " + std::to_string(static_cast<int>(this->step_)));
+      }
+      return Poll::FAILED;
   }
 }
 
@@ -364,8 +373,16 @@ Poll LeaveMenu::poll() {
       }
       return this->elapsed() >= WAIT_TIMEOUT_MS ? Poll::FAILED : Poll::RUNNING;
 
+    // step_ somehow outside the Step enum -- a bug, not a legitimate landing
+    // state (TAP, CHECK and WAIT_EXIT above are every real step, and each has
+    // its own explicit case). Previously returned DONE here, reporting the
+    // menu as successfully left when it never actually was; FAILED routes
+    // through Runner::recover() instead.
     default:
-      return Poll::DONE;
+      if (this->log().error) {
+        this->log().error("LeaveMenu: invalid step " + std::to_string(static_cast<int>(this->step_)));
+      }
+      return Poll::FAILED;
   }
 }
 
@@ -391,8 +408,18 @@ Poll OpenEditor::poll() {
       // miss.
       return this->attempt_ >= MAX_ATTEMPTS ? Poll::FAILED : this->goto_step(TAP);
 
+    // step_ somehow outside the Step enum -- a bug, not a legitimate landing
+    // state (TAP, SETTLE and CHECK above are every real step, and each has
+    // its own explicit case). Previously returned DONE here, reporting an
+    // editor as confirmed open when it never actually was checked -- exactly
+    // the "a dropped Set... those same presses are navigation instead"
+    // failure OpenEditor exists to catch, just reached a different way;
+    // FAILED routes through Runner::recover() instead.
     default:
-      return Poll::DONE;
+      if (this->log().error) {
+        this->log().error("OpenEditor: invalid step " + std::to_string(static_cast<int>(this->step_)));
+      }
+      return Poll::FAILED;
   }
 }
 
@@ -474,8 +501,16 @@ Poll AdjustField::poll() {
       }
       return this->elapsed() >= CHANGE_TIMEOUT_MS ? this->goto_step(CHECK) : Poll::RUNNING;
 
+    // step_ somehow outside the Step enum -- a bug, not a legitimate landing
+    // state (CHECK and WAIT_CHANGE above are every real step, and each has
+    // its own explicit case). Previously returned DONE here, reporting a
+    // field as adjusted to its target when it was never actually confirmed;
+    // FAILED routes through Runner::recover() instead.
     default:
-      return Poll::DONE;
+      if (this->log().error) {
+        this->log().error("AdjustField: invalid step " + std::to_string(static_cast<int>(this->step_)));
+      }
+      return Poll::FAILED;
   }
 }
 
@@ -513,8 +548,17 @@ Poll ExitEditChain::poll() {
       // safer than letting whatever runs next press Up unconditionally.
       return this->elapsed() >= FALLBACK_TIMEOUT_MS ? Poll::FAILED : Poll::RUNNING;
 
+    // step_ somehow outside the Step enum -- a bug, not a legitimate landing
+    // state (CHECK, SETTLE and WAIT_TIMEOUT above are every real step, and
+    // each has its own explicit case). Previously returned DONE here,
+    // reporting the edit chain as walked closed when it was never actually
+    // confirmed; FAILED routes through Runner::recover() instead, same
+    // reasoning as WAIT_TIMEOUT's own FAILED above.
     default:
-      return Poll::DONE;
+      if (this->log().error) {
+        this->log().error("ExitEditChain: invalid step " + std::to_string(static_cast<int>(this->step_)));
+      }
+      return Poll::FAILED;
   }
 }
 

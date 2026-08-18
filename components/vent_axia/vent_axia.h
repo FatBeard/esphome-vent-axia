@@ -51,6 +51,7 @@
 #include "diagnostics.h"
 #include "display.h"
 #include "entities.h"
+#include "frame_logger.h"
 #include "keypad.h"
 #include "protocol.h"
 #include "sequence.h"
@@ -361,46 +362,6 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   /// run.
   void stamp_diagnostics_updated_();
 
-  /// Logs raw frame bytes at DEBUG -- visible under the `level: DEBUG` both
-  /// mhrv.yaml and example/production.yaml already run, so this needs no
-  /// new config option. Stage 15's live capture (PLAN.md §8) settled which
-  /// byte the α annunciator is (glyphs::ALPHA, display.h) and that the six
-  /// `unknown_*` frame bytes are constant across ordinary navigation; still
-  /// open is which CGRAM slots (0x00-0x07) this unit uses, and whether
-  /// unknown_row1_addr/unknown_row2_addr carry a cursor or blink attribute
-  /// during an OPEN EDITOR specifically (stage 15's capture never opened
-  /// one) that could replace editor_open()'s 1200ms staleness heuristic
-  /// with a direct protocol read -- that heuristic is the one CLAUDE.md
-  /// records as having silently taken a 14°C setpoint to 19°C. See
-  /// DISPLAY-INSTRUMENTATION-PLAN.md and DISPLAY-REVIEW.md §6/§7.
-  ///
-  /// Must read frame.line1/line2 -- the strings straight off the wire, for
-  /// THIS frame -- never display_.raw_line1()/raw_line2(): this call runs
-  /// before display_.update() below, so at this point the raw lane still
-  /// holds the previous frame's text, not this one's.
-  void log_raw_frame_bytes_(const protocol::DisplayFrame &frame, uint32_t now_ms);
-
-  /// Floor between log lines from log_raw_frame_bytes_(), applied separately
-  /// to the unknown-byte tuple and to each line's non-ASCII description --
-  /// see that function for why the change-gate alone isn't enough on either
-  /// path (frames arrive ~3.3/s; anything that varies per frame would
-  /// otherwise flood a network-only logger at that rate for as long as it
-  /// kept varying).
-  static constexpr uint32_t RAW_LOG_MIN_INTERVAL_MS = 2000;
-
-  /// Interval at which log_raw_frame_bytes_() re-emits a line even though
-  /// nothing changed. Log-on-change alone is unobservable on this device:
-  /// the logger is network-only (mhrv.yaml sets `baud_rate: 0`, since UART0
-  /// is the MVHR link), so the first-frame baseline is written a few hundred
-  /// ms after boot, long before WiFi and the /events stream are up, and goes
-  /// nowhere. If the unknown bytes are then constant -- the likeliest case --
-  /// nothing is ever logged again, and an observer connecting later cannot
-  /// tell "these bytes never move" from "the instrumentation is broken". The
-  /// same holds for an annunciator that appeared before they connected. One
-  /// line a minute costs nothing on a logger that only transmits to a
-  /// connected client, and converts both silences into a positive statement.
-  static constexpr uint32_t RAW_LOG_HEARTBEAT_MS = 60000;
-
   bool read_only_{false};
   protocol::Framer framer_;
   Display display_;
@@ -408,37 +369,16 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   bool have_frame_{false};
   uint32_t last_frame_at_ms_{0};
 
-  // log_raw_frame_bytes_()'s anti-flood state. Non-ASCII line descriptions
-  // gate on the FORMATTER'S OUTPUT changing rather than the raw line --
-  // during a humidity boost the airflow percentage in line2 ticks every
-  // frame while the annunciator byte sits still in column 15, and raw-line
-  // gating would re-log an unchanged "col 15=0x??" several times a second
-  // for as long as the boost lasts. Every path additionally gates on
-  // RAW_LOG_MIN_INTERVAL_MS above, each against its own last-logged
-  // timestamp so a chatty line cannot silence the other one.
-  //
-  // have_logged_unknown_bytes_ does two jobs: it distinguishes "never
-  // logged" from a zero-initialised tuple that happens to match a real
-  // frame's, and it exempts the very first frame from the rate limit, so
-  // the at-rest baseline -- the most informative line in the whole capture
-  // -- is stamped when the link comes up rather than up to 2s later.
-  //
-  // unknown_change_suppressed_ closes the one hole the floor would
-  // otherwise open: a tuple that changes and reverts entirely inside the
-  // rate limit leaves no trace, and question 3 (a cursor or blink
-  // attribute) is exactly a sub-2s signal. The flag remembers that
-  // something moved, so the next eligible frame logs and says so even if
-  // the bytes have since gone back to their previous values.
-  std::string last_logged_line1_unprintable_;
-  std::string last_logged_line2_unprintable_;
-  uint32_t last_line1_log_ms_{0};
-  uint32_t last_line2_log_ms_{0};
-  std::array<uint8_t, 4> last_logged_unknown_header_{};
-  uint8_t last_logged_unknown_row1_addr_{0};
-  uint8_t last_logged_unknown_row2_addr_{0};
-  bool have_logged_unknown_bytes_{false};
-  bool unknown_change_suppressed_{false};
-  uint32_t last_unknown_log_ms_{0};
+  /// Raw-frame instrumentation (rate limiting, heartbeat, change-suppress-
+  /// and-revert detection) -- moved into the portable core (frame_logger.h)
+  /// so it is host-testable; see that file's own class comment for what it
+  /// is for and why. Its sink is wired in setup() alongside keypad_'s and
+  /// runner_'s, and loop() feeds it frame.line1/line2 -- the strings
+  /// straight off the wire, for THIS frame -- before display_.update() runs,
+  /// same "must read the frame, never display_'s raw lane" requirement the
+  /// method this replaced had (display_'s raw lane still holds the PREVIOUS
+  /// frame's text at that point).
+  FrameLogger frame_logger_;
 
   bool link_up_{false};  // mirrors what publish_link_up_ just published -- see loop()
   std::vector<DiagnosticPageTrigger *> diagnostic_page_triggers_;
