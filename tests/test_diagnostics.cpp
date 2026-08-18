@@ -441,7 +441,7 @@ TEST_CASE(page27_reset_is_never_touched_even_read_only) {
 }
 
 TEST_CASE(an_unknown_page_publishes_nothing_no_hang_no_crash) {
-  // Page 28 does not exist on firmware V32/05 (PLAN.md, README) -- the old
+  // Page 28 does not exist on firmware V32/05 -- the old
   // component hardcoded it as a scrape terminator and hung for 60s. This
   // table has no entry for it, or for any other number decode_page() has
   // never heard of, and must handle that as cleanly as page 27 above.

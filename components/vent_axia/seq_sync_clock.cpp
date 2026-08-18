@@ -189,15 +189,14 @@ Poll SyncClock::poll() {
       }
       return this->goto_step(EXIT_CHAIN);
 
-    // Finding 1's fix: if the fourth (commit) Set was dropped, the editor is
-    // still open here -- LEAVE's own LeaveMenu would otherwise tap Up into
-    // it, adjusting the minute field instead of navigating out (PLAN.md
-    // §3). ExitEditChain is the same walk-out primitive WriteSetting/
-    // ReadSettings already use elsewhere in this component; it only ever
-    // presses Set. It runs at all only when editor_open() is actually true
-    // here, so a normal successful commit -- the editor already closed by
-    // the time SETTLE finished -- falls straight through to LEAVE without
-    // this step transmitting anything.
+    // If the fourth (commit) Set was dropped, the editor is still open here
+    // -- LEAVE's own LeaveMenu would otherwise tap Up into it, adjusting the
+    // minute field instead of navigating out. ExitEditChain is the same
+    // walk-out primitive WriteSetting/ReadSettings already use elsewhere in
+    // this component; it only ever presses Set. It runs at all only when
+    // editor_open() is actually true here, so a normal successful commit --
+    // the editor already closed by the time SETTLE finished -- falls
+    // straight through to LEAVE without this step transmitting anything.
     case EXIT_CHAIN:
       if (!this->runner_->display().editor_open(this->runner_->now_ms())) {
         return this->goto_step(LEAVE);
@@ -209,8 +208,8 @@ Poll SyncClock::poll() {
     // mashing Up five times would corrupt the setting -- see LeaveMenu's own
     // class comment. The old script used leave_menu for the same reason.
     // EXIT_CHAIN above is what actually recovers a dropped commit Set;
-    // LeaveMenu's own TAP step (Finding 1's structural backstop) is what
-    // keeps this step safe even if EXIT_CHAIN's own check were ever wrong.
+    // LeaveMenu's own TAP step is a structural backstop that keeps this step
+    // safe even if EXIT_CHAIN's own check were ever wrong.
     case LEAVE:
       return this->await(this->leave_menu_, FINISHED);
 
@@ -218,11 +217,8 @@ Poll SyncClock::poll() {
       return Poll::DONE;
 
     // step_ somehow outside the Step enum -- a bug, not a legitimate landing
-    // state (every real step above has its own explicit case, including
-    // FINISHED). Previously fell through to the same `return Poll::DONE;` as
-    // FINISHED, which would report a clock sync as complete when the
-    // sequence had actually gone off the rails; FAILED routes through
-    // Runner::recover() instead.
+    // state. FAILED routes through Runner::recover() rather than reporting a
+    // clock sync as complete when the sequence had gone off the rails.
     default:
       if (this->log().error) {
         this->log().error("SyncClock: invalid step " + std::to_string(static_cast<int>(this->step_)));
@@ -234,11 +230,10 @@ Poll SyncClock::poll() {
 void SyncClock::on_finish(Poll result) {
   (void) result;
   // Backstop release -- every primitive above already releases whatever it
-  // itself asserted (it only ever taps), same reasoning as every other
-  // sequence's on_finish() in this file. Main is never pressed anywhere in
-  // this sequence (on this unit Main is Boost, mhrv_orig/controls.yaml's own
-  // comment), so there is nothing keypad-specific special about this release
-  // beyond what every other sequence already does.
+  // itself asserted (it only ever taps). Main is never pressed anywhere in
+  // this sequence (on this unit Main is Boost), so there is nothing
+  // keypad-specific special about this release beyond what every other
+  // sequence already does.
   this->runner_->release();
 }
 

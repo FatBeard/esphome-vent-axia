@@ -132,12 +132,11 @@ class Sequence {
   /// comment.
   const Keypad::LogSink &log() const;
 
-  /// Queues one tap, at the Runner's configured tap_duration_ms() (PLAN.md
-  /// §2's table: "one tap = one menu step" -- NOT a hardcoded duration, so
-  /// raising it, keypad.h's documented remedy for a loop()-stall-dropped
-  /// press, reaches every menu tap in every sequence rather than only the
-  /// four manual key buttons), and completes at `next_step` once the keypad
-  /// is idle again -- including the mandatory key_gap, so a caller chaining
+  /// Queues one tap -- one menu step -- at the Runner's configured
+  /// tap_duration_ms() rather than a hardcoded duration, so that raising it
+  /// (keypad.h's remedy for a loop()-stall-dropped press) reaches every menu
+  /// tap in every sequence and not just the four manual key buttons.
+  /// Completes at `next_step` once the keypad is idle again -- including the mandatory key_gap, so a caller chaining
   /// taps needs no delay step of its own. Returns Poll::FAILED if the tap
   /// was refused by the Set interlock (Runner::tap()), same as every
   /// hand-rolled tap-then-wait pair this replaces.
@@ -372,8 +371,8 @@ constexpr uint32_t kDefaultKeyGapMs = 400;
 /// Default-constructible and reset()-able so one long-lived instance can
 /// serve several different holds across a sequence's steps (see
 /// FetchDiagnostics, which reuses one for three different holds) rather than
-/// needing one HoldUntil member per hold -- see PLAN.md's "no dynamic
-/// allocation in steady state".
+/// needing one HoldUntil member per hold: no dynamic allocation in steady
+/// state.
 class HoldUntil final : public Sequence {
  public:
   using Predicate = std::function<bool()>;
@@ -478,7 +477,7 @@ class LeaveMenu final : public Sequence {
   enum Step : uint8_t { TAP, CHECK, WAIT_EXIT };
 
   // The unit's own menu timeout is ~2 minutes; this is that plus headroom,
-  // not a guess -- PLAN.md §3.
+  // not a guess.
   static constexpr uint32_t WAIT_TIMEOUT_MS = 130000;
 };
 
@@ -528,20 +527,19 @@ class OpenEditor final : public Sequence {
 /// The closed loop behind every field this component writes, and the
 /// clock's day/hour/minute too -- shared rather than copy-pasted per field
 /// the way the old YAML's three apply_* scripts were. ValueParser/
-/// DirectionFn are what varies per field; see
-/// parse_summer_mode_field()/parse_temp_field()/direction_no_wrap() below for
-/// the concrete ones this stage uses, and read_fresh_value() for the sibling
-/// helper WriteSetting's VERIFY step and ReadSettings share with this class.
+/// DirectionFn are what varies per field -- see parse_summer_mode_field(),
+/// parse_temp_field() and direction_no_wrap() below, and read_fresh_value()
+/// for the helper WriteSetting's VERIFY step and ReadSettings share.
 ///
 /// One iteration, run from poll():
 ///  1. Bail (FAILED) if the guard is already exhausted -- bounds the loop so
 ///     a misread, or a value the unit refuses (e.g. outside Outdoor Temp's
-///     5-20 C range, PLAN.md risk 6), cannot become a key-mashing runaway.
+///     5-20 C range), cannot become a key-mashing runaway.
 ///  2. Re-read the target via target_ (TargetFn, see below) -- FAILED,
 ///     logged, if it is not available right now. For the fixed-target
-///     reset() overload this call can never fail; it only matters for stage
-///     7's clock fields, where "not available" means no time source at all
-///     or a clock that has not synced yet.
+///     reset() overload this call can never fail; it only matters for the
+///     clock fields, where "not available" means no time source at all or a
+///     clock that has not synced yet.
 ///  3. Read and parse line2. A frame that fails to parse is NOT an error and
 ///     does not count against the guard: an open editor blanks its value on
 ///     alternate frames, and a blank temperature frame renders "   C", which
@@ -564,8 +562,8 @@ class AdjustField final : public Sequence {
   /// for DOWN. Only ever called once cur != want (see step 4 above). A
   /// parameter rather than a hardcoded `cur < want` because it is NOT always
   /// that simple: every settings field is a plain sign comparison (none of
-  /// the three wrap -- PLAN.md is explicit that parser::wrapped_delta would
-  /// be actively wrong on all three, see direction_no_wrap() below), but the
+  /// the three wrap, and parser::wrapped_delta would be actively wrong on
+  /// all three -- see direction_no_wrap() below), but the
   /// clock fields DO wrap and need a shortest-path version instead
   /// (direction_wrap_24/direction_wrap_60 below), and this is the seam that
   /// lets them reuse this same class.
@@ -585,15 +583,14 @@ class AdjustField final : public Sequence {
   /// handling of that below.
   ///
   /// A std::function, not a raw function pointer like ValueParser/
-  /// DirectionFn above: those two are always one of a handful of stateless
-  /// free functions known at compile time, but a live target has to capture
-  /// something stateful to be live at all -- here, the hub's own clock
-  /// (VentAxiaHub::time_, guarded by USE_TIME -- see seq_sync_clock.cpp) --
-  /// and a bare function pointer cannot carry that capture. Assigned only at
-  /// reset()/configure() time, a handful of times per run rather than every
-  /// tick, so this is not the "no dynamic allocation in steady state" the
-  /// class comment elsewhere on this file cares about -- HoldUntil::Predicate
-  /// is the same shape for the same reason.
+  /// DirectionFn: those are stateless free functions known at compile time,
+  /// but a live target has to capture something stateful to be live at all
+  /// -- here the hub's clock (VentAxiaHub::time_, USE_TIME-guarded, see
+  /// seq_sync_clock.cpp) -- and a function pointer cannot carry that.
+  /// Assigned at reset()/configure() time, a handful of times per run rather
+  /// than every tick, so it does not violate "no dynamic allocation in
+  /// steady state"; HoldUntil::Predicate is the same shape for the same
+  /// reason.
   using TargetFn = std::function<bool(int &out)>;
 
   AdjustField() = default;
@@ -604,7 +601,7 @@ class AdjustField final : public Sequence {
   /// CHECK implementation for both shapes. Must only be called while this
   /// instance is NOT on the Runner's stack, same rule as HoldUntil::reset().
   /// A single long-lived instance serves every field WriteSetting can write
-  /// -- see PLAN.md's "no dynamic allocation in steady state".
+  /// -- no dynamic allocation in steady state.
   void reset(ValueParser parse, DirectionFn direction, int target, int guard_limit);
 
   /// The live-target form -- see TargetFn's own comment for why SyncClock
@@ -652,8 +649,8 @@ class AdjustField final : public Sequence {
 /// the chain has actually been walked off its end. If it is STILL open after
 /// 4 commits -- more than the documented chain is ever expected to need --
 /// this logs it and falls back to waiting out the unit's own ~2-minute
-/// timeout (up to 150s), documented to close any editor without committing
-/// (PLAN.md). Only fails if editor_open() is STILL true once that fallback
+/// timeout (up to 150s), documented to close any editor without
+/// committing. Only fails if editor_open() is STILL true once that fallback
 /// itself elapses -- same shape as LeaveMenu's own timeout, and for the same
 /// reason: a FAILED here cascades straight to the shared Runner::recover()
 /// path, which presses Up **at most once**, which is safer than letting a
@@ -692,9 +689,8 @@ class ExitEditChain final : public Sequence {
 // Shared by ReadSettings and WriteSetting (seq_read_settings.cpp,
 // seq_write_setting.cpp): the three bypass fields' value encoding, shaped to
 // match AdjustField::ValueParser/DirectionFn so the exact same functions
-// serve both a plain read and a WriteSetting SettingSpec table row -- see
-// PLAN.md §2's "one class... three table rows, not three near-identical
-// copies".
+// serve both a plain read and a WriteSetting SettingSpec table row: one
+// class and three table rows, not three near-identical copies.
 
 /// Summer Mode as 0/1 -- AdjustField and the read path both want an int to
 /// compare/step, not a bool. See parser::parse_on_off for the actual parse
@@ -708,14 +704,13 @@ bool parse_summer_mode_field(const std::string &line2, int &out);
 bool parse_temp_field(const std::string &line2, int &out);
 
 /// Plain sign comparison -- correct for Summer Mode, Indoor Temp and Outdoor
-/// Temp, none of which wrap (PLAN.md is explicit that parser::wrapped_delta
-/// would be actively wrong on all three; it is for the clock's hour/minute
-/// only).
+/// Temp, none of which wrap. parser::wrapped_delta would be actively wrong
+/// on all three; it is for the clock's hour/minute only.
 bool direction_no_wrap(int cur, int want);
 
 /// True once line2 has published something NEWER than `since_ms` (the moment
-/// navigation to the CURRENT screen started) that also parses -- see
-/// PLAN.md "Reading a value off the screen": a change strictly after
+/// navigation to the CURRENT screen started) that also parses. A change
+/// strictly after
 /// `since_ms` is what proves a reading belongs to the screen just arrived
 /// at, rather than being a stale value left over from wherever the display
 /// was before. Returns nullopt while still waiting; callers apply their own
@@ -837,13 +832,13 @@ class FetchDiagnostics final : public Sequence {
 ///
 /// Reading Outdoor Temp requires opening Indoor Temp's editor and stepping
 /// past it, so a read can leave the display mid-edit whether or not it
-/// landed where it meant to (PLAN.md: the chain's shape is not guaranteed --
-/// a commit has been observed closing the editor outright rather than
-/// advancing). Both the "landed on Outdoor Temp" and "did not" branches of
-/// that hop fall through to the SAME EXIT_CHAIN step below -- a single
-/// funnel every path passes through structurally, not a per-branch call the
-/// old YAML's indentation had to be trusted to get right in both an `if` and
-/// an `else` (mhrv_orig/summer_bypass.yaml's read_summer_settings).
+/// landed where it meant to: the chain's shape is not guaranteed -- a commit
+/// has been observed closing the editor outright rather than advancing. Both
+/// the "landed on Outdoor Temp" and "did not" branches of that hop fall
+/// through to the SAME EXIT_CHAIN step below -- one funnel every path passes
+/// through structurally, not a per-branch call whose indentation had to be
+/// right in both an `if` and an `else`
+/// (mhrv_orig/summer_bypass.yaml's read_summer_settings).
 ///
 /// Finishes by returning the display to the status screen (GotoMenu(0)).
 /// A long-lived hub member, reused on every button press -- see on_start()
@@ -960,9 +955,9 @@ std::optional<SettingId> setting_for(NumberKey key);
 /// before this instance is request()ed; the
 /// STEPS below are the same for all three -- see seq_write_setting.cpp's
 /// SettingSpec table for what actually differs between them. This is the
-/// first sequence in this component that presses Set: see this file's class
-/// comment, and PLAN.md's editing-model section, for why every step past
-/// OPEN below only ever does so through OpenEditor/AdjustField/ExitEditChain.
+/// first sequence in this component that presses Set: see this file's header
+/// comment for why every step past OPEN below only ever does so through
+/// OpenEditor/AdjustField/ExitEditChain.
 ///
 /// Outdoor Temp is reached through Indoor Temp's editor rather than by
 /// direct navigation, and that hop can leave an editor open whether or not
@@ -1016,9 +1011,12 @@ class WriteSetting final : public Sequence {
     FINISHED,
   };
 
-  static constexpr uint32_t VERIFY_TIMEOUT_MS = 3000;      // PLAN.md §2's WriteSetting body
+  static constexpr uint32_t VERIFY_TIMEOUT_MS = 3000;
   static constexpr uint32_t HOP_SCREEN_TIMEOUT_MS = 3000;  // matches ReadSettings' own outdoor hop
-  static constexpr uint32_t SETTLE_MS = 1800;              // PLAN.md §2's WriteSetting body
+  // Must exceed Display::editor_open()'s own 1200ms staleness window: a
+  // SUCCESSFUL commit repaints line2 too, so a shorter settle cannot tell a
+  // closed editor from an open one.
+  static constexpr uint32_t SETTLE_MS = 1800;
 
   // The worst-case menu_index and guard_limit across every row this shared,
   // reused instance might be configure()d for (seq_write_setting.cpp's
@@ -1051,7 +1049,7 @@ class WriteSetting final : public Sequence {
   SettingId id_{SettingId::SUMMER_MODE};
   const SettingSpec *spec_{nullptr};
   int target_{0};
-  uint32_t nav_started_ms_{0};  // for VERIFY's read_fresh_value() -- see PLAN.md "Reading a value off the screen"
+  uint32_t nav_started_ms_{0};  // for VERIFY's read_fresh_value() -- see read_fresh_value()'s own comment
   // False only if the Outdoor Temp hop does not land -- see class comment.
   // Every other failure in this sequence (VERIFY, OPEN, AdjustField's guard,
   // ExitEditChain itself) returns Poll::FAILED directly instead: at those
@@ -1074,42 +1072,36 @@ class WriteSetting final : public Sequence {
 
 /// Corrects the unit's own clock against wall-clock time, one field at a
 /// time through the Set Clock editor. How the editor behaves, measured on
-/// the real unit (mhrv_orig/controls.yaml's own comment, carried forward
-/// here): Set enters on the day field; each further Set accepts the current
-/// field and advances to the next; a FOURTH Set commits and drops out of the
-/// editor. The field being edited blinks (blanks on alternate frames --
-/// Display::editor_open()'s own signal), which is both how the unit shows
-/// which field is active and why parse_clock_*_field() above only ever
-/// trusts a fully rendered frame. Day does not wrap (Up on Sun does
-/// nothing); hour and minute do, and take the shortest path
-/// (direction_wrap_24/60 above). Main is never pressed anywhere in this
-/// sequence: on this unit Main is Boost, and the old script says so in as
-/// many words.
+/// the real unit (mhrv_orig/controls.yaml): Set enters on the day field;
+/// each further Set accepts the current field and advances to the next; a
+/// FOURTH Set commits and drops out. The field being edited blinks (blanks
+/// on alternate frames -- Display::editor_open()'s signal), which is both
+/// how the unit shows which field is active and why parse_clock_*_field()
+/// above only trusts a fully rendered frame. Day does not wrap (Up on Sun
+/// does nothing); hour and minute do, and take the shortest path
+/// (direction_wrap_24/60 above). Main is never pressed anywhere here: on
+/// this unit Main is Boost.
 ///
-/// If anything is not where it is expected -- wrong screen, an unreadable
+/// If anything is not where it is expected -- wrong screen, unreadable
 /// clock, no time source -- this bails out and leaves the display alone
-/// (see VERIFY/CHECK_TIME below); the unit returns to its normal screen on
-/// its own two-minute timeout, same as every other sequence in this
-/// component that fails before committing anything.
+/// (VERIFY/CHECK_TIME below); the unit returns to its normal screen on its
+/// own two-minute timeout, as with every sequence that fails before
+/// committing.
 ///
 /// The fourth (COMMIT) Set is not itself retried or verified the way
-/// OpenEditor verifies the first -- SETTLE and EXIT_CHAIN below stand in for
-/// that. If COMMIT's Set was dropped, the editor is still open once SETTLE
-/// has waited long enough to tell (Display::editor_open(), gated on a
-/// window deliberately longer than editor_open()'s own settle window --
-/// see SETTLE_MS's own comment), and EXIT_CHAIN runs ExitEditChain to walk
-/// it closed with more Sets before LEAVE ever taps Up. LeaveMenu's own TAP
-/// step also refuses to tap into an open editor, as a structural backstop
-/// -- but EXIT_CHAIN is what actually recovers the run; LeaveMenu merely
-/// keeps a recovery failure from making things worse.
+/// OpenEditor verifies the first: SETTLE and EXIT_CHAIN stand in for that.
+/// If COMMIT's Set was dropped, the editor is still open once SETTLE has
+/// waited long enough to tell (SETTLE_MS is deliberately longer than
+/// editor_open()'s own window), and EXIT_CHAIN walks it closed with more
+/// Sets before LEAVE ever taps Up. LeaveMenu's TAP step also refuses to tap
+/// into an open editor as a structural backstop, but EXIT_CHAIN is what
+/// actually recovers the run.
 ///
 /// A long-lived hub member, reused on every scheduled or button-triggered
-/// run -- see this file's class comment on "no dynamic allocation in
-/// steady state". There is no real per-run state to reset in on_start():
-/// nav_started_ms_ is written
-/// fresh at NAVIGATE (always step 0 of a new run), and every AdjustField
-/// child resets its own guard_count_ in ITS on_start(), called automatically
-/// each time this pushes it via await().
+/// run: no dynamic allocation in steady state. There is no per-run state to
+/// reset in on_start() -- nav_started_ms_ is written fresh at NAVIGATE
+/// (always step 0), and every AdjustField child resets its own guard_count_
+/// in ITS on_start() each time await() pushes it.
 class SyncClock final : public Sequence {
  public:
   /// Wall-clock time to sync the unit's own clock to, injected the same way
@@ -1175,7 +1167,7 @@ class SyncClock final : public Sequence {
   // adjust_day/adjust_hour/adjust_minute comments): the day field needs at
   // most 6 presses, the hour 12, the minute 30 -- each with headroom, same
   // "bound the loop, don't trust luck" reasoning as every other guard_limit
-  // in this component (PLAN.md risk 6).
+  // in this component.
   static constexpr int DAY_GUARD = 8;
   static constexpr int HOUR_GUARD = 14;
   static constexpr int MINUTE_GUARD = 34;
@@ -1253,95 +1245,72 @@ enum class AirflowTarget : uint8_t { NORMAL, BOOST_30, BOOST_60, BOOST_CONTINUOU
 std::optional<AirflowTarget> airflow_target_for(SelectKey key, size_t index);
 
 /// Sets the Main-key boost/purge state to an ABSOLUTE target. Main is a
-/// cumulative press counter with no usable timeout (1 press = 30 min boost,
-/// 2 = 60 min, 3 = continuous, 4 = back to Normal --
-/// mhrv_orig/controls.yaml's own measured table, "Presses 250ms apart are
-/// counted individually and correctly"), so "Boost 60" only means the same
-/// thing every time if the counter is first normalised back to a known
-/// state (Normal) and then advanced by exactly the target's own press count
-/// -- CLAUDE.md's "Main is never a menu key... its press counter is
-/// cumulative... absolute targeting must normalise first". Purge is a
-/// separate axis: a 5.5s Main hold TOGGLES it on or off regardless of where
-/// the tap counter sits, so it is handled as its own branch rather than
-/// folded into the same counter.
+/// cumulative press counter with no usable timeout -- 1 press = 30 min
+/// boost, 2 = 60 min, 3 = continuous, 4 = back to Normal
+/// (mhrv_orig/controls.yaml's measured table: "Presses 250ms apart are
+/// counted individually and correctly") -- so "Boost 60" only means the same
+/// thing every time if the counter is first normalised back to Normal and
+/// then advanced by exactly the target's own press count. Purge is a
+/// separate axis: a 5.5s Main hold TOGGLES it regardless of where the tap
+/// counter sits, so it gets its own branch rather than being folded into the
+/// counter.
 ///
-/// See seq_set_airflow_mode.cpp for the full step-by-step reasoning behind
-/// each state below; in outline:
-///  1. CHECK_CURRENT: no keys pressed. First, PROVES the display is
-///     actually on the status loop -- have_frame() true and
-///     screens::is_menu_screen() false -- and FAILS immediately (no retry
-///     window; a menu screen does not clear itself within a sequence's
-///     patience) if not. This matters because CLAUDE.md's "Main is never a
-///     menu key" applies to being PARKED on a menu/diagnostic screen just
-///     as much as to pressing one on purpose: Runner::recover()'s own exit
-///     tap does not wait for the unit to actually leave the menu, the
-///     unit's own ~2-minute timeout may still be running, and a human at
-///     the unit's own keypad can park it on one at any moment -- all
-///     reachable start states, not hypothetical ones. Without this check,
-///     classify_line()/purging() can never see Purge or Boost from a menu
-///     screen, so the probe below would conclude "Normal" with zero
-///     evidence and go on to tap Main against a boost counter whose
-///     position was never actually read. Second, is the unit currently
-///     showing Purge -- via the injected StatusTracker's sticky purging(),
-///     not a single frame; see set_status()'s own comment for why. Branches
-///     to the Purge hold (direct, no normalising needed -- the manual
-///     describes Purge as reachable from any state) or, for a non-Purge
-///     target, to CANCEL_PURGE first if currently purging, else straight to
-///     the boost probe.
-///  2. CANCEL_PURGE / OPEN_PURGE: a fixed 5500ms Main hold, via
-///     press()+elapsed() rather than HoldUntil -- its SUCCESS condition
-///     is "the timer ran out", not a predicate, the same reasoning
-///     FetchDiagnostics::HOLD_DOWN documents for its own fixed 8s hold.
-///     CANCEL_PURGE is followed by an explicit ~400ms settle before the
-///     first subsequent tap -- CLAUDE.md's "release is silence... a
-///     hold-to-hold [or hold-to-tap] transition needs an explicit gap".
-///  3. PROBE_CHECK / PROBE_WAIT: mhrv_orig's boost_probe -- sample line1 for
-///     "Boost Airflow" right now; if not seen, wait up to 8s for a Boost
-///     frame (line1 alternates every ~3.2-3.5s, so a single unlucky sample
-///     can catch the other half of the cycle -- the probe needs up to ~8s
-///     to be conclusive).
-///  4. If boosting: tap Main once (bounded by a 4-tap guard), wait for the
-///     tap and its key_gap to clear, wait a further 1s
-///     (mhrv_orig's own figure -- long enough for the unit's own counter
-///     and display to have caught up before judging it), then re-probe.
-///     Guard-exhausted-and-still-boosting FAILS outright rather than
-///     layering the target's own presses on top of an unknown press count
-///     -- mirrors mhrv_orig's own boost_set, which silently skipped
-///     applying anything in exactly this situation.
-///  5. APPLY_TAP / APPLY_WAIT: once confirmed Normal, tap Main exactly as
-///     many times as the target needs from there -- 0/1/2/3 for
-///     Normal/Boost30/Boost60/Continuous -- queued as a batch and drained
-///     via Keypad's own queue, the same batching GotoMenu uses for its own
-///     taps (sequence.cpp).
+/// Steps (full reasoning in seq_set_airflow_mode.cpp):
+///  1. CHECK_CURRENT: no keys pressed. First PROVES the display is on the
+///     status loop -- have_frame() true, screens::is_menu_screen() false --
+///     and FAILS immediately if not, with no retry window, because a menu
+///     screen does not clear itself within a sequence's patience. Being
+///     PARKED on a menu is a reachable start state, not a hypothetical one:
+///     Runner::recover()'s exit tap does not wait for the unit to actually
+///     leave, the unit's own ~2-minute timeout may still be running, and a
+///     human at the physical keypad can park it there at any moment. From a
+///     menu screen classify_line()/purging() can never see Purge or Boost,
+///     so the probe below would conclude "Normal" on zero evidence and then
+///     tap Main against a counter whose position was never read. Second,
+///     reads purge from the injected StatusTracker's STICKY purging(), not a
+///     single frame (see set_status()). Branches to the Purge hold (direct
+///     -- the manual describes Purge as reachable from any state), or for a
+///     non-Purge target to CANCEL_PURGE first if purging, else to the probe.
+///  2. CANCEL_PURGE / OPEN_PURGE: a fixed 5500ms Main hold via
+///     press()+elapsed() rather than HoldUntil, because its success
+///     condition is "the timer ran out" and not a predicate -- same
+///     reasoning as FetchDiagnostics::HOLD_DOWN's fixed 8s hold.
+///     CANCEL_PURGE is followed by an explicit ~400ms settle before the next
+///     tap: a release is silence, so a hold-to-tap transition needs a gap or
+///     the unit reads one unbroken press.
+///  3. PROBE_CHECK / PROBE_WAIT (mhrv_orig's boost_probe): sample line1 for
+///     "Boost Airflow" now; if absent, wait up to 8s for a Boost frame.
+///     line1 alternates every ~3.2-3.5s, so one unlucky sample can catch the
+///     other half of the cycle and the probe needs ~8s to be conclusive.
+///  4. If boosting: tap Main once (bounded by a 4-tap guard), let the tap
+///     and its key_gap clear, wait a further 1s (mhrv_orig's figure -- long
+///     enough for the unit's counter and display to catch up before judging
+///     it), then re-probe. Guard-exhausted-and-still-boosting FAILS rather
+///     than layering the target's presses on top of an unknown count, which
+///     is what mhrv_orig's boost_set silently did instead.
+///  5. APPLY_TAP / APPLY_WAIT: once confirmed Normal, tap Main 0/1/2/3 times
+///     for Normal/Boost30/Boost60/Continuous, queued as a batch and drained
+///     through Keypad's queue exactly as GotoMenu does.
 ///
-/// Accepted edge, chosen deliberately rather than left implicit: purging()'s
-/// sticky ALTERNATION_TIMEOUT_MS window (~12s, status.h) means a purge that
-/// genuinely ended within the last ~12s still reads as "purging" here, so a
-/// PURGE target in that window lands on CHECK_CURRENT's no-op branch and
-/// does nothing rather than re-opening it. That is the SAFE direction of
-/// this trade -- the alternative (trusting a stale "not purging" instead)
-/// risks a wrong-direction 5.5s hold that CANCELS a purge actually still
-/// running, in an occupied house. See CHECK_CURRENT's own comment
-/// (seq_set_airflow_mode.cpp) for the mirror-image reasoning at PROBE_CHECK,
-/// which deliberately does NOT use this same sticky reading.
+/// Accepted edge, chosen deliberately: purging()'s sticky
+/// ALTERNATION_TIMEOUT_MS window (~12s, status.h) means a purge that ended
+/// within the last ~12s still reads as purging, so a PURGE target in that
+/// window no-ops rather than re-opening it. That is the safe direction --
+/// trusting a stale "not purging" instead risks a wrong-direction 5.5s hold
+/// CANCELLING a purge that is actually still running, in an occupied house.
+/// PROBE_CHECK deliberately does NOT use this sticky reading; see its own
+/// comment for the mirror-image reasoning.
 ///
-/// NOT optimistic -- same "the unit's own keypad is also a
-/// valid input device" reasoning as WriteSetting: this sequence only ever
-/// presses keys, it never publishes anything itself. What Home Assistant's
-/// airflow_mode shows comes entirely from the hub's own PASSIVE status-line
-/// decode (VentAxiaHub::publish_airflow_mode_(), vent_axia.cpp) -- the same
-/// boosting()/purging()/boost_time_remaining() the generic binary
-/// sensors/sensors already publish from (status.h) -- so a press at the
-/// unit's own physical keypad shows up in HA exactly the way a command from
-/// HA does, with no read-back step of this sequence's own needed to make
-/// that true. That decode also DELIBERATELY GOES SILENT while a
-/// SetAirflowMode run is the active root sequence (VentAxiaHub::
-/// publish_airflow_mode_()'s own comment) -- normalising walks the unit
-/// through intermediate boost states nobody chose (Boost 30 -> Boost 60 ->
-/// continuous -> Normal is one lap of the counter), and PLAN.md risk 3 is
-/// explicit that HA is expected to keep showing the OLD value for the
-/// ~25-30s a transition can take, with `busy` surfacing that a change is in
-/// flight, rather than visibly walking through every intermediate mode.
+/// NOT optimistic, same as WriteSetting: this sequence only presses keys and
+/// never publishes. HA's airflow_mode comes entirely from the hub's PASSIVE
+/// status-line decode (VentAxiaHub::publish_airflow_mode_()), off the same
+/// boosting()/purging()/boost_time_remaining() the generic sensors already
+/// use, so a press at the unit's physical keypad reaches HA exactly as a
+/// command from HA does. That decode goes SILENT while a SetAirflowMode run
+/// is the active root: normalising walks the unit through boost states
+/// nobody chose (Boost 30 -> 60 -> continuous -> Normal is one lap of the
+/// counter), and HA is meant to keep showing the OLD value for the ~25-30s a
+/// transition takes, with `busy` surfacing that a change is in flight.
 ///
 /// A long-lived hub member, reused for every write -- configure() before
 /// each request(), see on_start() for what resets between runs.
@@ -1406,7 +1375,7 @@ class SetAirflowMode final : public Sequence {
   static constexpr uint32_t CANCEL_SETTLE_MS = 400;
   static constexpr uint32_t PROBE_TIMEOUT_MS = 8000;      // mhrv_orig's boost_probe
   static constexpr uint32_t NORMALISE_SETTLE_MS = 1000;   // mhrv_orig's boost_normalise `delay: 1s`
-  static constexpr uint8_t NORMALISE_GUARD = 4;           // PLAN.md §3
+  static constexpr uint8_t NORMALISE_GUARD = 4;           // one full lap of the unit's own boost counter
 
   // Reopened 13 Aug 2026 against live evidence from 192.168.1.200: a toilet
   // boost held on by a light-linked SWITCHED LIVE (the wired wall/toilet
@@ -1443,10 +1412,9 @@ class SetAirflowMode final : public Sequence {
   // of up to NORMALISE_GUARD taps, plus one FINAL probe after the last tap
   // to learn whether it can stop -- NORMALISE_GUARD+1 probes total, each
   // bounded by PROBE_TIMEOUT_MS regardless of how it resolves (a Boost frame
-  // reappearing, or the timeout itself). An earlier version of this budget
-  // miscounted by omitting that final post-tap probe; TIMEOUT_BUDGET_MS's
-  // headroom absorbs the difference either way (see the static_assert
-  // below), but the +1 is deliberate, not slack.
+  // reappearing, or the timeout itself). The +1 for that final post-tap
+  // probe is deliberate, not slack -- it is easy to drop when re-deriving
+  // this sum, and the budget's headroom would hide the error.
   static constexpr uint8_t NORMALISE_PROBES = NORMALISE_GUARD + 1;
   static constexpr uint8_t MAX_APPLY_TAPS = 3;  // BOOST_CONTINUOUS -- presses_for_()'s own largest case
 
@@ -1489,8 +1457,8 @@ class SetAirflowMode final : public Sequence {
   // one's first comparison. last_airflow_percent_/last_countdown_minutes_
   // hold the most recent after_probe_(true) sample (status::parse_line_values(),
   // the same instantaneous read PROBE_CHECK's own defensive re-check uses --
-  // see seq_set_airflow_mode.cpp:186-201's asymmetry comment for why this is
-  // deliberately NOT status_'s sticky tracker); have_stuck_sample_ is false
+  // see PROBE_CHECK's asymmetry comment for why this is deliberately NOT
+  // status_'s sticky tracker); have_stuck_sample_ is false
   // until the first sample exists, so the very first probe never has anything
   // to compare against and can never itself count as "unmoving".
   std::optional<int> last_airflow_percent_;
@@ -1500,10 +1468,8 @@ class SetAirflowMode final : public Sequence {
 };
 
 // ------------------------------------------------------------- ResetFilter --
-// The last thing built in this component by design (PLAN.md §8 puts it
-// last "for exactly that reason"): the ONE operation with no way back from
-// software. Ported from
-// mhrv_orig/controls.yaml's reset_filter script -- see that file's own
+// The ONE operation with no way back from software, which is why it was
+// built last. Ported from mhrv_orig/controls.yaml's reset_filter script -- see that file's own
 // comment for how the gesture itself (a 5s Up+Down hold on the status
 // screen) was actually established: the manual originally looked
 // undocumented because its button glyphs are embedded images, not a symbol
@@ -1511,77 +1477,52 @@ class SetAirflowMode final : public Sequence {
 
 /// Clears the "Check Filter" reminder and restarts the service countdown
 /// (6/12/18 months, unit-dependent) by holding Up+Down together for a fixed
-/// 5.5s on the status screen -- the same "the protocol is a bitmask, holding
-/// two keys at once is fine" fact FetchDiagnostics' own Up+Main entry combo
-/// already relies on (mhrv_orig/controls.yaml's own comment, carried forward
-/// here). This writes to the unit and restarts the countdown at the full
-/// interval; there is no read-back that could undo it.
+/// 5.5s on the status screen -- the protocol is a bitmask, so holding two
+/// keys at once is fine, the same fact FetchDiagnostics' Up+Main entry combo
+/// relies on (mhrv_orig/controls.yaml). This writes to the unit and restarts
+/// the countdown at the full interval; there is no read-back that undoes it.
 ///
-/// Three steps, in outline (see seq_reset_filter.cpp for the full
-/// step-by-step reasoning):
-///  1. CHECK_STATUS: refuses (no retry -- same reasoning as SetAirflowMode's
-///     own CHECK_CURRENT, seq_set_airflow_mode.cpp) unless the display has a
-///     frame and is showing the status loop, never a menu or diagnostic
-///     screen -- CLAUDE.md's device invariants name this sequence
-///     specifically ("Filter reset verifies the status screen first").
-///     This is the ONE guard standing between a stray press and an
-///     unrecoverable write, so a wrong screen here means refuse outright,
-///     not wait-and-see: a menu screen does not clear itself within a
-///     sequence's patience.
-///  2. HOLD/RELEASE_SETTLE: asserts Up+Down for a fixed 5500ms
-///     (press()+elapsed(), not HoldUntil -- same reasoning as
-///     SetAirflowMode::hold_main_(): "the timer ran out" is the whole
-///     success condition, there is no predicate to watch for), then
-///     releases and settles -- long enough to satisfy the "release is
-///     silence... hold-to-hold transition needs an explicit gap" invariant
-///     before FETCH's own Up+Main entry hold, and to let the display show
-///     whatever the unit answers the gesture with, which gets LOGGED and
-///     never acted on: this model's manual describes no confirmation
-///     prompt, but some other Vent-Axia models are known to answer this
-///     same gesture with a "Reset Filter?" prompt needing a second
-///     keypress, untested on this unit either way. Firing a guessed confirm
-///     press at whatever is on screen would be a worse failure than leaving
-///     an unconfirmed reset alone -- if a prompt ever does show up, this log
-///     line is where a human first sees it, not a code path that reacts to
-///     it.
-///  3. FETCH/VERIFY: chains a FetchDiagnostics run (its OWN dedicated
-///     instance -- see diagnostics_scan_'s own comment below for why this
-///     is NOT the hub's shared button/schedule instance) to re-read every
-///     diagnostic page including 23, then checks filter_hours_source_ for
-///     FOUR distinguishable outcomes, each logged differently -- extending
-///     mhrv_orig's own three-way log with one more case (see hours_before_'s
-///     own comment for why it's needed), because collapsing any of these
-///     into "pass" or "fail" would hide followup a human needs:
-///       - no reading at all (filter_hours_source_ unset, or answers
-///         nullopt) -- cannot confirm either way, WARN.
-///       - a reading of exactly 0 -- the reset did not take, WARN.
-///       - a reading above 0 but EQUAL to hours_before_ (the pre-hold
-///         snapshot) -- unchanged since before the hold, so page 23 was
-///         most likely not re-read by THIS run's scan rather than the reset
-///         having failed; logged with both numbers, WARN, not INFO --
-///         see hours_before_'s own comment for the one case this still
-///         cannot tell apart from a genuine no-op reset.
-///       - a reading above 0 and DIFFERENT from hours_before_ -- confirmed,
-///         the hours logged at INFO.
-///     VERIFY never itself returns FAILED on any of these four outcomes:
-///     the irreversible hold already happened in step 2 by the time VERIFY
-///     runs, so there is nothing left to protect by failing the sequence
-///     here -- only information to log, the same "never hard-fail a read"
-///     philosophy ReadSettings' own class comment describes. A FAILED
-///     result IS still possible for this sequence, but only via FETCH's
-///     await() cascading if the chained FetchDiagnostics itself could not
-///     complete (e.g. never even reached the diagnostic menu) -- a
-///     distinct situation from "reached page 23 and didn't like what it
-///     saw".
+/// Steps (full reasoning in seq_reset_filter.cpp):
+///  1. CHECK_STATUS: refuses, with no retry, unless the display has a frame
+///     and is on the status loop rather than a menu or diagnostic screen.
+///     This is the ONE guard between a stray press and an unrecoverable
+///     write, so a wrong screen means refuse outright, not wait-and-see: a
+///     menu screen does not clear itself within a sequence's patience.
+///  2. HOLD/RELEASE_SETTLE: asserts Up+Down for a fixed 5500ms via
+///     press()+elapsed() rather than HoldUntil (success is "the timer ran
+///     out", not a predicate), then releases and settles. The settle is long
+///     enough for the release-is-silence gap before FETCH's own Up+Main
+///     hold, and long enough to show whatever the unit answers with -- which
+///     is LOGGED and never acted on. This model's manual describes no
+///     confirmation prompt, but other Vent-Axia models answer the same
+///     gesture with a "Reset Filter?" prompt needing a second keypress,
+///     untested here either way. Firing a guessed confirm press at whatever
+///     is on screen would be worse than leaving an unconfirmed reset alone;
+///     if a prompt ever appears, this log line is where a human sees it.
+///  3. FETCH/VERIFY: chains a FetchDiagnostics run on its OWN dedicated
+///     instance (see diagnostics_scan_ for why not the hub's shared one) to
+///     re-read every page including 23, then reads filter_hours_source_ for
+///     four distinguishable outcomes, each logged differently -- collapsing
+///     any of them into "pass"/"fail" would hide followup a human needs:
+///       - no reading at all -- cannot confirm either way, WARN.
+///       - exactly 0 -- the reset did not take, WARN.
+///       - above 0 but EQUAL to hours_before_ (the pre-hold snapshot) --
+///         most likely page 23 was not re-read by this run rather than the
+///         reset failing; logged with both numbers at WARN, not INFO. See
+///         hours_before_ for the one case this cannot tell apart from a
+///         genuine no-op reset.
+///       - above 0 and DIFFERENT from hours_before_ -- confirmed, INFO.
+///     VERIFY never returns FAILED on any of the four: the irreversible hold
+///     already happened in step 2, so there is nothing left to protect by
+///     failing here, only information to log. This sequence CAN still fail,
+///     but only through FETCH's await() cascading when the chained
+///     FetchDiagnostics could not complete at all -- a distinct situation
+///     from "reached page 23 and didn't like what it saw".
 ///
-/// A long-lived hub member, reused on every button press -- see PLAN.md's
-/// "no dynamic allocation in steady state". on_start() resets hours_before_
-/// to the CURRENT filter_hours_source_ reading -- see that member's own
-/// comment for why this run needs to remember it -- and step_/entered_
-/// reset via goto_step()/push_child_() as always; diagnostics_scan_'s own
-/// on_start() (run automatically when FETCH await()s it) resets ITS
-/// per-run state (highest_page_seen_/seen_pages_) the same way it does for
-/// the button's own instance.
+/// A long-lived hub member, reused on every button press: no dynamic
+/// allocation in steady state. on_start() resets hours_before_ to the
+/// CURRENT filter_hours_source_ reading (see that member); diagnostics_scan_
+/// resets its own per-run state in its own on_start() when FETCH await()s it.
 class ResetFilter final : public Sequence {
  public:
   /// Wired to diagnostics_scan_'s own SuccessSink -- a genuine full
@@ -1593,46 +1534,31 @@ class ResetFilter final : public Sequence {
   }
 
   /// Read-only view of the last known filter-hours reading (diagnostic page
-  /// 23, SensorKey::FILTER_HOURS) -- injected the same way SetAirflowMode::
-  /// set_status() and SyncClock::set_time_source() let this file reach
-  /// state that only exists on the other side of the portable-core boundary
-  /// (README "Portable core"): this file never includes
-  /// esphome/components/sensor/sensor.h. The value has to arrive this way
-  /// rather than being read off the diagnostics_scan_ child directly
-  /// because diagnostic decoding is entirely passive -- driven by the hub's
-  /// own on_change callback whenever line1/line2 change while a diagnostic
-  /// page is showing, not by whichever sequence (if any) happens to be
-  /// scrolling the display through it at the time (FetchDiagnostics' own
-  /// class comment: "Decodes nothing itself").
+  /// 23, SensorKey::FILTER_HOURS), injected the same way SetAirflowMode::
+  /// set_status() and SyncClock::set_time_source() are, so this file never
+  /// includes esphome/components/sensor/sensor.h (README "Portable core").
+  /// It cannot be read off the diagnostics_scan_ child directly because
+  /// diagnostic decoding is entirely passive: it is driven by the hub's
+  /// on_change callback whenever line1/line2 change while a diagnostic page
+  /// shows, not by whichever sequence happens to be scrolling through it.
   ///
-  /// nullopt means "never published" -- mirrors sensor::Sensor::has_state()
-  /// being false, the same "no reading from page 23 at all" case
-  /// mhrv_orig/controls.yaml's own reset_filter script checked for
-  /// (`!id(filter_hours).has_state()`). Deliberately carries forward that
-  /// script's one limitation rather than fixing it here: this is the LAST
-  /// known reading, not necessarily one from THIS run's own scan -- if
-  /// diagnostics_scan_ genuinely skipped page 23 (a dropped frame
-  /// mid-scroll) but an earlier run had already published a nonzero value,
-  /// a bare read of this source in VERIFY would see that stale value rather
-  /// than "no reading". A scan-scoped signal would need new per-run
-  /// tracking state on the hub side, since the decode is shared and passive
-  /// rather than owned by whichever sequence is driving the scroll -- a
-  /// larger change than this least-invasive route calls for, and the same
-  /// tradeoff the reference implementation already made.
+  /// nullopt means "never published", mirroring sensor::Sensor::has_state()
+  /// being false -- the same case mhrv_orig/controls.yaml's reset_filter
+  /// checked with `!id(filter_hours).has_state()`. This deliberately carries
+  /// forward that script's limitation: it is the LAST known reading, not
+  /// necessarily one from THIS run's scan. If diagnostics_scan_ skipped page
+  /// 23 (a dropped frame mid-scroll) but an earlier run had published a
+  /// nonzero value, a bare read here would see the stale value rather than
+  /// "no reading". A scan-scoped signal would need new per-run tracking on
+  /// the hub side, since the decode is shared and passive.
   ///
-  /// Most of that gap closes WITHOUT touching the hub at all: on_start()
-  /// snapshots this source's answer
-  /// into hours_before_ BEFORE the hold, and VERIFY compares against it --
-  /// see that member's own comment. What the snapshot buys: a stale-nonzero
-  /// reading (the dangerous direction -- see hours_before_) can no longer
-  /// be reported as a fresh confirmation, because "unchanged from before
-  /// the hold" is now distinguishable from "genuinely re-read and still the
-  /// same". What it does NOT buy: it cannot prove page 23 WAS re-read this
-  /// run, only that the value moved (or didn't) -- so a scan that misses
-  /// page 23 twice in a row (before AND after the hold) would still read as
-  /// "unchanged", not "no reading". Still strictly better than a bare read
-  /// of this source, and cheap: one extra int stored per run, no new hub
-  /// state.
+  /// Most of that gap closes without touching the hub: on_start() snapshots
+  /// this source into hours_before_ BEFORE the hold and VERIFY compares
+  /// against it, so a stale-nonzero reading -- the dangerous direction, see
+  /// hours_before_ -- can no longer be reported as a fresh confirmation.
+  /// What it does not buy: it cannot prove page 23 WAS re-read, only that
+  /// the value moved, so a scan missing page 23 both before AND after the
+  /// hold still reads as "unchanged" rather than "no reading".
   using FilterHoursSource = std::function<std::optional<int>()>;
   void set_filter_hours_source(FilterHoursSource source) { this->filter_hours_source_ = std::move(source); }
 

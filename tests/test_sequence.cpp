@@ -65,9 +65,8 @@ class ScriptedSequence final : public Sequence {
 
 // ================================================================ Runner --
 // The engine itself: stack, timeout, propagation, the fixed depth, request()'s
-// two refusals, and the Set interlock now enforced here (PLAN.md §7 -- moved
-// from vent_axia.cpp so it is testable at all, see sequence.h's comment on
-// Runner::tap()).
+// two refusals, and the Set interlock -- enforced here rather than in
+// vent_axia.cpp so it is testable at all, see sequence.h's Runner::tap().
 
 TEST_CASE(a_root_sequence_runs_to_completion_and_on_finish_sees_done) {
   Keypad kp;
@@ -130,8 +129,7 @@ TEST_CASE(on_finish_runs_on_a_timeout_too_and_recover_releases_the_key) {
   // Rounds out "on_finish runs on every exit path": success is the first
   // test above, a child's failure cascading is the second, this is the
   // third -- a root that never finishes on its own, caught by Runner's
-  // per-root backstop (PLAN.md §2 "Sequence timeout"), not by anything the
-  // sequence itself does.
+  // per-root timeout backstop, not by anything the sequence itself does.
   Keypad kp;
   Display disp;
   Runner runner(kp, disp);
@@ -240,7 +238,7 @@ TEST_CASE(request_refuses_when_the_link_is_down) {
   CHECK_EQ(seq.start_count, 0);
 }
 
-// A link drop mid-run (PLAN.md §7 "Link loss"): request() only refuses to
+// A link drop mid-run: request() only refuses to
 // START a run while the link is down (the test above) -- these three cover
 // what happens when link_up_ goes false AFTER a run is already under way,
 // which nothing checked at all before this fix, leaving the ROOT timeout as
@@ -688,7 +686,7 @@ TEST_CASE(leave_menu_issues_exactly_one_up_tap) {
 }
 
 TEST_CASE(leave_menu_issues_no_up_tap_while_an_editor_is_open) {
-  // Finding 1's structural backstop, on the primitive directly: with
+  // The structural backstop, on the primitive directly: with
   // Display::editor_open() true at TAP time, LeaveMenu must press NOTHING
   // -- Up here would adjust the field under the cursor instead of
   // navigating out (the class comment's 14C->19C observation), so the
@@ -744,9 +742,9 @@ TEST_CASE(leave_menu_waits_out_the_unit_timeout_rather_than_pressing_again) {
   kp.set_frame_sink(sink.as_frame_sink());
 
   // Age the display past Display::editor_open()'s own ~1200ms settle window
-  // before starting LeaveMenu -- stage 7a made LeaveMenu's own TAP step
-  // check editor_open() before pressing anything (Finding 1's structural
-  // backstop), and this fixture's single update() at t=0 would otherwise
+  // before starting LeaveMenu. LeaveMenu's TAP step checks editor_open()
+  // before pressing anything, and this fixture's single update() at t=0
+  // would otherwise
   // read as a freshly-opened editor for its own first ~1200ms purely because
   // the frame is new, not because anything is actually being edited -- the
   // exact false positive Display::editor_open()'s own class comment warns
@@ -803,7 +801,7 @@ TEST_CASE(fetch_diagnostics_completes_and_tracks_the_highest_page_actually_seen)
 
   // 3: the unit's own auto-repeat would walk every page; simulate it
   // passing through a few, ending on the highest one this firmware has
-  // (27, never a hardcoded 28 -- PLAN.md §3/§7).
+  // (27, never a hardcoded 28).
   disp.update(vatest::pad16("Diagnostic  05"), vatest::pad16(""), clock.now);
   clock.advance(1000);
   disp.update(vatest::pad16("Diagnostic  12"), vatest::pad16(""), clock.now);
@@ -833,8 +831,8 @@ TEST_CASE(fetch_diagnostics_completes_and_tracks_the_highest_page_actually_seen)
 }
 
 TEST_CASE(fetch_diagnostics_releases_and_settles_before_the_fresh_exit_hold) {
-  // The essential, non-obvious behaviour PLAN.md calls out: holding Up
-  // straight through from page 00 never exits, so step 6 must be a genuine
+  // The essential, non-obvious behaviour: holding Up straight through from
+  // page 00 never exits, so step 6 must be a genuine
   // release-and-settle, not a no-op on the way to step 7's hold.
   Keypad kp;
   Display disp;
@@ -924,8 +922,8 @@ TEST_CASE(fetch_diagnostics_leaves_real_silence_between_the_down_and_up_holds) {
 }
 
 // ===================================================== editing model (6) --
-// OpenEditor, AdjustField, ExitEditChain -- PLAN.md's "The unit's editing
-// model". Set is the only key ever safe once an editor is open, so these
+// OpenEditor, AdjustField, ExitEditChain -- the unit's editing model. Set
+// is the only key ever safe once an editor is open, so these
 // three are the only things in the component allowed to open one, adjust a
 // value inside one, or walk one closed.
 
@@ -977,7 +975,7 @@ TEST_CASE(adjust_field_respects_its_guard_limit_rather_than_looping_forever) {
   kp.set_frame_sink(sink.as_frame_sink());
 
   // Line2 never moves -- simulates a value the unit refuses to accept
-  // (PLAN.md risk 6) or a run of dropped presses. Summer Mode's own guard
+  // or a run of dropped presses. Summer Mode's own guard
   // (3, mhrv_orig/summer_bypass.yaml) so the test does not need to simulate
   // 40 stuck taps.
   disp.update(vatest::pad16("Summer Mode"), vatest::pad16("Off"), 0);
@@ -1068,11 +1066,10 @@ TEST_CASE(adjust_field_tolerates_a_blank_or_blinking_frame_without_erroring_or_r
 }
 
 TEST_CASE(adjust_field_reports_an_unavailable_target_through_an_installed_log_sink) {
-  // Finding 2 (stage 7a): AdjustField grew a log_ member and this exact
-  // error, but nothing ever called set_log_sink() on any of the AdjustField
-  // members that reuse it (SyncClock::adjust_field_, WriteSetting::
-  // adjust_field_) -- so the one genuinely new failure mode that stage
-  // introduced logged nothing at all. AdjustField (like every other
+  // AdjustField once carried its own log_ member and this exact error, but
+  // nothing ever called set_log_sink() on the AdjustField members that reuse
+  // it (SyncClock::adjust_field_, WriteSetting::adjust_field_), so this
+  // failure mode logged nothing at all. AdjustField (like every other
   // Sequence) now reaches the log through its Runner rather than carrying
   // its own sink, so there is nothing left to forward and this failure mode
   // cannot go unwired again -- this is a direct unit test of AdjustField
@@ -1333,7 +1330,7 @@ TEST_CASE(write_setting_runs_navigate_open_adjust_commit_exit_readback_in_order)
 }
 
 TEST_CASE(write_setting_reaches_exit_edit_chain_on_the_outdoor_hop_failure_path) {
-  // PLAN.md: Outdoor Temp's hop can leave an editor open whether or not it
+  // Outdoor Temp's hop can leave an editor open whether or not it
   // landed on the right screen, so EXIT_CHAIN must be reached even when the
   // hop fails -- this is the failure-path half of the funnel design (the
   // success half is exercised, less directly, by the SUMMER_MODE test
@@ -1371,7 +1368,7 @@ TEST_CASE(write_setting_reaches_exit_edit_chain_on_the_outdoor_hop_failure_path)
 
   // HOP_COMMIT taps Set to step past Indoor Temp -- but the display never
   // shows "Outdoor Temp" (simulating the chain closing outright instead of
-  // advancing, which PLAN.md records as an observed real outcome). This is
+  // advancing, an observed real outcome). This is
   // a plain runner_->tap(), not OpenEditor, so it fires exactly once; give
   // it time to fire, then let WAIT_HOP_SCREEN's 3000ms timeout elapse.
   clock.advance(500);

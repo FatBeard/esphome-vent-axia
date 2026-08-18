@@ -7,10 +7,10 @@ namespace vent_axia {
 
 // The complete type SettingSpec is forward-declared in sequence.h (WriteSetting
 // only ever holds a pointer to one) and defined here, alongside the table
-// that is the whole point of it: PLAN.md §2's "one class... three table
-// rows, not three near-identical copies" -- Summer Mode, Indoor Temp and
-// Outdoor Temp differ only in these six fields, everything else about
-// writing them is identical and lives in WriteSetting::poll() below.
+// that is the whole point of it: one class, three table rows, not three
+// near-identical copies -- Summer Mode, Indoor Temp and Outdoor Temp differ
+// only in these six fields, everything else about writing them is identical
+// and lives in WriteSetting::poll() below.
 struct SettingSpec {
   SettingId id;
   uint8_t menu_index;          // GotoMenu target for NAVIGATE/VERIFY
@@ -105,12 +105,11 @@ Poll WriteSetting::poll() {
       return this->await(this->goto_menu_, VERIFY);
 
     // Right screen, and a value that actually parsed AND is fresh -- newer
-    // than nav_started_ms_, PLAN.md's "Reading a value off the screen",
-    // same reasoning ReadSettings' plain screens use. Nothing has been
-    // committed yet at this point (Set has not been pressed), so a straight
-    // FAILED here is safe: the display is still on a menu screen and
-    // Runner::recover()'s own single Up tap is exactly the right unwind --
-    // no ExitEditChain needed.
+    // than nav_started_ms_, same reasoning ReadSettings' plain screens use.
+    // Nothing has been committed yet at this point (Set has not been
+    // pressed), so a straight FAILED here is safe: the display is still on
+    // a menu screen and Runner::recover()'s own single Up tap is exactly the
+    // right unwind -- no ExitEditChain needed.
     case VERIFY: {
       if (this->runner_->display().screen_kind() != this->spec_->screen) {
         return this->elapsed() < VERIFY_TIMEOUT_MS ? Poll::RUNNING : Poll::FAILED;
@@ -134,7 +133,7 @@ Poll WriteSetting::poll() {
     case HOP_COMMIT:
       // Commits Indoor Temp's value UNTOUCHED -- AdjustField has not run
       // yet, so this is a no-op write, safe precisely because nothing has
-      // touched the value being committed (PLAN.md).
+      // touched the value being committed.
       return this->tap_then_(SET, WAIT_HOP_SCREEN);
 
     case WAIT_HOP_SCREEN:
@@ -143,9 +142,9 @@ Poll WriteSetting::poll() {
       }
       if (this->elapsed() >= HOP_SCREEN_TIMEOUT_MS) {
         // Did not land on Outdoor Temp -- the chain's shape is not
-        // guaranteed (PLAN.md). An editor may still be open on whatever
-        // screen this is either way, so EXIT_CHAIN runs regardless -- see
-        // class comment on ok_.
+        // guaranteed. An editor may still be open on whatever screen this
+        // is either way, so EXIT_CHAIN runs regardless -- see class comment
+        // on ok_.
         if (this->log().warn) {
           this->log().warn("WriteSetting: did not land on Outdoor Temp after the Indoor Temp hop -- nothing written "
                            "(line1='" +
@@ -159,17 +158,15 @@ Poll WriteSetting::poll() {
     case ADJUST:
       this->adjust_field_.reset(this->spec_->parse, this->spec_->direction, this->target_, this->spec_->guard_limit);
       return this->await(this->adjust_field_, COMMIT);
-      // AdjustField's own failure (guard exhausted -- PLAN.md risk 6, a
-      // value the unit refuses looks identical to a dropped press until the
-      // guard trips) cascades straight to on_finish(FAILED) WITHOUT reaching
+      // AdjustField's own failure (guard exhausted -- a value the unit
+      // refuses looks identical to a dropped press until the guard trips)
+      // cascades straight to on_finish(FAILED) WITHOUT reaching
       // COMMIT/EXIT_CHAIN. That is fine here specifically: the editor is
       // still open on the field itself (never Outdoor Temp's special case),
       // so Runner::recover()'s single Up tap would still be wrong against an
-      // open editor -- but this is the one gap in "always funnel through
-      // ExitEditChain" this stage accepts, see the report for why: it is
-      // shared by every path that awaits a primitive capable of leaving an
-      // editor open, not special to this one, and PLAN.md's own recover()
-      // has the identical property already.
+      // open editor -- but this is a gap shared by every path that awaits a
+      // primitive capable of leaving an editor open, not special to this
+      // one, and Runner::recover() itself has the identical property.
 
     case COMMIT:
       return this->tap_then_(SET, SETTLE);
@@ -194,11 +191,9 @@ Poll WriteSetting::poll() {
       return this->ok_ ? Poll::DONE : Poll::FAILED;
 
     // step_ somehow outside the Step enum -- a bug, not a legitimate landing
-    // state (every real step above has its own explicit case, including
-    // FINISHED). Previously fell through to `return Poll::DONE;`, which for
-    // THIS sequence specifically means reporting a write as landed when
-    // nothing was necessarily pressed -- the exact failure mode this whole
-    // change exists to close. FAILED routes through Runner::recover() instead.
+    // state. Reporting DONE here would mean reporting a write as landed when
+    // nothing was necessarily pressed, so FAILED routes through
+    // Runner::recover() instead.
     default:
       if (this->log().error) {
         this->log().error("WriteSetting: invalid step " + std::to_string(static_cast<int>(this->step_)));

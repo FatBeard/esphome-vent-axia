@@ -74,7 +74,7 @@ Poll FetchDiagnostics::poll() {
     // 3: hold Down for a fixed 8s. Deliberately NOT a HoldUntil: the unit's
     // own auto-repeat walks the whole menu in ~2s on its own, so 8s
     // comfortably covers every page, and each one publishes as it passes
-    // through the passive decode already built in stage 3 (see
+    // through the passive decode (see
     // track_page_() -- this sequence does not decode anything itself). A
     // HoldUntil's timeout means FAILED; here running out the clock is the
     // normal, successful outcome, so it does not fit that primitive.
@@ -88,16 +88,15 @@ Poll FetchDiagnostics::poll() {
 
     // 4: release, and actually wait out a release before holding Up.
     //
-    // This settle is load-bearing, and its absence is easy to miss because
-    // the code reads as if release() takes effect at once. It does not: the
-    // hub runs keypad_.loop() *before* runner_.loop(), so going straight from
-    // this step into an Up hold would leave only a single ~16ms tick of
-    // silence between the two masks. A release is *only* silence on this
-    // protocol -- there is no key-up frame -- and 16ms is far below what the
-    // unit needs to see one, which is why key_gap is 400ms. The unit would
-    // read Down-then-Up as one unbroken press, never register the Up, and
-    // the page-00 hold below would time out with the display abandoned in the
-    // diagnostic menu: precisely the old component's failure.
+    // This settle is load-bearing: release() does not take effect instantly
+    // for the purposes of the unit seeing it. The hub runs keypad_.loop()
+    // *before* runner_.loop(), so going straight from this step into an Up
+    // hold would leave only a single ~16ms tick of silence between the two
+    // masks -- far below the ~400ms key_gap the unit needs to see a release
+    // (there is no key-up frame; a release is *only* silence). Without this
+    // settle the unit reads Down-then-Up as one unbroken press, never
+    // registers the Up, and the page-00 hold below times out with the
+    // display abandoned in the diagnostic menu.
     //
     // Any future sequence moving directly from one hold to another needs the
     // same treatment; taps get their gap for free from the keypad, holds do
@@ -125,30 +124,25 @@ Poll FetchDiagnostics::poll() {
 
     // 7: the fresh hold, per the comment above -- until the display leaves
     // the diagnostic menu entirely (line1 no longer starts "Diagnostic"),
-    // never a hardcoded terminator page. The old component waited for the
-    // literal string "Diagnostic  28", which does not exist on firmware
-    // V32/05 (it stops at 27), so it timed out after 60s and abandoned the
-    // display in the menu -- see on_finish() for how the real highest page
-    // actually seen is reported instead. Timeout 15s.
+    // never a hardcoded terminator page. Page 28 does not exist on firmware
+    // V32/05 (it stops at 27); a scrape that waited for it timed out after
+    // 60s and abandoned the display in the menu -- see on_finish() for how
+    // the real highest page actually seen is reported instead. Timeout 15s.
     case EXIT:
       this->hold_.reset(
           UP, [this] { return !screens::is_diagnostic_screen(this->runner_->display().raw_line1()); }, EXIT_TIMEOUT_MS);
       return this->await(this->hold_, FINISHED);
 
-    // Reached once EXIT's hold_ succeeds (await() resumes here) -- previously
-    // relied on falling through to default: below, which meant this landing
-    // case was indistinguishable from a genuinely out-of-range step_. Made
-    // explicit so default: can be reserved for that latter, actually-a-bug
-    // case (see its own comment).
+    // Reached once EXIT's hold_ succeeds (await() resumes here) -- kept
+    // distinct from default: below so that case stays reserved for a
+    // genuinely out-of-range step_.
     case FINISHED:
       return Poll::DONE;
 
     // step_ somehow outside the Step enum -- a bug (memory corruption, or a
     // future edit that renumbers steps without updating every case), not a
-    // legitimate landing state. Previously returned DONE here, which reported
-    // success for a sequence that had gone off the rails; FAILED routes
-    // through Runner::recover() instead, so a corrupt run gets unwound rather
-    // than silently "succeeding".
+    // legitimate landing state. FAILED routes through Runner::recover(), so
+    // a corrupt run gets unwound rather than silently "succeeding".
     default:
       if (this->log().error) {
         this->log().error("FetchDiagnostics: invalid step " + std::to_string(static_cast<int>(this->step_)));
@@ -172,10 +166,10 @@ void FetchDiagnostics::on_finish(Poll result) {
   const int captured = this->count_seen_pages_();
   if (this->log().info) {
     // "of" is derived from the highest page number actually seen this run,
-    // never a hardcoded constant that could go stale on a firmware update
-    // (PLAN.md §3/§7 -- see the class comment). A mismatch between the two
-    // numbers, e.g. "26 of 28", means a page was skipped mid-scroll, which
-    // is worth knowing and would otherwise be completely invisible.
+    // never a hardcoded constant that could go stale on a firmware update. A
+    // mismatch between the two numbers, e.g. "26 of 28", means a page was
+    // skipped mid-scroll, which is worth knowing and would otherwise be
+    // completely invisible.
     this->log().info("FetchDiagnostics: captured " + std::to_string(captured) + " of " + std::to_string(of) +
                      " pages (highest " + std::to_string(this->highest_page_seen_) + ")");
   }

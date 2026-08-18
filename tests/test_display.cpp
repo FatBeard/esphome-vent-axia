@@ -53,10 +53,10 @@ TEST_CASE(lines_are_deduplicated_independently) {
 
 // non_printable_glyphs_are_replaced_with_asterisk (this test's pre-stage-16
 // name) asserted the single-lane collapse: EVERY non-printable byte reads
-// back as the same '*', which is precisely the many-to-one ambiguity
-// DISPLAY-REVIEW.md §4/§5 identifies and stage 16 removes. That premise is
-// gone -- replaced below with the two-lane behaviour: the raw lane keeps
-// the byte exactly, the text lane renders it distinguishably.
+// back as the same '*' -- a many-to-one ambiguity that made two distinct
+// bytes in one column indistinguishable. That premise is gone, replaced
+// below with the two-lane behaviour: the raw lane keeps the byte exactly,
+// the text lane renders it distinguishably.
 TEST_CASE(raw_lane_keeps_the_byte_text_lane_renders_it) {
   Display display;
   std::string line1 = "Auto";
@@ -78,7 +78,7 @@ TEST_CASE(raw_lane_keeps_the_byte_text_lane_renders_it) {
   CHECK_EQ(display.text_line1(), std::string("Auto<07>           "));
 }
 
-// THE latent bug DISPLAY-REVIEW.md §5 identifies: deduplicating on a lossy
+// THE latent bug this guards against: deduplicating on a lossy
 // representation (sanitize()'s old '*' collapse, or any other many-to-one
 // map) makes a change from one non-printable byte to a DIFFERENT
 // non-printable byte in the SAME column invisible, because both collapse to
@@ -157,9 +157,8 @@ TEST_CASE(editor_open_reopens_on_a_fresh_line2_change) {
 }
 
 // to_utf8() -- the byte->UTF-8 transcode table (display.h), built on the
-// single measured code this unit has (glyphs::ALPHA = 0xE0, PLAN.md §8
-// stage 15) and hex-escaping everything else rather than guessing from a
-// datasheet. See DISPLAY-REVIEW.md §5's table for the design.
+// single measured code this unit has (glyphs::ALPHA = 0xE0, captured live)
+// and hex-escaping everything else rather than guessing from a datasheet.
 
 TEST_CASE(to_utf8_passes_ascii_through_unchanged) {
   CHECK_EQ(to_utf8("Status          "), std::string("Status          "));
@@ -206,7 +205,7 @@ TEST_CASE(to_utf8_a_mixed_line_combines_all_three_cases) {
 
 TEST_CASE(to_utf8_output_never_contains_a_nul_byte) {
   // A literal 0x00 anywhere in the result would truncate anything passing
-  // it through .c_str() downstream (DISPLAY-REVIEW.md §4) -- every
+  // it through .c_str() downstream -- every
   // 0x00-0x1F control byte must come out as a multi-character hex escape,
   // never as itself.
   std::string line(16, '\0');
@@ -219,9 +218,9 @@ TEST_CASE(to_utf8_output_never_contains_a_nul_byte) {
 // Only the pure formatter is covered here: the gating/rate-limit logic that
 // calls it lives in vent_axia.cpp, which tests/CMakeLists.txt deliberately
 // excludes from the host build (it pulls in ESPHome headers), so it is
-// verified only by the firmware compiles and, eventually, a live capture --
-// see DISPLAY-INSTRUMENTATION-PLAN.md §4. Not restructuring the core just to
-// make that two-line comparison testable.
+// verified only by the firmware compiles and, eventually, a live capture.
+// Not restructuring the core just to make that two-line comparison
+// testable.
 
 TEST_CASE(describe_unprintable_returns_empty_for_all_ascii) {
   CHECK_EQ(describe_unprintable("Status          "), std::string(""));

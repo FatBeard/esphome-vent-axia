@@ -1,10 +1,9 @@
 #pragma once
 
 // Numeric and text field extraction ported from mhrv_orig/vask_decode.h,
-// verbatim in rule if not in code shape (see PLAN.md §4). Plain C++17, no
-// ESPHome headers -- see README "Portable core". Used directly by this
-// stage (status.cpp) and, per PLAN.md §4, heavily by stage 3's diagnostic
-// page table -- every page field goes through parse_field.
+// verbatim in rule if not in code shape. Plain C++17, no ESPHome headers --
+// see README "Portable core". Used by status.cpp and heavily by the
+// diagnostics page table -- every page field goes through parse_field.
 
 #include <cstddef>
 #include <string>

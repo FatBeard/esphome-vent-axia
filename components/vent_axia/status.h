@@ -4,9 +4,6 @@
 // messages is currently showing, and what line2's numeric fields (airflow %,
 // boost/purge countdown) currently read. Plain C++17, no ESPHome headers --
 // see README "Portable core".
-//
-// This is new capability: the setup this replaces never decoded the status
-// line at all, only republished it as raw text (PLAN.md §4).
 
 #include <cstdint>
 #include <optional>
@@ -41,69 +38,35 @@ enum class LineMessage {
 /// not consistent about case.
 LineMessage classify_line(const std::string &line1);
 
-/// True when the status screen's line2 is showing the sensor-boost
-/// annunciator at column 15 (the last of 16). The Sentinel Kinetic manual:
-/// "If the installation has proportional sensors or an internal humidity
-/// sensor fitted, and any of these are boosting the airflow, an alpha symbol
-/// will be displayed." The alpha glyph is byte glyphs::ALPHA (0xE0 --
-/// display.h), measured live on this unit 18 Aug 2026 (PLAN.md §8 stage 15's
-/// `GET /events` capture during a real humidity boost: raw frame line2
-/// non-ASCII byte `col 15=0xE0`). This reads line2 from the RAW lane
-/// (Display::raw_line2()) directly, an exact byte comparison, not a scan of
-/// a sanitised or transcoded copy.
+/// True when the status screen's line2 shows the sensor-boost annunciator at
+/// column 15 (the last of 16). The Sentinel Kinetic manual: "If the
+/// installation has proportional sensors or an internal humidity sensor
+/// fitted, and any of these are boosting the airflow, an alpha symbol will
+/// be displayed." The glyph is byte glyphs::ALPHA (0xE0, display.h),
+/// measured live 18 Aug 2026 during a real humidity boost (`GET /events`
+/// capture: raw line2 non-ASCII byte at col 15 = 0xE0). Reads line2 from the
+/// RAW lane (Display::raw_line2()), an exact byte comparison, not a
+/// sanitised/transcoded copy.
 ///
-/// Column 15 exactly, not a scan of the whole line: that is where the byte
-/// was measured, and the raw lane now makes a whole-line scan technically
-/// possible without the many-to-one ambiguity a sanitised copy used to
-/// carry -- but nothing has ever measured this unit showing glyphs::ALPHA
-/// anywhere else on the line, so widening the scan would be reasoning ahead
-/// of a capture, the exact discipline PLAN.md §8 stage 14's withdrawn 31%
-/// evidence strand argues against. The column itself was measured, not
-/// guessed: line1 is a full 16 characters, giving a pitch of 45.4 px/char
-/// from a captured screenshot ('S' at x=161 to 'n' at x=845 in "Summer
-/// Bypass On"), and the annunciator's own glyph run sits at x=840-878 --
-/// column 15, the last column, on a captured frame reading line1 "Summer
-/// Bypass On" / line2 "31%            *" (that percentage published under
-/// the pre-stage-16 sanitize()'d pipeline, the byte itself unconfirmed at
-/// the time -- see the CONFIRMED LIVE paragraph below for when it was).
+/// Column 15 exactly, not a whole-line scan: measured from a captured
+/// screenshot (16 chars at 45.4 px/char; the annunciator glyph sits at
+/// x=840-878, the last column) and never observed elsewhere on this unit,
+/// so widening the scan would be reasoning ahead of a capture.
 ///
-/// CORRECTED 17 Aug 2026, on the post-flash capture: that 31% was
-/// originally offered as a third line of evidence, on the reading that it
-/// was "neither this unit's Normal 18% nor Boost 48%" and therefore a
-/// proportional rate between the two. That was wrong. 18% is this unit's
-/// LOW airflow rate, not its normal one (PLAN.md §8 stage 9 records line1
-/// "Low Airflow" alongside line2 "18%"); the live capture immediately after
-/// flashing showed line1 "Normal Airflow" with line2 "30%" and column 15
-/// blank. So 31% sits one point above the normal rate, not between two
-/// rates, and carries almost no evidential weight on its own -- consistent
-/// with a proportional ramp that has barely started, but indistinguishable
-/// at that margin from ordinary variation. The decode does NOT rest on it:
-/// the manual's own wording and sanitize()'s alpha -> '*' mapping are what
-/// support this, and both are independent of any percentage. Recorded
-/// rather than quietly deleted because the mistake -- reading a Low rate as
-/// a Normal one -- is the kind that would otherwise be made again.
+/// Confirmed on a real humidity boost 17 Aug 2026 (indoor humidity 74%):
+/// line1 alternated "Normal Airflow"/"Summer Bypass On" and never showed
+/// "Boost Airflow", so on this unit a sensor boost is invisible everywhere
+/// except column 15 -- the whole reason this function exists. The airflow
+/// rate also modulated (36% -> 34%) while line1 held, consistent with
+/// proportional control. (This unit's Low/Normal/Boost rates run roughly
+/// 18%/30%/48%.)
 ///
-/// CONFIRMED LIVE 17 Aug 2026, on a real humidity boost (PLAN.md §8 stage
-/// 14's live-confirmation notes): line2 read "36%            *" with indoor
-/// humidity at 74%, i.e. this function firing on the actual hardware and not
-/// only on a screenshot. Two facts from that capture matter here. Line1 read
-/// "Normal Airflow" (alternating with "Summer Bypass On") and never "Boost
-/// Airflow" -- so on this unit a sensor boost is invisible everywhere except
-/// column 15, which is the whole reason this function exists. And the rate
-/// modulated, 36% -> 34%, while line1 and the humidity readout both held --
-/// which is the proportional-control evidence the withdrawn 31% strand above
-/// was reaching for, and unlike that strand it comes from movement rather
-/// than from one reading next to a remembered baseline.
-///
-/// This is deliberately NOT the same annunciator PLAN.md §8 stage 10
-/// recorded: `ls` at columns 14-15 (`48%           ls`), seen only while
-/// Main was being tapped during a switched-live boost. Checking line2[15]
-/// alone against glyphs::ALPHA cannot match "ls" (column 15 there holds
-/// 's' == 0x73, not 0xE0), so the two are structurally distinct rather
-/// than merely coincidentally different in the captures seen so far.
+/// Distinct from the `ls` annunciator seen at columns 14-15 during a
+/// switched-live boost while Main was being tapped (`48%           ls`):
+/// column 15 there is 's' (0x73), not 0xE0, so the two cannot collide.
 ///
 /// The size guard exists because protocol::LINE_LEN is a fixed 16,
-/// space-padded characters on the wire (protocol.h:19,51), but the host
+/// space-padded characters on the wire (see protocol.h), but the host
 /// tests (and conceivably a not-yet-fully-arrived frame) pass shorter
 /// strings.
 bool has_sensor_boost_annunciator(const std::string &line2);
@@ -118,15 +81,13 @@ struct LineValues {
 /// Extracts airflow %, a countdown and the Purge keyword from BOTH display
 /// lines.
 ///
-/// UNRESOLVED, and deliberately coded around: the captured notes this is
-/// ported from (mhrv_orig/vent-axia-esphome-project.md, "Boost and Purge")
-/// record `Purge      120 m` / `100%` as the purge display but do not
-/// establish which physical line carries which half. So this scans both
-/// lines for a `NN%`/`NNN%` percentage, a `<digits>[ ]m` countdown and the
-/// word "Purge", wherever any of them land, instead of assuming a layout.
-/// This will get settled by observation once purge is exercised on real
-/// hardware (PLAN.md risk 4); guessing a fixed layout now would be worse
-/// than scanning both lines for everything.
+/// UNRESOLVED, deliberately coded around: the captured notes this is ported
+/// from (mhrv_orig/vent-axia-esphome-project.md, "Boost and Purge") record
+/// `Purge      120 m` / `100%` as the purge display but do not establish
+/// which physical line carries which half. So this scans both lines for a
+/// `NN%`/`NNN%` percentage, a `<digits>[ ]m` countdown and the word "Purge",
+/// wherever any land, rather than assuming a layout -- to be settled once
+/// purge is exercised on real hardware.
 LineValues parse_line_values(const std::string &line1, const std::string &line2);
 
 /// Sticky decode of the status loop's flags -- the hard part, and the reason
@@ -135,33 +96,27 @@ LineValues parse_line_values(const std::string &line1, const std::string &line2)
 /// Line1 *alternates* (see classify_line), so at any instant most flags are
 /// simply not visible in the current frame. A flag going false is therefore
 /// a timeout decision, never "not seen in this frame": the latter would
-/// make every flag flicker false on every other ~3.2-3.5s frame purely
-/// because it wasn't that message's turn.
+/// flicker every flag false on every other ~3.2-3.5s frame purely because
+/// it wasn't that message's turn.
 ///
-/// The aging clock only advances while the display is actually on the
-/// status screen (the `is_status_screen` argument to update()). If a
-/// diagnostics fetch or a clock sync has parked the display in a menu for
-/// 20s, that time must not be spent against any flag's timeout -- it would
-/// otherwise read as, say, the bypass having closed, when all that happened
-/// is the display looked elsewhere for a while.
+/// The aging clock only advances while the display is on the status screen
+/// (the `is_status_screen` argument to update()). If a diagnostics fetch or
+/// clock sync has parked the display in a menu for 20s, that time must not
+/// count against any flag's timeout -- it would otherwise read as, say, the
+/// bypass closing, when the display just looked elsewhere for a while.
 ///
-/// Continuous boost IS modelled here, via continuous_boost() -- reopened
-/// 13 Aug 2026 against live evidence from 192.168.1.200 (see the plan this
-/// shipped under). The original reasoning was that continuous boost shows
-/// only a plain airflow percentage on line2, indistinguishable from a high
-/// Normal rate -- true, but beside the point: line1's "Boost Airflow" is
-/// the discriminator boosting() itself already trusts, and continuous_boost()
-/// rests on nothing new -- it is boosting_ staying true for
+/// Continuous boost is modelled via continuous_boost(): line1's "Boost
+/// Airflow" is the discriminator boosting() already trusts, and
+/// continuous_boost() rests on nothing new -- boosting_ staying true for
 /// CONTINUOUS_CONFIRM_MS with no countdown ever parsed in the same episode.
-/// The one real hazard is a TIMED boost's own expiry: its countdown vanishes
-/// from line2 immediately, but boosting_ (sticky for ALTERNATION_TIMEOUT_MS)
+/// The hazard is a TIMED boost's own expiry: its countdown vanishes from
+/// line2 immediately, but boosting_ (sticky for ALTERNATION_TIMEOUT_MS)
 /// does not drop for up to that long afterwards, so a naive "no countdown"
 /// check would report continuous on every timed-boost expiry.
 /// CONTINUOUS_CONFIRM_MS, required to exceed ALTERNATION_TIMEOUT_MS (see its
 /// own comment), is what tells a genuine continuous episode apart from that
 /// trailing window. boost_time_remaining() stays unpublished (nullopt)
-/// whenever no countdown was parsed -- continuous boost included -- and
-/// that remains correct: there really is no countdown to report.
+/// whenever no countdown was parsed -- continuous boost included.
 class StatusTracker {
  public:
   /// Bypass is the one flag the old config had hard data for
@@ -178,40 +133,32 @@ class StatusTracker {
   static constexpr uint32_t ALTERNATION_TIMEOUT_MS = 12000;
 
   /// Must EXCEED ALTERNATION_TIMEOUT_MS. At a timed boost's expiry, line2's
-  /// countdown vanishes immediately, but boosting_ (a Flag whose own timeout
-  /// IS ALTERNATION_TIMEOUT_MS) stays sticky-true for up to that long
+  /// countdown vanishes immediately, but boosting_ (timeout
+  /// ALTERNATION_TIMEOUT_MS) stays sticky-true for up to that long
   /// afterwards -- it only ages out once "Boost Airflow" has genuinely
   /// stopped arriving for a full ALTERNATION_TIMEOUT_MS. Any confirm window
   /// <= ALTERNATION_TIMEOUT_MS would therefore report continuous boost on
-  /// every single timed-boost expiry, not just a genuine continuous episode.
-  /// Measured 13 Aug 2026 on the live unit (192.168.1.200), on a real
-  /// switch-driven continuous boost actually ending: 14.0s elapsed from the
-  /// LAST "Boost Airflow" frame (21:20:49) to boosting() finally dropping to
-  /// false (21:21:03) -- against a nominal ALTERNATION_TIMEOUT_MS of 12000ms,
-  /// a full 2s over. (The extra ~2s is most likely client-side SSE/
-  /// timestamping jitter rather than the unit itself, but this is not tuned
-  /// to within 1s of an empirically observed edge on the strength of an
-  /// assumption about where that jitter came from.) The same capture also
-  /// showed line1 and line2 changing in the SAME frame at the moment boost
-  /// actually ended ("Boost Airflow"/"48%...m" -> "Low Airflow"/"18%" -- both
-  /// lines moved together) -- confirming the countdown's disappearance is
-  /// the right trigger for starting this accumulator's clock, not a separate
-  /// event that might lag it. 20000ms is the observed 14.0s worst case plus
-  /// ~6s of margin, not a round number picked for looks; a genuine switch
-  /// overrun episode runs ~10 minutes end to end, so a 20s confirm window
-  /// costs about 3% of it.
+  /// every timed-boost expiry, not just a genuine continuous episode.
+  /// Measured 13 Aug 2026 on the live unit (192.168.1.200) on a real
+  /// switch-driven continuous boost ending: 14.0s from the LAST "Boost
+  /// Airflow" frame (21:20:49) to boosting() dropping false (21:21:03) --
+  /// against a nominal ALTERNATION_TIMEOUT_MS of 12000ms, 2s over (likely
+  /// SSE/timestamping jitter, but not tuned within 1s of an observed edge on
+  /// an assumption about its source). The same capture showed line1 and
+  /// line2 changing in the SAME frame at the moment boost ended
+  /// ("Boost Airflow"/"48%...m" -> "Low Airflow"/"18%") -- confirming the
+  /// countdown's disappearance is the right trigger for this accumulator's
+  /// clock. 20000ms is the observed 14.0s worst case plus ~6s margin; a
+  /// switch overrun episode runs ~10 minutes end to end, so a 20s confirm
+  /// window costs about 3% of it.
   static constexpr uint32_t CONTINUOUS_CONFIRM_MS = 20000;
 
-  // CLAUDE.md's own invariant, enforced rather than left to prose: a confirm
-  // window AT OR BELOW ALTERNATION_TIMEOUT_MS would report continuous boost
-  // on EVERY timed-boost expiry, not just a genuine continuous episode --
-  // boosting_ (a Flag whose own timeout IS ALTERNATION_TIMEOUT_MS) stays
-  // sticky-true for up to that long after a timed boost's countdown vanishes
-  // from line2, so continuous_boost()'s "no countdown seen for
-  // CONTINUOUS_CONFIRM_MS" test would trivially pass during that trailing
-  // window on every single expiry. Do NOT "tidy" these two constants toward
-  // each other -- see CONTINUOUS_CONFIRM_MS's own comment for the live
-  // measurement (14.0s) this headroom is measured against.
+  // Enforced rather than left to prose: a confirm window at or below
+  // ALTERNATION_TIMEOUT_MS would report continuous boost on every
+  // timed-boost expiry, not just a genuine continuous episode. Do NOT
+  // "tidy" these two constants toward each other -- see
+  // CONTINUOUS_CONFIRM_MS's own comment for the 14.0s live measurement this
+  // headroom is set against.
   static_assert(CONTINUOUS_CONFIRM_MS > ALTERNATION_TIMEOUT_MS,
                 "CONTINUOUS_CONFIRM_MS must exceed ALTERNATION_TIMEOUT_MS, or continuous_boost() reports true on "
                 "every timed-boost expiry (boosting_ stays sticky-true for up to ALTERNATION_TIMEOUT_MS after the "
@@ -290,29 +237,19 @@ class StatusTracker {
   Flag dryout_active_{ALTERNATION_TIMEOUT_MS};
   Flag filter_change_due_{ALTERNATION_TIMEOUT_MS};
   // Sticky Flag rather than a direct per-frame read of
-  // has_sensor_boost_annunciator(), even though stage 9 measured line2 as
-  // NOT alternating for airflow_percent_/countdown_minutes_ (so in
-  // principle a direct read would do here too): stage 10 showed this exact
-  // right-hand zone of line2 IS capable of blinking -- the `ls` annunciator
-  // it recorded appeared only transiently, while Main was being tapped. A
-  // direct read of a blinking annunciator would flap this entity at up to
-  // ~3 Hz (the key-repeat rate). ALTERNATION_TIMEOUT_MS's 12s trailing lag
-  // is cheap against a state that lasts minutes -- the captured frame's 31%
-  // is a proportional rate, not a one-frame blip -- and the park-freeze
-  // behaviour on menu/diagnostic screens (a diagnostics fetch or clock sync
-  // must not be read as the annunciator clearing) comes for free from the
-  // same touch_()/update() machinery every other Flag here already uses.
+  // has_sensor_boost_annunciator(): this same zone of line2 was seen to
+  // blink -- the `ls` annunciator, transient, appearing only while Main was
+  // being tapped -- so a direct read could flap this entity at up to ~3 Hz
+  // (the key-repeat rate). 12s of trailing lag is cheap against a state
+  // that lasts minutes, and park-freeze on menu/diagnostic screens comes
+  // free from the same touch_()/update() machinery every other Flag here
+  // uses.
   //
-  // Retro-checked against the live boost of 17 Aug 2026: the annunciator was
-  // STEADY, not blinking. display_line_2 publishes only on an actual string
-  // change (vent_axia.cpp's line2_changed gate), and over ~114s of status
-  // frames it published "36%            *" exactly twice -- at connect, and
-  // on return from a read_settings excursion -- while line1 alternated ~35
-  // times. So a direct read would have worked too; the Flag is KEPT because
-  // that capture never tapped a key, which is the only condition under which
-  // stage 10 saw this zone of line2 blink, and 12s of trailing lag is free
-  // against a state lasting many minutes. Do not "simplify" it to a direct
-  // read on the strength of one keypress-free capture.
+  // Retro-checked against a live boost 17 Aug 2026: the annunciator was
+  // STEADY, not blinking, over ~114s of frames. But that capture never
+  // tapped a key -- the only condition under which blinking was seen -- so
+  // the Flag is KEPT rather than simplified to a direct read on the
+  // strength of one keypress-free capture.
   Flag humidity_boost_{ALTERNATION_TIMEOUT_MS};
 
   std::optional<int> airflow_percent_;

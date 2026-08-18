@@ -1,27 +1,22 @@
 #pragma once
 
-// Instrumentation only -- no decode behaviour depends on this class. Built
-// (stage 15, DISPLAY-REVIEW.md §6/§7 and DISPLAY-INSTRUMENTATION-PLAN.md) to
-// make a live capture (GET /events during a humidity boost, per CLAUDE.md)
-// settle three questions without guessing from a datasheet. Question 1
-// (which byte the alpha annunciator is) is now answered -- glyphs::ALPHA,
-// display.h -- and stage 16 built the two-lane split on that measurement.
-// Still open: which CGRAM slots (0x00-0x07) this unit uses, and whether
+// Instrumentation only -- no decode behaviour depends on this class. Exists
+// to let a live capture (GET /events during a humidity boost, per CLAUDE.md)
+// settle open questions without guessing from a datasheet: which byte the
+// alpha annunciator is (answered -- glyphs::ALPHA, display.h) and which
+// CGRAM slots (0x00-0x07) this unit uses. Still open: whether
 // unknown_row1_addr/unknown_row2_addr carry a cursor or blink attribute
-// during an OPEN EDITOR specifically (stage 15's own capture never opened
-// one) that could replace Display::editor_open()'s 1200ms staleness
-// heuristic with a direct protocol read -- that heuristic is the one
-// CLAUDE.md records as having silently taken a 14C setpoint to 19C. See
-// DISPLAY-INSTRUMENTATION-PLAN.md and DISPLAY-REVIEW.md §6/§7.
+// during an OPEN EDITOR specifically -- if so, it could replace
+// Display::editor_open()'s 1200ms staleness heuristic with a direct
+// protocol read. That heuristic is the one CLAUDE.md records as having
+// silently taken a 14C setpoint to 19C.
 //
-// Originally a VentAxiaHub method (log_raw_frame_bytes_()) with nine
-// supporting hub members; moved into the portable core so its rate-limit,
-// heartbeat and change-suppress-and-revert logic can be driven by explicit
-// timestamps in a host test instead of living only in vent_axia.cpp, which
-// the host test suite cannot compile (README "Portable core"). The
-// suppress-and-revert path in particular exists specifically to catch a
-// sub-2-second blink attribute during an open editor and, before this move,
-// could not be exercised at all.
+// Lives in the portable core, not as a VentAxiaHub method, so its
+// rate-limit, heartbeat and change-suppress-and-revert logic can be driven
+// by explicit timestamps in a host test -- vent_axia.cpp cannot be compiled
+// by the host test suite (README "Portable core"). The suppress-and-revert
+// path exists specifically to catch a sub-2-second blink attribute during
+// an open editor.
 //
 // Plain C++17, no ESPHome headers -- see README "Portable core". Uses
 // Keypad::LogSink, not a type of its own, same reasoning as Runner reusing it

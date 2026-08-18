@@ -201,18 +201,17 @@ TEST_CASE(status_tracker_boost_time_remaining_unpublished_without_a_countdown) {
 }
 
 // ------------------------------------------------------- humidity_boost --
-// Decodes line2 column 15's glyphs::ALPHA (0xE0, measured live PLAN.md §8
-// stage 15) -- the manual's alpha annunciator for a proportional 0-10V
-// sensor or the internal humidity sensor boosting airflow (PLAN.md §4/§8
-// stage 14). The regression that matters most here is telling this apart
-// from stage 10's `ls`, which sits in the same right-hand zone of line2 but
-// is a structurally different signal.
+// Decodes line2 column 15's glyphs::ALPHA (0xE0, measured live) -- the
+// manual's alpha annunciator for a proportional 0-10V sensor or the internal
+// humidity sensor boosting airflow. The regression that matters most here is
+// telling this apart from the switched-live `ls`, which sits in the same
+// right-hand zone of line2 but is a structurally different signal.
 
 TEST_CASE(has_sensor_boost_annunciator_true_for_the_measured_byte_at_column_15) {
   // The captured frame this decode was built from: line1 "Summer Bypass On",
-  // line2 "31%            *" as published under the pre-stage-16
-  // sanitize()'d pipeline -- the raw byte underneath, confirmed live 18 Aug
-  // 2026 (PLAN.md §8 stage 15), is 0xE0. The percentage is incidental to
+  // line2 "31%            *" as published under the old sanitize()'d
+  // pipeline -- the raw byte underneath, confirmed live 18 Aug 2026, is
+  // 0xE0. The percentage is incidental to
   // what is being tested here -- see has_sensor_boost_annunciator()'s
   // comment for why the "31% is a proportional rate between Normal and
   // Boost" reading was withdrawn on 17 Aug 2026 (18% is the LOW rate;
@@ -224,8 +223,8 @@ TEST_CASE(has_sensor_boost_annunciator_false_on_a_plain_status_frame) {
   CHECK(!has_sensor_boost_annunciator("18%             "));
 }
 
-TEST_CASE(has_sensor_boost_annunciator_false_for_stage_10s_ls_regression) {
-  // THE KEY REGRESSION. Stage 10's switched-live annunciator occupies
+TEST_CASE(has_sensor_boost_annunciator_false_for_the_switched_live_ls_regression) {
+  // THE KEY REGRESSION. The switched-live annunciator occupies
   // columns 14-15 ('l' then 's'), one column to the left of and including
   // column 15 -- but column 15 itself holds 's' (0x73), not glyphs::ALPHA
   // (0xE0), so a check of line2[15] alone cannot confuse the two even
@@ -234,10 +233,10 @@ TEST_CASE(has_sensor_boost_annunciator_false_for_stage_10s_ls_regression) {
 }
 
 TEST_CASE(has_sensor_boost_annunciator_false_for_a_literal_asterisk) {
-  // THE ACTUAL BEHAVIOUR CHANGE stage 16 makes here: pre-stage-16, a literal
-  // ASCII '*' (0x2A) at column 15 -- indistinguishable from glyphs::ALPHA
-  // once sanitize() had collapsed the real byte to the same character --
-  // would have fired this predicate. Now that it reads the raw lane and
+  // Under the old sanitize()'d pipeline a literal ASCII '*' (0x2A) at column
+  // 15 -- indistinguishable from glyphs::ALPHA once sanitize() had collapsed
+  // the real byte to the same character -- would have fired this predicate.
+  // Now that it reads the raw lane and
   // compares against the exact measured byte, an actual asterisk on the
   // display (nothing has ever produced one, but nothing ruled it out
   // either under the old collapse) must NOT be confused with the
@@ -313,9 +312,9 @@ TEST_CASE(status_tracker_humidity_boost_stays_true_across_a_frame_where_the_annu
   // The annunciator is genuinely GONE from this frame -- not merely
   // accompanied by the status loop's other line1 message. That is the
   // property the sticky Flag exists for and the only thing that separates
-  // it from a direct per-frame read: stage 9 measured line2 as
-  // non-alternating, but stage 10's `ls` proved this right-hand zone can
-  // blink, and a blink must not flap the entity. A test that kept the
+  // it from a direct per-frame read: line2 was measured as non-alternating,
+  // but the switched-live `ls` proved this right-hand zone can blink, and a
+  // blink must not flap the entity. A test that kept the
   // annunciator present in every frame would pass against a direct read
   // too, proving nothing.
   t.update("Low Airflow     ", "18%             ", true, 1700);

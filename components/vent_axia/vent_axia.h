@@ -132,7 +132,7 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   // press.
   void set_read_only(bool read_only) { this->read_only_ = read_only; }
 
-  // Timing constants (PLAN.md §2's table), all forwarded straight into
+  // Timing constants, all forwarded straight into
   // keypad_ except tap_duration_ms_, which Keypad has no notion of -- tap()
   // takes an explicit duration per call, so this hub-level default is what
   // the key_* buttons and an omitted `duration` on vent_axia.tap_key fall
@@ -153,9 +153,9 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
 
   /// Queues a tap through the keypad. Delegates straight to
   /// runner_.tap(), which is now the single choke point for the Set
-  /// interlock (PLAN.md §7) -- see Runner::tap()'s comment; this stage moved
-  /// the check there from a hub-private method so it applies to the
-  /// sequence engine's own primitives too, not only pre-sequence callers.
+  /// interlock -- see Runner::tap()'s comment. The check lives there rather
+  /// than in a hub-private method so it applies to the sequence engine's own
+  /// primitives too, not only pre-sequence callers.
   /// Used by button.py's KeypadButton and the vent_axia.tap_key action.
   void tap_key(protocol::KeyMask mask, uint32_t duration_ms);
 
@@ -171,7 +171,7 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   /// Runner::request() -- see sequence.h) if one is already running or the
   /// link is down. Used by button.py's FetchDiagnosticsButton and the
   /// vent_axia.fetch_diagnostics action; mhrv.yaml schedules it daily at
-  /// 04:30 (PLAN.md §6).
+  /// 04:30.
   void fetch_diagnostics() { this->runner_.request(this->fetch_diagnostics_); }
 
   /// Starts ReadSettings as a root sequence, same refuse-and-log shape as
@@ -185,14 +185,14 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   /// Starts SyncClock as a root sequence, same refuse-and-log shape as
   /// fetch_diagnostics()/read_settings(). Used by button.py's
   /// SyncClockButton and the vent_axia.sync_clock action; mhrv.yaml
-  /// schedules it weekly, Sunday 04:05 (PLAN.md §6).
+  /// schedules it weekly, Sunday 04:05.
   void sync_clock() { this->runner_.request(this->sync_clock_); }
 
   /// Starts ResetFilter as a root sequence, same refuse-and-log shape as
   /// fetch_diagnostics()/read_settings()/sync_clock(). Used ONLY by
   /// button.py's ResetFilterButton -- deliberately no vent_axia.reset_filter
   /// action and no mhrv.yaml schedule, unlike fetch_diagnostics/sync_clock
-  /// above: PLAN.md §7 is explicit that this is the one irreversible
+  /// above: this is the one irreversible
   /// operation in this component (it restarts the unit's filter service
   /// countdown and cannot be undone from software), so it only ever runs
   /// from a human deliberately pressing a button, never unattended.
@@ -200,7 +200,7 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
 
   /// Starts a WriteSetting run for the one bypass switch -- switch.py's
   /// VentAxiaSwitch::write_state() calls this, never publish_state()
-  /// directly (PLAN.md §6 "Not optimistic"). Unrecognised keys (there is
+  /// directly -- NOT optimistic. Unrecognised keys (there is
   /// only one today) are logged and ignored rather than silently starting
   /// nothing -- see write_number() for the same shape.
   void write_switch(SwitchKey key, bool state);
@@ -214,7 +214,7 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
 
   /// Starts a SetAirflowMode run (sequence.h) -- select.py's
   /// VentAxiaSelect::control(size_t index) calls this, never publish_state()
-  /// directly (PLAN.md §6 "Not optimistic"). `index` is handed straight
+  /// directly -- NOT optimistic. `index` is handed straight
   /// through as the AirflowTarget ordinal: select.py's AIRFLOW_MODE_OPTIONS
   /// list is deliberately ordered to match AirflowTarget's enum values
   /// index-for-index, so there is no separate lookup here, same as
@@ -281,7 +281,7 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
 
   /// Derives airflow_mode's confirmed state via airflow_mode_.update(status_)
   /// (status.h) and publishes it -- SetAirflowMode itself never calls this
-  /// (PLAN.md §6 "Not optimistic": see its own class comment in sequence.h).
+  /// (NOT optimistic -- see its own class comment in sequence.h).
   /// Called once per decoded frame alongside every other status-derived
   /// entity (publish_status_()), so a press at the unit's own keypad reaches
   /// Home Assistant the same way a command from Home Assistant does -- there
@@ -292,7 +292,7 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   /// while SetAirflowMode is the running root sequence: normalising
   /// deliberately walks the unit through boost states nobody chose (Boost 30
   /// -> Boost 60 -> continuous -> Normal is one lap of the counter), and
-  /// PLAN.md risk 3 is explicit that HA is expected to keep showing the OLD
+  /// HA is meant to keep showing the OLD
   /// value for the whole ~25-30s a transition can take -- "the `busy` binary
   /// sensor exists to surface this" -- not to visibly walk through every
   /// intermediate mode. The dedup cache in last_select_value_ already holds
@@ -314,7 +314,7 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   /// Shared by write_switch()/write_number(): configures the one long-lived
   /// WriteSetting instance and requests it as a root sequence. Both entity
   /// types funnel through here rather than each driving its own copy --
-  /// PLAN.md §2's "one class... three table rows".
+  /// one class and three table rows, not three near-identical copies.
   void start_write_(SettingId id, int target) {
     this->write_setting_.configure(id, target);
     this->runner_.request(this->write_setting_);
@@ -324,7 +324,7 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   /// display_ and status_. Called once per decoded frame.
   void publish_status_();
 
-  /// Passive diagnostic decode (PLAN.md §4): called whenever line1 or line2
+  /// Passive diagnostic decode: called whenever line1 or line2
   /// changes while display_.screen_kind() == DIAGNOSTIC, with the page
   /// number screens::diagnostic_page() read off line1 and the current
   /// line2. Publishes the raw "NN: <line2>" text sensor and fires
@@ -340,12 +340,12 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   /// source -- see diagnostics::Sink::report_filter_change_due's comment.
   /// "Live wins by recency": published from the diagnostic reading only
   /// when the live tracker has no opinion yet; otherwise this purely
-  /// cross-checks and logs a disagreement (PLAN.md risk 7), it never
+  /// cross-checks and logs a disagreement, it never
   /// overrides a value the live status line is already publishing.
   void reconcile_filter_change_due_(bool due_from_page23);
 
   /// link_up ages out after LINK_TIMEOUT_MS with no CRC-valid frame -- see
-  /// PLAN.md §7 "Link loss". Unlike the status-screen entities this is
+  /// Link loss. Unlike the status-screen entities this is
   /// always a known value (false before the first frame, not "unknown"), so
   /// it is checked every loop() tick rather than only when a frame lands,
   /// or a dead link would simply never be reevaluated.
@@ -353,7 +353,7 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   void publish_link_up_(uint32_t now_ms);
 
   /// Called from FetchDiagnostics' SuccessSink after a successful run. No-op
-  /// (not an error) when time_ is null -- PLAN.md §5 explicitly wants
+  /// (not an error) when time_ is null -- the component deliberately wants
   /// time_id optional, so a config that leaves it out simply never gets a
   /// timestamp rather than failing validation or logging a complaint every
   /// run.
@@ -386,14 +386,14 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   // be constructed -- C++ initialises members in declaration order regardless
   // of initializer-list order, so both must stay ABOVE runner_.
   Keypad keypad_;
-  uint32_t tap_duration_ms_{50};  // PLAN.md §2's table: "one tap = one menu step"
+  uint32_t tap_duration_ms_{50};  // one tap = one menu step
   Runner runner_;
-  FetchDiagnostics fetch_diagnostics_;  // long-lived -- no dynamic allocation in steady state, PLAN.md §2
+  FetchDiagnostics fetch_diagnostics_;  // long-lived -- no dynamic allocation in steady state
   ReadSettings read_settings_;          // the button's own instance -- see read_settings()'s comment
   WriteSetting write_setting_;          // shared by write_switch()/write_number() via start_write_()
-  SyncClock sync_clock_;                // stage 7 -- see sync_clock()
-  SetAirflowMode set_airflow_mode_;     // stage 7 -- see write_select()
-  ResetFilter reset_filter_;            // stage 7 -- see reset_filter(). Owns ITS OWN FetchDiagnostics
+  SyncClock sync_clock_;                // see sync_clock()
+  SetAirflowMode set_airflow_mode_;     // see write_select()
+  ResetFilter reset_filter_;            // see reset_filter(). Owns ITS OWN FetchDiagnostics
                                          // child (sequence.h's diagnostics_scan_), NOT fetch_diagnostics_ above.
 
 #ifdef USE_TIME
@@ -448,7 +448,7 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
 /// Set interlock) as everything else that presses a key.
 ///
 /// Deliberately a momentary button, not the old setup's hold-switch -- see
-/// PLAN.md §6: a switch restored on at boot (ESPHome's default restore
+/// A switch restored on at boot (ESPHome's default restore
 /// behaviour for a switch) could come back holding a key down forever after
 /// a power cycle. A button's press_action() only ever queues one bounded
 /// tap, so there is nothing for a reboot to leave stuck.
@@ -471,23 +471,23 @@ class FetchDiagnosticsButton final : public button::Button, public Parented<Vent
   void press_action() override { this->parent_->fetch_diagnostics(); }
 };
 
-/// Stage 6's sibling of FetchDiagnosticsButton, same shape -- see
+/// Sibling of FetchDiagnosticsButton, same shape -- see
 /// VentAxiaHub::read_settings().
 class ReadSettingsButton final : public button::Button, public Parented<VentAxiaHub> {
  protected:
   void press_action() override { this->parent_->read_settings(); }
 };
 
-/// Stage 7's sibling of FetchDiagnosticsButton/ReadSettingsButton, same
+/// Sibling of FetchDiagnosticsButton/ReadSettingsButton, same
 /// shape -- see VentAxiaHub::sync_clock().
 class SyncClockButton final : public button::Button, public Parented<VentAxiaHub> {
  protected:
   void press_action() override { this->parent_->sync_clock(); }
 };
 
-/// Stage 7's other sibling of FetchDiagnosticsButton/ReadSettingsButton/
+/// The other sibling of FetchDiagnosticsButton/ReadSettingsButton/
 /// SyncClockButton, same shape -- see VentAxiaHub::reset_filter(). The one
-/// irreversible operation in this component (PLAN.md §7/§8) is reached
+/// irreversible operation in this component is reached
 /// ONLY through a button like this one: no vent_axia.reset_filter action
 /// exists for YAML automations to call, and mhrv.yaml schedules nothing
 /// against it, unlike fetch_diagnostics/sync_clock's FetchDiagnosticsAction/
@@ -501,7 +501,7 @@ class ResetFilterButton final : public button::Button, public Parented<VentAxiaH
 #ifdef USE_SWITCH
 /// The one bypass switch (switch.py's summer_mode). write_state() only ever
 /// starts a WriteSetting run through the hub -- it deliberately never calls
-/// publish_state() itself (PLAN.md §6 "Not optimistic"). What Home Assistant
+/// publish_state() itself -- NOT optimistic. What Home Assistant
 /// shows comes solely from what ReadSettings observes on the unit, whether
 /// that is this write's own read-back (WriteSetting's last step) or a later
 /// read_settings button press -- see VentAxiaHub::write_switch().
@@ -559,8 +559,8 @@ class VentAxiaSelect final : public select::Select, public Parented<VentAxiaHub>
 };
 #endif
 
-/// vent_axia.tap_key / vent_axia.hold_key / vent_axia.release_keys (PLAN.md
-/// §5 "Actions for YAML"). Deliberately plain fields resolved once at
+/// vent_axia.tap_key / vent_axia.hold_key / vent_axia.release_keys, the
+/// keypad actions available to YAML. Deliberately plain fields resolved at
 /// codegen time rather than TEMPLATABLE_VALUE: the mask (and, for tap_key,
 /// the duration) come straight out of the YAML action config the same way
 /// button.py's KeypadButton::mask_ does, and there is no use case yet for a
@@ -633,7 +633,7 @@ template<typename... Ts> class ReadSettingsAction final : public Action<Ts...> {
   VentAxiaHub *parent_;
 };
 
-/// vent_axia.sync_clock -- stage 7's sibling of FetchDiagnosticsAction, same
+/// vent_axia.sync_clock -- sibling of FetchDiagnosticsAction, same
 /// shape. See VentAxiaHub::sync_clock().
 template<typename... Ts> class SyncClockAction final : public Action<Ts...> {
  public:

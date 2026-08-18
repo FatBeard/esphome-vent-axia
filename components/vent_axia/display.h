@@ -6,10 +6,9 @@
 // UART and the text_sensor objects; this class only decides *what* changed
 // and *when*, via the on_change callback.
 //
-// Stage 16 replaced the single sanitize()'d representation this class used
-// to keep with two: see DISPLAY-REVIEW.md §4/§5 for why one lossy string
-// could not serve both jobs (byte-offset decoding AND safe-to-publish
-// presentation) at once.
+// Two lanes because one lossy string cannot serve both jobs: byte-offset
+// decoding needs the raw bytes off the wire, and publishing needs valid
+// UTF-8.
 
 #include <cstdint>
 #include <functional>
@@ -26,13 +25,11 @@ namespace vent_axia {
 namespace glyphs {
 
 /// The Sentinel Kinetic's alpha (sensor-boost) annunciator, measured live on
-/// this unit 18 Aug 2026 (PLAN.md §8 stage 15's `GET /events` capture, taken
-/// during a real humidity boost: `line2` non-ASCII byte `col 15=0xE0`
-/// alongside `display_line_2` publishing `36%            *` under the old
-/// sanitize()'d pipeline). Not a HD44780 A00 ROM datasheet inference --
-/// DISPLAY-REVIEW.md §6 deliberately withheld the transcode table until this
-/// measurement existed, the same discipline PLAN.md §8 stage 14's withdrawn
-/// 31% evidence strand argues for.
+/// this unit 18 Aug 2026 (`GET /events` capture during a real humidity
+/// boost: `line2` non-ASCII byte `col 15=0xE0`, alongside `display_line_2`
+/// publishing `36%            *` under the old sanitize()'d pipeline). Not a
+/// HD44780 A00 ROM datasheet inference -- the transcode table below was
+/// deliberately withheld until this measurement existed.
 constexpr unsigned char ALPHA = 0xE0;
 
 }  // namespace glyphs
@@ -41,9 +38,8 @@ constexpr unsigned char ALPHA = 0xE0;
 /// LCD column) into a UTF-8 string safe to publish to Home Assistant's text
 /// sensors and to the ESPHome log stream -- both are protobuf/JSON
 /// transports that require valid UTF-8, so a lone byte outside 0x20-0x7E
-/// cannot pass through unescaped (DISPLAY-REVIEW.md §4). Replaces
-/// sanitize(), which satisfied that same requirement by destroying the
-/// byte instead of encoding it.
+/// cannot pass through unescaped. Replaces sanitize(), which satisfied that
+/// same requirement by destroying the byte instead of encoding it.
 ///
 /// Mapping, in order of precedence:
 ///   0x20-0x7E  -> itself (printable ASCII)
@@ -54,19 +50,17 @@ constexpr unsigned char ALPHA = 0xE0;
 ///
 /// Nothing here is mapped from the HD44780 A00 ROM datasheet -- °, µ, Ω, π
 /// and all eight CGRAM slots stay as "<XX>" until something on THIS unit
-/// measures them, exactly as glyphs::ALPHA was. The hex escape is not a
-/// fallback to apologise for: it keeps distinct unmeasured bytes distinct
-/// in the presentation lane too (unlike sanitize()'s single '*'), and it
-/// names the exact byte a future capture needs to identify.
+/// measures them, exactly as glyphs::ALPHA was. The hex escape keeps
+/// distinct unmeasured bytes distinct in the presentation lane too (unlike
+/// sanitize()'s single '*'), and names the exact byte a future capture
+/// needs to identify.
 ///
 /// Guarantees: the result is always valid UTF-8, never contains a 0x00 byte
 /// (which would truncate anything passing the result through .c_str()),
 /// and an all-ASCII input is returned unchanged with no allocation growth.
-/// A literal '<' in display text would in principle be ambiguous against
-/// the escape's own syntax, but every display field is a menu label or a
-/// numeric/time field (README "Portable core"), never free text, so this
-/// is theoretical -- and preferable to a mapping that loses the byte to
-/// avoid a collision that has never been observed.
+/// A literal '<' in display text would in principle collide with the
+/// escape's own syntax, but every display field is a menu label or a
+/// numeric/time field, never free text, so this is theoretical.
 std::string to_utf8(const std::string &raw);
 
 /// to_utf8()'s diagnostic counterpart: instead of encoding non-printable
@@ -77,14 +71,12 @@ std::string to_utf8(const std::string &raw);
 /// printable ASCII, so a call site can skip cheaply via .empty() rather
 /// than build and discard a string every frame.
 ///
-/// Still useful post-stage-16: to_utf8() now PRESERVES every byte (as
-/// itself, as α, or as "<XX>"), so nothing is lost the way sanitize() used
-/// to lose it -- but "<XX>" still reads as an unidentified byte rather than
-/// a name, and this is the tool that first named glyphs::ALPHA. The
-/// instrumentation stage that calls this (VentAxiaHub::log_raw_frame_bytes_(),
-/// vent_axia.cpp) reads the RAW frame text specifically to go capture
-/// whatever a future "<XX>" turns out to be -- the CGRAM slots (0x00-0x07)
-/// among them, still unmeasured as of stage 15's capture.
+/// Still useful even though to_utf8() now PRESERVES every byte (as itself,
+/// as α, or as "<XX>"): "<XX>" still reads as an unidentified byte rather
+/// than a name, and this is the tool that first named glyphs::ALPHA.
+/// VentAxiaHub::log_raw_frame_bytes_() (vent_axia.cpp) reads the RAW frame
+/// text specifically to capture whatever a future "<XX>" turns out to be --
+/// the CGRAM slots (0x00-0x07) among them, still unmeasured.
 std::string describe_unprintable(const std::string &raw);
 
 /// Owns the two 16-character display lines, in two lanes, plus per-line
@@ -92,11 +84,10 @@ std::string describe_unprintable(const std::string &raw);
 ///
 /// **Parsing lane** (raw_line1()/raw_line2()): the bytes exactly as they
 /// arrived off the wire, one byte per LCD column. Every decoder/predicate in
-/// screens::, parser::, status:: and diagnostics:: reads this, at the fixed
-/// offsets it already used before stage 16 -- see DISPLAY-REVIEW.md §5 "the
-/// constraint that shapes everything": UTF-8 is multi-byte, so transcoding
-/// in place would silently shift every one of those offsets. Never
-/// published, never logged as a string.
+/// screens::, parser::, status:: and diagnostics:: reads this at fixed
+/// offsets: UTF-8 is multi-byte, so transcoding in place would silently
+/// shift every one of those offsets. Never published, never logged as a
+/// string.
 ///
 /// **Presentation lane** (text_line1()/text_line2()): the UTF-8 transcode of
 /// the SAME update, computed lazily -- only for a line that actually
@@ -112,22 +103,21 @@ class Display {
   using ChangeCallback = std::function<void(bool line1_changed, bool line2_changed)>;
 
   /// Feeds one already CRC-validated frame's raw text. Updates
-  /// raw_line1_/raw_line2_ and their changed-at timestamps *independently*
-  /// -- deduplicating on the RAW text of each line, not on the raw 41-byte
-  /// frame and not on a sanitised/transcoded copy. The old component
-  /// deduplicated on the whole frame via memcmp, so a change in one of the
-  /// still-unparsed bytes (1..4, 5, 22) republished text that had not
-  /// actually changed; the pre-stage-16 sanitize()'d dedup had the opposite
-  /// defect, blind to a change from one non-printable byte to a DIFFERENT
-  /// non-printable byte in the same column (both collapsed to the same
-  /// '*'). Deduplicating on the raw byte lane fixes that for free -- see
-  /// test_display.cpp's regression test.
+  /// raw_line1_/raw_line2_ and their changed-at timestamps *independently* --
+  /// deduplicating on the RAW text of each line, not on the raw 41-byte frame
+  /// and not on a sanitised/transcoded copy. The old component deduplicated
+  /// on the whole frame via memcmp, so a change in one of the still-unparsed
+  /// bytes (1..4, 5, 22) republished text that had not actually changed; a
+  /// sanitize()'d dedup has the opposite defect, blind to a change from one
+  /// non-printable byte to a DIFFERENT non-printable byte in the same column
+  /// (both collapsed to the same '*'). Deduplicating on the raw byte lane
+  /// fixes both for free -- see test_display.cpp's regression test.
   ///
   /// text_line1_/text_line2_ are transcoded ONLY for a line whose raw text
-  /// just changed, not unconditionally every call: today's sanitize()
-  /// allocated two strings per frame at ~3.3 frames/s whether anything moved
-  /// or not, so "compare raw, transcode on change" is a steady-state cost
-  /// reduction, not an addition, per DISPLAY-REVIEW.md §5.
+  /// just changed, not unconditionally every call: a sanitize()-per-frame
+  /// approach allocates two strings per frame at ~3.3 frames/s whether
+  /// anything moved or not, so "compare raw, transcode on change" is a
+  /// steady-state cost reduction, not an addition.
   void update(const std::string &raw_line1, const std::string &raw_line2, uint32_t now_ms);
 
   const std::string &raw_line1() const { return raw_line1_; }

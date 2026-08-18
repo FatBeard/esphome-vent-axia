@@ -14,7 +14,7 @@ TEST_CASE(parse_field_rejects_blank_field_and_leaves_out_untouched) {
 
 TEST_CASE(parse_field_parses_a_captured_page0_line) {
   // "018 029 % 0994  " -- supply airflow %, motor PWM %, RPM. Straight from
-  // PLAN.md §8's test_parser bullet and the unit's own page 0 capture.
+  // the unit's own page 0 capture.
   const std::string line = "018 029 % 0994  ";
   int airflow = 0;
   int pwm = 0;

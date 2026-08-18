@@ -3,21 +3,10 @@
 // Enum-keyed identifiers for the entities this component can expose, one
 // enum per platform. Each enum is the single source of truth for "which
 // entities exist": the platform .py files build their CONFIG_SCHEMA dict
-// from the same names (see PLAN.md §5), and the hub indexes a
-// std::array<..., COUNT> rather than growing a hand-written setter or a
-// switch per entity. COUNT is a sentinel, not a real key -- it only exists
-// so arrays can be sized as `std::array<T, count(Key::COUNT)>`.
-//
-// Stage 1 needed only TextKey, for the two raw display-line text sensors.
-// Stage 2 (status line decode) added SensorKey and BinaryKey members and one
-// more TextKey. Stage 3 (diagnostics table) adds the bulk of both -- one
-// member per page/field the table decodes, see diagnostics.cpp. Stage 6
-// (settings read/write, sequence.h's ReadSettings/WriteSetting) adds
-// SwitchKey and NumberKey, the first two enums here that back a WRITABLE
-// entity rather than a read-only one. Stage 7 adds SelectKey (airflow_mode)
-// the same way, plus the unit clock and diagnostics-updated timestamp
-// TextKeys; this file is expected to keep growing rather than being
-// considered done.
+// from the same names, and the hub indexes a std::array<..., COUNT> rather
+// than growing a hand-written setter or a switch per entity. COUNT is a
+// sentinel, not a real key -- it only exists so arrays can be sized as
+// `std::array<T, count(Key::COUNT)>`.
 
 #include <cstdint>
 
@@ -62,11 +51,10 @@ enum class BinaryKey : uint8_t {
   PURGING,
   DEFROST_ACTIVE,
   DRYOUT_ACTIVE,
-  // Sourced from the status line1 "Check Filter" message in this stage.
-  // Stage 3 gives it a second, independent source: diagnostic page 23's
-  // filter-hours field reaching zero. The two are expected to agree
-  // (PLAN.md risk 7) -- if they ever don't, that disagreement is itself
-  // worth surfacing rather than silently letting one source win.
+  // Two independent sources: status line1's "Check Filter" message, and
+  // diagnostic page 23's filter-hours field reaching zero. Expected to
+  // agree -- if they ever don't, that disagreement is itself worth
+  // surfacing rather than silently letting one source win.
   FILTER_CHANGE_DUE,
   // Diagnostic pages 2/3: T1/T2 sensor fault codes, nonzero == fault.
   SUPPLY_TEMP_FAULT,
@@ -82,10 +70,9 @@ enum class BinaryKey : uint8_t {
   SWITCH_LINE_3,
   // Diagnostic page 5, column 0: the switched-live boost input -- a wired
   // switched live (e.g. a light switch's pull-cord) that holds the unit
-  // boosting for as long as it's asserted, distinct from SWITCH_LINE_1-3
-  // above (pages 6/7/8 never report this input -- byte-identical whether it
-  // is asserted or not, see diagnostics.cpp) and from BOOSTING above (true
-  // for both switched and commanded boosts; this flag is 0 through a
+  // boosting for as long as it's asserted. Distinct from SWITCH_LINE_1-3
+  // above (pages 6/7/8 never report this input) and from BOOSTING above
+  // (true for both switched and commanded boosts; this flag is 0 through a
   // genuine HA-commanded boost -- see diagnostics.cpp for the captures that
   // established that). Reaches this component only through the ~15-minute
   // fetch_diagnostics scrape, so it is stale by construction -- useful as
@@ -98,22 +85,19 @@ enum class BinaryKey : uint8_t {
   // part of the status-screen decode, so it stays true/known even while a
   // sequence has parked the display in a menu.
   LINK_UP,
-  // Stage 4: true while Keypad::busy() is -- a tap (including its trailing
-  // gap) or a hold in progress. Stage 5 broadens this to Keypad::busy() OR
-  // Runner::busy(): a sequence can be between keypresses (e.g. FetchDiagnostics'
-  // settle steps) and still very much be "doing something" as far as a
-  // dashboard is concerned. Lets a dashboard show that a slow operation is in
-  // flight (PLAN.md risk 3: airflow_mode transitions can take ~25-30s) rather
-  // than the entity just appearing to sit still.
+  // True while Keypad::busy() OR Runner::busy(): a sequence can be between
+  // keypresses (e.g. FetchDiagnostics' settle steps) and still very much be
+  // "doing something" as far as a dashboard is concerned. Lets a dashboard
+  // show that a slow operation is in flight (airflow_mode transitions can
+  // take ~25-30s) rather than the entity just appearing to sit still.
   BUSY,
   // Status line2 column 15's alpha annunciator, byte glyphs::ALPHA (0xE0,
-  // display.h, measured live PLAN.md §8 stage 15 -- see status.h's
-  // has_sensor_boost_annunciator()) -- the manual's own
-  // wording covers BOTH the internal humidity sensor and a proportional
-  // 0-10V sensor wired to P1/P2 boosting the airflow, so a CO2 or humidistat
-  // sensor on P1 would raise this too. Named humidity_boost rather than
-  // something more generic anyway, because on THIS unit pages 17/18 (the
-  // P1/P2 plug-in sensor pages, PLAN.md §4) read all-zero -- no proportional
+  // display.h -- see status.h's has_sensor_boost_annunciator()). The
+  // manual's own wording covers BOTH the internal humidity sensor and a
+  // proportional 0-10V sensor wired to P1/P2 boosting the airflow, so a CO2
+  // or humidistat sensor on P1 would raise this too. Named humidity_boost
+  // rather than something more generic anyway, because on THIS unit pages
+  // 17/18 (the P1/P2 plug-in sensor pages) read all-zero -- no proportional
   // sensor is fitted -- so the alpha here can only be the internal humidity
   // sensor, and the concrete name is honest rather than presumptive.
   HUMIDITY_BOOST,
@@ -121,26 +105,23 @@ enum class BinaryKey : uint8_t {
 };
 
 enum class SwitchKey : uint8_t {
-  // The bypass On/Off setting, user menu entry 2 -- PLAN.md §6's "Summer
-  // Mode (Enable Bypass)". Written via sequence.h's WriteSetting, read back
-  // via ReadSettings; see switch.py for why this is deliberately not
+  // The bypass On/Off setting, user menu entry 2 ("Summer Mode (Enable
+  // Bypass)"). Written via sequence.h's WriteSetting, read back via
+  // ReadSettings; see switch.py for why this is deliberately not
   // optimistic.
   SUMMER_MODE,
   COUNT,
 };
 
 enum class SelectKey : uint8_t {
-  // Normal / Boost 30 min / Boost 60 min / Boost Continuous / Purge
-  // (PLAN.md §3/§6) -- the Main key's cumulative press counter, exposed as
-  // an absolute set-point rather than five separate "press N times"
-  // buttons. Written via sequence.h's SetAirflowMode; NOT read back through
-  // it, unlike SwitchKey/NumberKey above -- see select.py and
+  // Normal / Boost 30 min / Boost 60 min / Boost Continuous / Purge -- the
+  // Main key's cumulative press counter, exposed as an absolute set-point
+  // rather than five separate "press N times" buttons. Written via
+  // sequence.h's SetAirflowMode; NOT read back through it, unlike
+  // SwitchKey/NumberKey above -- see select.py and
   // VentAxiaHub::publish_airflow_mode_() for why the confirmed value comes
-  // from the passive status-line decode instead. Continuous boost was
-  // excluded here until 13 Aug 2026 (a decision, not an oversight, per
-  // CLAUDE.md/PLAN.md §4 at the time) -- reopened against live evidence
-  // from 192.168.1.200; see select.py and status.h's continuous_boost() for
-  // the discriminator that makes it decodable after all.
+  // from the passive status-line decode instead; see status.h's
+  // continuous_boost() for the discriminator that makes Continuous decodable.
   AIRFLOW_MODE,
   COUNT,
 };
@@ -153,8 +134,7 @@ enum class NumberKey : uint8_t {
   BYPASS_INDOOR_TEMP,
   // The outdoor cut-off, off the end of the documented menu -- reachable only
   // by stepping past Indoor Temp's editor (sequence.h's AdjustField/
-  // ExitEditChain). Its range is 5-20 C, confirmed (PLAN.md risk 6) -- see
-  // number.py.
+  // ExitEditChain). Its range is 5-20 C, confirmed -- see number.py.
   BYPASS_OUTDOOR_TEMP,
   COUNT,
 };
@@ -168,7 +148,7 @@ enum class TextKey : uint8_t {
   ANTIFROST_MODE,
   // Diagnostic page 20's tri-state field, spelled out -- see diagnostics.cpp.
   // What "West"/"Link" mean beyond the manual's own labels is not known;
-  // nothing on this unit is known to depend on the value (PLAN.md §4).
+  // nothing on this unit is known to depend on the value.
   WEST_LINK_STATE,
   // Diagnostic pages 25/26: whole-line, trimmed.
   SERIAL_NUMBER,
@@ -178,11 +158,11 @@ enum class TextKey : uint8_t {
   // page this component doesn't understand is still visible to a human
   // without a component change -- see diagnostics.h.
   RAW_DIAGNOSTIC_PAGE,
-  // Stage 5: wall-clock timestamp of the last successful FetchDiagnostics
-  // run, stamped by the hub (not by the sequence -- portable core has no
-  // notion of wall-clock time, see FetchDiagnostics::set_on_success()).
-  // Unpublished until the first run completes; skipped entirely (never
-  // failing) if the hub has no time_id configured.
+  // Wall-clock timestamp of the last successful FetchDiagnostics run,
+  // stamped by the hub (not by the sequence -- portable core has no notion
+  // of wall-clock time, see FetchDiagnostics::set_on_success()). Unpublished
+  // until the first run completes; skipped entirely (never failing) if the
+  // hub has no time_id configured.
   DIAGNOSTICS_UPDATED,
   COUNT,
 };

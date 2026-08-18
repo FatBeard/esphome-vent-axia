@@ -12,21 +12,19 @@ namespace {
 
 // ------------------------------------------------------------- the table --
 // Roughly 90% of diagnostic pages are "extract an integer at (pos, len) and
-// publish it to a key, possibly as a boolean" -- PLAN.md §4. Those live here
-// as data. Field positions and this unit's captured values are all from
+// publish it to a key, possibly as a boolean". Those live here as data.
+// Field positions and this unit's captured values are all from
 // mhrv_orig/vent-axia-esphome-project.md's page map, cross-checked against
 // mhrv_orig/diagnostic_sensors.yaml, the 14 lambdas this table replaces.
 
 /// How to turn a field's parsed integer into a published value. A field's
 /// `kind` selects both which Sink member gets called and which of `key`'s
 /// two possible meanings (SensorKey or BinaryKey) applies -- see the
-/// sensor_field()/nonzero_field()/inverted_field() builders below, which are
-/// the only way a Field is ever constructed, so kind and key never disagree
-/// in practice even though the struct itself can't enforce that statically.
-/// A tagged union rather than three parallel tables, per the brief: three
-/// tables would let a page's fields drift out of (pos, len) order across
-/// them, which is exactly the kind of mistake this table exists to make
-/// impossible.
+/// sensor_field()/nonzero_field()/inverted_field() builders below, the only
+/// way a Field is ever constructed, so kind and key never disagree in
+/// practice even though the struct can't enforce that statically. A tagged
+/// union rather than three parallel tables: three tables would let a page's
+/// fields drift out of (pos, len) order across them.
 enum class FieldKind : uint8_t {
   SENSOR,          // publish the parsed integer as-is
   BINARY_NONZERO,  // publish (value != 0)
@@ -132,35 +130,31 @@ constexpr Field PAGE_3_FIELDS[] = {
 // idle      0 00 00 0 02 000
 // idle      0 00 00 0 04 000
 //
-// Column 0 is the only field decoded here: it reads 1 only when the
-// switched live is asserted, and stayed 0 right through a genuine
-// HA-commanded boost (the "commanded" rows above, captured alongside line2
-// `48%       30m`, Boost Active ON, airflow_mode Boost 30 min) -- so this is
-// a switch-INPUT flag, not a "boosting" flag. Do not confuse it with
-// BinaryKey::BOOSTING (the status-line decode, status.cpp), which is true
-// for both switched and commanded boosts.
+// Column 0 is the only field decoded here: it reads 1 only when the switched
+// live is asserted, and stayed 0 right through a genuine HA-commanded boost
+// (the "commanded" rows above, captured alongside line2 `48%       30m`,
+// Boost Active ON, airflow_mode Boost 30 min) -- so this is a switch-INPUT
+// flag, not a "boosting" flag. Do not confuse it with BinaryKey::BOOSTING
+// (the status-line decode, status.cpp), true for both switched and
+// commanded boosts.
 //
 // Cols 5-6 ("05" asserted / "00" otherwise) and cols 13-15 ("030" asserted /
 // "000" otherwise, presumably the overrun period in minutes the switch keeps
 // the fan running after the light goes off) both correlate with the switched
-// live too, but are deliberately left UNDECODED, and a third capture that
-// evening is why. Sampled across ONE continuous switched-live episode
-// (23:1x-23:22, the light on throughout), cols 13-15 read 030, then 029,
-// then 030 again. That is neither a constant nor a monotonic countdown, so
-// both of the obvious readings are wrong as stated:
+// live too, but are deliberately left UNDECODED. Sampled across ONE
+// continuous switched-live episode (23:1x-23:22, light on throughout),
+// cols 13-15 read 030, then 029, then 030 again -- neither a constant nor a
+// monotonic countdown, so both obvious readings are wrong: not a fixed
+// *configured* period (could not have shown 029), and not a *remaining*
+// countdown (could not have gone back up).
 //
-//   - not a fixed *configured* period, or it could not have shown 029;
-//   - not a *remaining* countdown, or it could not have gone back up.
-//
-// The reading that fits is an overrun timer being continuously RELOADED for
-// as long as the switch is held -- 029 being the one sample that landed
-// between a tick and its reload -- which would mean the field only becomes a
-// meaningful countdown once the switch RELEASES. That is untested: every
-// sample so far was taken with the light on, because that is the only state
-// in which the field is nonzero at all and the scrape takes ~90s to reach
-// this page. Settling it needs a scrape started immediately after the light
-// goes off, inside the overrun. Until then a decoded value here would carry
-// an observation the evidence does not establish.
+// The reading that fits is an overrun timer continuously RELOADED for as
+// long as the switch is held -- 029 being the one sample that landed between
+// a tick and its reload -- meaning the field only becomes a meaningful
+// countdown once the switch RELEASES. That is untested: every sample so far
+// was taken with the light on, the only state where the field is nonzero at
+// all, and the scrape takes ~90s to reach this page. Settling it needs a
+// scrape started immediately after the light goes off, inside the overrun.
 //
 // Cols 8-9 (always "00" in every capture above) and cols 10-11 (ticking
 // 00/01/02/04/05 across ALL three episode types, switched and commanded and
@@ -168,23 +162,22 @@ constexpr Field PAGE_3_FIELDS[] = {
 // like some general sample/tick counter unrelated to switch state, but with
 // only a handful of samples there's nothing safe to name it.
 //
-// PLAN.md §8 stage 11 (14 Aug 2026) tested the other two switched lives in
-// the house against this same page. Column 0 fired for both, confirming it
-// as an AGGREGATE flag rather than something specific to the toilet light.
-// Cols 5-6 read "05" for both, identical to every toilet-switch capture --
-// so they do not identify which input is asserted, ruling out the one
-// candidate PLAN.md had floated for a "which switch" field. No column on
-// this page (or on pages 9/10 -- see the PAGES table entry below) varies by
-// which switched live is held, so there is no per-input signal anywhere in
-// this unit's diagnostic pages: SWITCHED_LIVE_BOOST is the whole story.
+// 14 Aug 2026 tested the other two switched lives in the house against this
+// same page. Column 0 fired for both, confirming it as an AGGREGATE flag
+// rather than something specific to the toilet light. Cols 5-6 read "05" for
+// both, identical to every toilet-switch capture -- so they do not identify
+// which input is asserted, ruling out that candidate for a "which switch"
+// field. No column on this page (or on pages 9/10 -- see the PAGES table
+// entry below) varies by which switched live is held, so there is no
+// per-input signal anywhere in this unit's diagnostic pages:
+// SWITCHED_LIVE_BOOST is the whole story.
 //
 // STALE BY CONSTRUCTION, same as every other diagnostic-page entity: this
 // whole page reaches the component only through the ~15-minute
-// fetch_diagnostics scrape (PLAN.md §4), so a reading here can lag reality
-// by up to that long. It is useful as an explanation surfaced in Home
-// Assistant ("why is the unit boosting right now") but must never become a
-// precondition for refusing or gating a user command -- a stale "not
-// asserted" reading is not proof the switch is currently off.
+// fetch_diagnostics scrape, so a reading here can lag reality by up to that
+// long. Useful as an explanation surfaced in Home Assistant ("why is the
+// unit boosting right now") but must never gate a user command -- a stale
+// "not asserted" reading is not proof the switch is currently off.
 constexpr Field PAGE_5_FIELDS[] = {nonzero_field(0, 1, BinaryKey::SWITCHED_LIVE_BOOST)};
 
 // Page 6/7/8: "0000 1 0 000 00 " -- raw, link state, closed, west %, west
@@ -225,16 +218,14 @@ constexpr Page PAGES[] = {
     // 9/10: SW4/SW5 -- raw, closed (pos 5, NOT pos 7 as on pages 6/7/8),
     // momentary time. Not decoded. Looked like a lead for a while: unlike
     // every other undecoded page on this unit, the captured row is not
-    // obviously empty ("1022 0 25 00    " -- nonzero raw, momentary time
-    // 25 -- against pages 6/7/8's inert "0000 1 0 000 00 "), and "SW4/SW5
-    // not wired here" was inherited from mhrv_orig's page map without ever
-    // being checked against an asserted switch. PLAN.md §8 stage 11 ran
-    // that check across all three of the house's switched lives (not just
-    // the toilet one stage 10 tested) and neither page moved for any of
-    // them -- "1021-1022 0 25 00" / "1020-1021 0" every time, the small
-    // drift between samples matching a free-running counter rather than a
-    // switch flag. So the original "not wired" note holds after all, now
-    // for a checked reason instead of an assumed one.
+    // obviously empty ("1022 0 25 00    " -- nonzero raw, momentary time 25
+    // -- against pages 6/7/8's inert "0000 1 0 000 00 "), and "SW4/SW5 not
+    // wired here" was inherited from mhrv_orig's page map without ever being
+    // checked against an asserted switch. Testing across all three of the
+    // house's switched lives moved neither page -- "1021-1022 0 25 00" /
+    // "1020-1021 0" every time, the small drift between samples matching a
+    // free-running counter rather than a switch flag. The original "not
+    // wired" note holds after all, now for a checked reason.
     {11, PAGE_11_FIELDS, array_len(PAGE_11_FIELDS), nullptr},
     // 12-18: wireless T0-T4 timers, the security PIN digits, and the two
     // plug-in sensor sockets -- empty on this unit (no wireless receiver, no
@@ -251,14 +242,12 @@ constexpr Page PAGES[] = {
     {25, nullptr, 0, page25_serial_hook},
     {26, nullptr, 0, page26_firmware_hook},
     // 27 is "Reset". The sheet says only "press Set to reset"; what it
-    // actually does has never been tried and is not guessed at here. This
-    // stage never presses anything -- decode_page() only ever reads line2,
-    // and there is deliberately no entry above that would do so for page
-    // 27 either, since even reading it earns no benefit worth the risk of a
-    // future table edit accidentally growing a write path here. The keypad
-    // and sequence stages that come after this one must NOT press Set while
-    // the display shows this page -- see PLAN.md §7, which interlocks Set
-    // off entirely for the whole diagnostic menu, not just this page.
+    // actually does has never been tried and is not guessed at here.
+    // decode_page() only ever reads line2, and there is deliberately no
+    // entry above that would do so for page 27 either -- even reading it
+    // earns no benefit worth the risk of a future table edit accidentally
+    // growing a write path here. Set stays interlocked off for the whole
+    // diagnostic menu, not just this page (Runner::tap()/press()).
 };
 
 // ------------------------------------------------------------- dispatch --
@@ -323,8 +312,8 @@ void page4_internal_sensor_hook(const std::string &line2, const Sink &sink) {
 // Page 20: "0410 1          " -- raw west/normal-link state, then the same
 // value collapsed to a documented tri-state at column 5: 2 == "West",
 // 1 == "Link", 0 == "No Link" (the manual's own labels; what they mean on
-// this unit's network is not established -- PLAN.md §4). A hook rather than
-// a plain Field because the value is text, not a number or a boolean, the
+// this unit's network is not established). A hook rather than a plain Field
+// because the value is text, not a number or a boolean, the
 // same reason page24_antifrost_hook below is a hook and not a table row.
 void page20_link_hook(const std::string &line2, const Sink &sink) {
   int state = 0;

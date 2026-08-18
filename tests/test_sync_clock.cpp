@@ -10,8 +10,8 @@
 using namespace esphome::vent_axia;
 using namespace vatest;
 
-// Stage 7: SyncClock, plus the two new AdjustField pieces it introduces --
-// TargetFn (a live, re-read-every-iteration target) and the wrapping
+// SyncClock, plus the two AdjustField pieces only it uses -- TargetFn (a
+// live, re-read-every-iteration target) and the wrapping
 // direction functions (direction_wrap_24/60). Split into its own file rather
 // than growing test_sequence.cpp, per tests/CMakeLists.txt's glob -- reuses
 // that file's fake keypad/display harness via sequence_test_helpers.h.
@@ -34,9 +34,8 @@ const std::string kSetClockLine1 = "Set Clock";
 // ===================================================== AdjustField (clock) --
 
 TEST_CASE(day_field_does_not_wrap_from_sunday_to_monday) {
-  // PLAN.md/sequence.h are explicit that the day field is the one place
-  // direction_no_wrap (not direction_wrap_24/60) applies among the clock
-  // fields: Up on Sun does nothing on the real unit, so getting from Sun to
+  // The day field is the one clock field where direction_no_wrap applies
+  // rather than direction_wrap_24/60: Up on Sun does nothing on the real unit, so getting from Sun to
   // Mon can only mean six DOWN taps, never a single wrapping Up.
   Keypad kp;
   Display disp;
@@ -462,10 +461,10 @@ TEST_CASE(sync_clock_corrects_all_three_fields_with_exactly_four_sets_and_leaves
 }
 
 TEST_CASE(sync_clock_presses_set_not_up_when_the_commit_set_is_dropped_and_the_editor_stays_open) {
-  // Finding 1: SyncClock's LEAVE step runs right after the fourth (commit)
-  // Set. If THAT Set was dropped, the editor is still open, and the old
-  // code's unconditional LeaveMenu Up would adjust the minute field instead
-  // of navigating out -- PLAN.md §3's 14C->19C failure, and worse here
+  // SyncClock's LEAVE step runs right after the fourth (commit) Set. If
+  // THAT Set was dropped, the editor is still open, and an unconditional
+  // LeaveMenu Up would adjust the minute field instead of navigating out --
+  // the 14C->19C failure, and worse here
   // because the run would then report DONE having silently written a wrong
   // time. This test keeps line2 blinking (~350ms period, the same rate
   // Display::editor_open()'s own class comment documents for a real open
@@ -595,7 +594,7 @@ TEST_CASE(sync_clock_presses_set_not_up_when_the_commit_set_is_dropped_and_the_e
 }
 
 TEST_CASE(sync_clock_settled_commit_does_not_trigger_a_spurious_exit_chain) {
-  // Finding 1a's false-positive guard: a SUCCESSFUL commit also changes
+  // The false-positive guard: a SUCCESSFUL commit also changes
   // line2 (the editor closing repaints the settled screen), so gating
   // EXIT_CHAIN on too-short a settle window would misread that as "still
   // open" and run ExitEditChain needlessly -- which, per SETTLE_MS's own

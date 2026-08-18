@@ -1,11 +1,10 @@
 #pragma once
 
 // Key mask assertion, TX cadence, the tap/hold queue and the release
-// watchdog (PLAN.md §2 "Keypad"). Plain C++17, no ESPHome headers -- see
-// README "Portable core". This is the first stage that transmits anything
-// to the real unit: every frame the firmware sends from here on passes
-// through this class, and the constants below were paid for with debugging
-// on the live MVHR (PLAN.md §2's timing table) -- treat them as spec.
+// watchdog. Plain C++17, no ESPHome headers -- see README "Portable core".
+// Every frame the firmware sends to the real unit passes through this
+// class, and the constants below were paid for with debugging on the live
+// MVHR -- treat them as spec.
 //
 // Driven entirely by loop(uint32_t now_ms), never by calling millis()
 // itself: press()/release()/tap() only record *what* was asked for, and the
@@ -36,19 +35,16 @@ class Keypad {
   using FrameSink = std::function<void(const uint8_t *data, size_t len)>;
 
   /// Portable logging hook, same reasoning as FrameSink: this file must not
-  /// depend on ESPHome's logger, but several events here (PLAN.md risk 1,
-  /// §2's watchdog, §7's read_only) are meant to be loud, not silent. Each
-  /// member is optional -- an unset one is simply skipped, which is
-  /// convenient for tests that only care about one severity, or none. The
-  /// hub wires these to ESP_LOGI/ESP_LOGW/ESP_LOGE.
+  /// depend on ESPHome's logger, but several events here are meant to be
+  /// loud, not silent. Each member is optional -- an unset one is simply
+  /// skipped, which is convenient for tests that only care about one
+  /// severity, or none. The hub wires these to ESP_LOGI/ESP_LOGW/ESP_LOGE.
   ///
   /// debug added for frame_logger.h's FrameLogger, the only portable-core
   /// user of this severity: its lines are deliberately chatty (a raw frame
-  /// arrives ~3.3 times a second) and were ESP_LOGD before that class moved
-  /// out of vent_axia.cpp. Wiring them to warn or error instead would
-  /// promote debug spam to a severity mhrv.yaml's log level shows by
-  /// default; this keeps them at DEBUG, which mhrv.yaml does run at, so
-  /// behaviour is unchanged.
+  /// arrives ~3.3 times a second). Wiring them to warn or error instead
+  /// would promote debug spam to a severity mhrv.yaml's log level shows by
+  /// default; this keeps them at DEBUG, which mhrv.yaml does run at.
   struct LogSink {
     std::function<void(const std::string &)> info;
     std::function<void(const std::string &)> warn;
@@ -71,16 +67,16 @@ class Keypad {
   /// busy() still reports it, the under-emit counter below still counts --
   /// only the actual FrameSink call is skipped. This is what lets the
   /// production firmware be soak-tested against the live unit with the
-  /// keypad muted (PLAN.md §7, §8 stage 1): the exact code path runs, it
-  /// just never reaches the wire. Each suppressed press is logged (at least
-  /// once, not once per retransmit) so a soak test can confirm silence at
-  /// the unit rather than just trusting the flag.
+  /// keypad muted: the exact code path runs, it just never reaches the
+  /// wire. Each suppressed press is logged (at least once, not once per
+  /// retransmit) so a soak test can confirm silence at the unit rather than
+  /// just trusting the flag.
   void set_read_only(bool read_only) { this->read_only_ = read_only; }
   bool read_only() const { return this->read_only_; }
 
   /// Retransmit cadence while a mask is asserted. Default 20ms -- the old
-  /// implementation used a hardware timer ISR at 26/28ms; PLAN.md §2.1
-  /// explains why that is gone in favour of a loop()-driven comparison.
+  /// implementation used a hardware timer ISR at 26/28ms; this class uses a
+  /// loop()-driven comparison instead.
   void set_tx_interval_ms(uint32_t ms) { this->tx_interval_ms_ = ms; }
   uint32_t tx_interval_ms() const { return this->tx_interval_ms_; }
 
@@ -144,13 +140,13 @@ class Keypad {
   void loop(uint32_t now_ms);
 
   /// Presses that emitted fewer than 2 frames before their tap duration
-  /// elapsed -- PLAN.md risk 1's diagnostic for a loop() stall landing
-  /// inside a short tap. Not prevented, just made visible: dump_config()
-  /// reports this, and if it ever climbs in practice the documented remedy
-  /// is raising tap_duration to 100ms (the unit's own repeat threshold is
-  /// comfortably above 260ms, so there is headroom). Only evaluated for
-  /// taps that run to their natural end, not one cut short by press() or
-  /// release() pre-empting it.
+  /// elapsed -- a diagnostic for a loop() stall landing inside a short tap.
+  /// Not prevented, just made visible: dump_config() reports this, and if
+  /// it ever climbs in practice the documented remedy is raising
+  /// tap_duration to 100ms (the unit's own repeat threshold is comfortably
+  /// above 260ms, so there is headroom). Only evaluated for taps that run
+  /// to their natural end, not one cut short by press() or release()
+  /// pre-empting it.
   uint32_t under_emitting_presses() const { return this->under_emitting_presses_; }
 
   /// Times the watchdog has force-released a stuck mask. Expected to stay
@@ -187,9 +183,9 @@ class Keypad {
   QueuedTap pop_queued_tap_();
 
   /// Sends a frame if the asserted mask requires one this tick: immediately
-  /// on any 0->nonzero or value change (PLAN.md risk 1 -- see the class
-  /// comment), otherwise every tx_interval_ms_ while it stays asserted, and
-  /// never while asserted_mask_ == 0. Silence *is* the release.
+  /// on any 0->nonzero or value change, otherwise every tx_interval_ms_
+  /// while it stays asserted, and never while asserted_mask_ == 0. Silence
+  /// *is* the release.
   void maybe_transmit_(uint32_t now_ms);
 
   FrameSink frame_sink_;

@@ -111,9 +111,9 @@ void Keypad::loop(uint32_t now_ms) {
   // Watchdog first, independent of everything below: no matter what state
   // this tick's caller believes it left things in, a mask asserted
   // continuously for key_watchdog_ms_ gets force-cleared. This is the
-  // backstop the old setup needed four separate YAML watchdog scripts for
-  // (PLAN.md §2's "Watchdog") -- nothing here should be able to leave a key
-  // stuck, including a bug in this very class.
+  // backstop the old setup needed four separate YAML watchdog scripts for --
+  // nothing here should be able to leave a key stuck, including a bug in
+  // this very class.
   if (this->asserted_mask_ != 0 && (now_ms - this->press_started_ms_) >= this->key_watchdog_ms_) {
     if (this->log_.error) {
       this->log_.error("keypad: watchdog force-releasing " + describe_mask(this->asserted_mask_) + " after " +
@@ -143,10 +143,10 @@ void Keypad::loop(uint32_t now_ms) {
   switch (this->state_) {
     case State::TAP_PRESS:
       if (now_ms - this->phase_started_ms_ >= this->current_tap_duration_ms_) {
-        // Evaluated only here, at a tap's natural end -- PLAN.md risk 1's
-        // diagnostic. A press cut short by press()/release() pre-empting it
-        // did not run to completion, so counting it here would conflate
-        // "interrupted on purpose" with "silently dropped by a stall".
+        // Evaluated only here, at a tap's natural end. A press cut short by
+        // press()/release() pre-empting it did not run to completion, so
+        // counting it here would conflate "interrupted on purpose" with
+        // "silently dropped by a stall".
         if (this->frames_this_episode_ < 2) {
           this->under_emitting_presses_++;
           if (this->log_.warn) {
@@ -193,11 +193,11 @@ void Keypad::maybe_transmit_(uint32_t now_ms) {
   const bool mask_changed = !this->have_tx_mask_ || this->asserted_mask_ != this->last_tx_mask_;
   const bool interval_elapsed = (now_ms - this->last_tx_ms_) >= this->tx_interval_ms_;
   // Send immediately whenever the asserted mask changes to something
-  // non-zero, then every tx_interval_ms_ while it stays asserted (PLAN.md
-  // risk 1): ESPHome's loop() can stall for tens of ms during Wi-Fi
-  // reconnects, API bursts and OTA, and without the immediate send a stall
-  // landing inside a short tap could emit zero frames -- a silently dropped
-  // keypress, exactly what key_gap was raised to eliminate.
+  // non-zero, then every tx_interval_ms_ while it stays asserted: ESPHome's
+  // loop() can stall for tens of ms during Wi-Fi reconnects, API bursts and
+  // OTA, and without the immediate send a stall landing inside a short tap
+  // could emit zero frames -- a silently dropped keypress, exactly what
+  // key_gap was raised to eliminate.
   if (!mask_changed && !interval_elapsed) {
     return;
   }

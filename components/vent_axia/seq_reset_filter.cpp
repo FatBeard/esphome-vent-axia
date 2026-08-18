@@ -11,42 +11,35 @@ constexpr protocol::KeyMask DOWN = protocol::key_mask(protocol::Key::DOWN);
 }  // namespace
 
 void ResetFilter::on_start() {
-  // Opus review (Finding 1): snapshot the CURRENT filter-hours reading
-  // before the hold does anything, so VERIFY can tell "the reading moved"
-  // apart from "filter_hours_source_ is just answering the same stale value
-  // it always has" -- see hours_before_'s own comment (sequence.h) for why
-  // that distinction matters and what it does/does not buy. A plain field
-  // assignment, not gated on filter_hours_source_ being set: if it isn't,
-  // this stores nullopt, and VERIFY's own guard already treats an unset
-  // source as "no reading" independently of hours_before_.
+  // Snapshot the CURRENT filter-hours reading before the hold does anything,
+  // so VERIFY can tell "the reading moved" apart from "filter_hours_source_
+  // is just answering the same stale value it always has" -- see
+  // hours_before_'s own comment (sequence.h). A plain field assignment, not
+  // gated on filter_hours_source_ being set: if it isn't, this stores
+  // nullopt, and VERIFY's own guard already treats an unset source as "no
+  // reading" independently of hours_before_.
   this->hours_before_ = this->filter_hours_source_ ? this->filter_hours_source_() : std::nullopt;
 }
 
 Poll ResetFilter::poll() {
   switch (this->step_) {
     // No retry, no wait-and-see -- this is the ONE guard standing between a
-    // stray press and an unrecoverable write (this class's own comment,
-    // sequence.h), same reasoning as SetAirflowMode's own CHECK_CURRENT
-    // (seq_set_airflow_mode.cpp): a menu or diagnostic screen does not clear
-    // itself within a sequence's patience, so a wrong screen here means
-    // refuse outright, not wait it out. have_frame() is checked first: with
-    // no frame at all, line1() is whatever the Display was default- or
-    // last-constructed with, which must never be read as "the status
-    // screen" just because it happens not to match a known menu prefix.
+    // stray press and an unrecoverable write, same reasoning as
+    // SetAirflowMode's own CHECK_CURRENT: a menu or diagnostic screen does
+    // not clear itself within a sequence's patience, so a wrong screen here
+    // means refuse outright, not wait it out. have_frame() is checked first:
+    // with no frame at all, line1() is whatever the Display was default- or
+    // last-constructed with, which must never be read as "the status screen"
+    // just because it happens not to match a known menu prefix.
     //
     // DELIBERATE DIVERGENCE from mhrv_orig/controls.yaml's own reset_filter
-    // script, worth recording rather than leaving as though refusing were
-    // simply inherited from SetAirflowMode's CHECK_CURRENT: the old script
-    // did not refuse on a wrong screen, it ran goto_menu 0 first and only
-    // aborted if THAT failed to reach the status screen. This sequence
-    // refuses outright instead, because actively leaving a menu here means
-    // LeaveMenu's one Up tap followed by waiting out the unit's own ~2min
-    // timeout (sequence.h's LeaveMenu class comment) -- a long, key-pressing
-    // preamble in front of the one irreversible write in this component,
-    // for a button a human presses deliberately, where a simple retry costs
-    // nothing. Refusing fast and asking the human to try again once the
-    // display has settled is the smaller risk than spending up to two
-    // minutes pressing keys before an operation that cannot be undone.
+    // script: that one did not refuse on a wrong screen, it ran goto_menu 0
+    // first and only aborted if THAT failed to reach the status screen. This
+    // sequence refuses outright instead, because actively leaving a menu
+    // here means LeaveMenu's one Up tap followed by waiting out the unit's
+    // own ~2min timeout -- a long, key-pressing preamble in front of the one
+    // irreversible write in this component, for a button a human presses
+    // deliberately, where a simple retry costs nothing.
     case CHECK_STATUS: {
       if (!this->runner_->display().have_frame() ||
           screens::is_menu_screen(this->runner_->display().raw_line1())) {
@@ -91,16 +84,14 @@ Poll ResetFilter::poll() {
         return Poll::RUNNING;
       }
       // Logged, never acted on. This model's manual describes no
-      // confirmation prompt -- the hold is documented as the whole
-      // procedure -- but some other Vent-Axia models are known to answer
-      // this same gesture with a "Reset Filter?" prompt needing a second
-      // keypress, and this unit has never actually been observed either
-      // way (mhrv_orig/controls.yaml's own comment on this exact line).
-      // Firing a guessed confirm press at whatever happens to be on screen
-      // would risk pressing a key into a context nobody has ever seen,
-      // worse than simply leaving an unconfirmed reset alone -- so if a
-      // prompt ever does show up here, this line is where a human first
-      // sees it, not a code path that reacts to it.
+      // confirmation prompt -- the hold is documented as the whole procedure
+      // -- but some other Vent-Axia models are known to answer this same
+      // gesture with a "Reset Filter?" prompt needing a second keypress, and
+      // this unit has never actually been observed either way
+      // (mhrv_orig/controls.yaml's own comment on this exact line). Firing a
+      // guessed confirm press at whatever happens to be on screen would risk
+      // pressing a key into a context nobody has ever seen -- so if a prompt
+      // ever does show up here, this line is where a human first sees it.
       if (this->log().info) {
         this->log().info("ResetFilter: after hold, line1='" + this->runner_->display().text_line1() + "' line2='" +
                          this->runner_->display().text_line2() + "'");
@@ -119,17 +110,15 @@ Poll ResetFilter::poll() {
       return this->await(this->diagnostics_scan_, VERIFY);
 
     // Four distinguishable outcomes, each logged differently -- mhrv_orig's
-    // own three-way log, extended with one more case Opus review (Finding 1)
-    // found it needed: a stale-but-nonzero reading (filter_hours_source_
-    // answering the same value it did before the hold, e.g. because THIS
-    // run's scan missed page 23) must not be reported as a fresh
-    // confirmation just because it happens to be nonzero -- see
-    // hours_before_'s own comment (sequence.h) for why that particular lie
-    // is the one this sequence must not tell. Collapsing any of these four
-    // into "pass"/"fail" would hide followup a human needs. Never returns
-    // FAILED: the hold already happened in step 2 (HOLD), so there is
-    // nothing left here to protect by failing the sequence -- see this
-    // class's own comment (sequence.h).
+    // own three-way log, extended with one more case: a stale-but-nonzero
+    // reading (filter_hours_source_ answering the same value it did before
+    // the hold, e.g. because THIS run's scan missed page 23) must not be
+    // reported as a fresh confirmation just because it happens to be
+    // nonzero -- see hours_before_'s own comment (sequence.h). Collapsing
+    // any of these four into "pass"/"fail" would hide followup a human
+    // needs. Never returns FAILED: the hold already happened in step 2
+    // (HOLD), so there is nothing left here to protect by failing the
+    // sequence.
     case VERIFY: {
       const std::optional<int> hours = this->filter_hours_source_ ? this->filter_hours_source_() : std::nullopt;
       if (!hours.has_value()) {
@@ -166,11 +155,8 @@ Poll ResetFilter::poll() {
       return Poll::DONE;
 
     // step_ somehow outside the Step enum -- a bug, not a legitimate landing
-    // state (every real step above has its own explicit case, including
-    // FINISHED). Previously fell through to the same `return Poll::DONE;` as
-    // FINISHED, which would report the filter reset as having verified
-    // cleanly when the sequence had actually gone off the rails; FAILED
-    // routes through Runner::recover() instead.
+    // state. FAILED routes through Runner::recover() rather than reporting
+    // the filter reset as verified when the sequence had gone off the rails.
     default:
       if (this->log().error) {
         this->log().error("ResetFilter: invalid step " + std::to_string(static_cast<int>(this->step_)));

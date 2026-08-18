@@ -1,12 +1,12 @@
 #pragma once
 
-// The diagnostic page/field table and its dispatch (PLAN.md §4), replacing
+// The diagnostic page/field table and its dispatch, replacing
 // mhrv_orig/diagnostic_sensors.yaml's 14 hand-written lambdas with data.
 // Plain C++17, no ESPHome headers -- see README "Portable core".
 //
 // Decoding is entirely passive, driven off the display: whatever page the
-// unit (or a later stage's scrape sequence) happens to be showing gets fed
-// through decode_page() below. There is no polling and nothing in this file
+// unit (or a scrape sequence) happens to be showing gets fed through
+// decode_page() below. There is no polling and nothing in this file
 // transmits or navigates anything.
 
 #include <functional>
@@ -34,10 +34,9 @@ struct Sink {
   /// directly through publish_binary. FILTER_CHANGE_DUE already has a live
   /// source -- status::StatusTracker, off the status screen's "Check
   /// Filter" message, refreshed roughly 3x/second -- and only the hub can
-  /// decide how the two reconcile (PLAN.md risk 7: they are expected to
-  /// agree, and a disagreement is worth a log line, not a silent pick). A
-  /// caller that does not care about the cross-check -- e.g. a test -- can
-  /// simply leave this unset.
+  /// decide how the two reconcile (expected to agree; a disagreement is
+  /// worth a log line, not a silent pick). A caller that does not care
+  /// about the cross-check -- e.g. a test -- can simply leave this unset.
   std::function<void(bool)> report_filter_change_due;
 };
 

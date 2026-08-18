@@ -10,8 +10,8 @@
 using namespace esphome::vent_axia;
 using namespace vatest;
 
-// Stage 7's last deliverable, and the last sequence in this component by
-// design (PLAN.md §8): ResetFilter, the one irreversible operation. Split
+// ResetFilter, the one irreversible operation, and the last sequence built
+// in this component for exactly that reason. Split
 // into its own file per tests/CMakeLists.txt's glob -- reuses
 // test_sequence.cpp/test_set_airflow_mode.cpp's fake keypad/display harness
 // via sequence_test_helpers.h, same as every other seq_*.cpp's test file.
@@ -63,8 +63,7 @@ void run_diagnostics_child_to_completion(Display &disp, Clock &clock, const std:
 }  // namespace
 
 // ================================================ Requires the status screen --
-// PLAN.md §7's own words for this sequence: "requires the status screen".
-// No retry window, same reasoning as SetAirflowMode's own CHECK_CURRENT
+// This sequence requires the status screen. No retry window, same reasoning as SetAirflowMode's own CHECK_CURRENT
 // (seq_set_airflow_mode.cpp) -- this is the one guard standing between a
 // stray press and an unrecoverable write.
 
@@ -91,7 +90,7 @@ TEST_CASE(a_menu_screen_at_start_refuses_without_pressing_anything) {
   CHECK(!kp.busy());
   CHECK(log.error_count >= 1);
   CHECK(episodes_from(sink).empty());
-  // Finding 2: actionable, not just diagnostic -- this is what a human sees
+  // Actionable, not just diagnostic -- this is what a human sees
   // when the button appears to do nothing, unlike the reference script
   // (mhrv_orig/controls.yaml), which actively tried goto_menu 0 first
   // rather than refusing outright (seq_reset_filter.cpp's own CHECK_STATUS
@@ -312,8 +311,7 @@ TEST_CASE(a_diagnostics_scan_that_cannot_even_enter_the_menu_fails_the_whole_seq
 
 // ===================================================== The four outcomes --
 // mhrv_orig/controls.yaml's own three-way log (no reading at all, still
-// zero, or confirmed nonzero), extended by Opus review (Finding 1) with a
-// fourth: a nonzero reading that is UNCHANGED from before the hold, which
+// zero, or confirmed nonzero), extended here with a fourth: a nonzero reading that is UNCHANGED from before the hold, which
 // must not be reported as a fresh confirmation -- see hours_before_'s own
 // comment (sequence.h) for why that particular false positive is the one
 // this sequence must never produce. All four are distinguishable, each
@@ -438,15 +436,15 @@ TEST_CASE(a_filter_hours_source_reading_nonzero_and_changed_logs_confirmed_with_
 }
 
 TEST_CASE(a_filter_hours_source_reading_nonzero_but_unchanged_from_before_the_hold_warns_not_confirms) {
-  // Finding 1's own regression: someone cleans the filters EARLY and
+  // The stale-reading regression: someone cleans the filters EARLY and
   // presses reset_filter while the timer still shows a nonzero reading --
   // then diagnostics_scan_'s own scan happens to miss page 23 this run
   // (a dropped frame mid-scroll, say), so filter_hours_source_ keeps
   // answering the SAME pre-hold value it always has. Before the on_start()
   // snapshot existed, a bare read here would have read this as "confirmed,
   // N hours to go" for a reset that may never have taken -- exactly the one
-  // outcome PLAN.md's "refuse rather than guess" spirit says must not be
-  // allowed to lie, since it is what a human trusts before deciding whether
+  // outcome that must never be allowed to lie, since it is what a human
+  // trusts before deciding whether
   // to press this irreversible button again. The constant lambda below
   // means on_start()'s pre-hold snapshot and VERIFY's post-scan read are
   // identical, 4380 both times -- proving VERIFY catches the staleness

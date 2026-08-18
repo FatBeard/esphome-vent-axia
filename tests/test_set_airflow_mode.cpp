@@ -11,17 +11,15 @@
 using namespace esphome::vent_axia;
 using namespace vatest;
 
-// Stage 7's other deliverable: SetAirflowMode (PLAN.md §3's row, §6's
-// airflow_mode select). Split into its own file per tests/CMakeLists.txt's
+// SetAirflowMode, behind the airflow_mode select. Split into its own file
+// per tests/CMakeLists.txt's
 // glob -- reuses test_sequence.cpp/test_sync_clock.cpp's fake keypad/display
 // harness via sequence_test_helpers.h, same as test_sync_clock.cpp does.
 //
-// Opus's review of this stage's first draft (Finding 1) found that
-// CHECK_CURRENT never verified the display was actually on the status loop
-// before touching Main -- so, unlike the claim this comment used to make,
-// several tests below DO use screens::classify()'s menu-screen strings now,
-// specifically to prove that refusal. Finding 2 additionally made
-// CHECK_CURRENT depend on the hub's alternation-aware status::StatusTracker
+// Several tests below use screens::classify()'s menu-screen strings, to
+// prove CHECK_CURRENT refuses to touch Main unless the display is actually
+// on the status loop. CHECK_CURRENT also depends on the hub's
+// alternation-aware status::StatusTracker
 // rather than a raw single-frame parse, so every test constructs one and
 // wires it via seq.set_status() -- see feed() below, which keeps a Display
 // and a StatusTracker in sync exactly the way VentAxiaHub::loop() does for
@@ -63,9 +61,9 @@ std::vector<EpisodeSpan> episode_spans_from(const RecordingSink &sink) {
 /// Feeds an identical line1/line2 update into both `disp` and `status`,
 /// mirroring exactly what VentAxiaHub::loop() does for every incoming frame
 /// (vent_axia.cpp: display_.update() immediately followed by status_.update()
-/// with is_status_screen = display_.screen_kind() == STATUS). Finding 2
-/// (Opus review) made SetAirflowMode depend on the sticky, alternation-aware
-/// StatusTracker rather than a raw display read, so every test needs both
+/// with is_status_screen = display_.screen_kind() == STATUS). SetAirflowMode
+/// depends on the sticky, alternation-aware StatusTracker rather than a raw
+/// display read, so every test needs both
 /// kept in sync the same way production code does, or CHECK_CURRENT's own
 /// "purge state not yet known" refusal fires on every single test that
 /// forgets it.
@@ -78,7 +76,7 @@ void feed(Display &disp, status::StatusTracker &status, const std::string &line1
 }  // namespace
 
 // ======================================================= On the status loop --
-// Finding 1 (Opus review): CHECK_CURRENT must prove the display is on the
+// CHECK_CURRENT must prove the display is on the
 // status loop before touching Main at all -- a menu or diagnostic screen is
 // a reachable start state (Runner::recover()'s own exit tap does not wait
 // for the unit to actually leave the menu, and the unit's own timeout is
@@ -141,7 +139,7 @@ TEST_CASE(a_diagnostic_screen_at_start_refuses_without_pressing_anything) {
 }
 
 // ============================================ Purge state must be known --
-// Finding 2 (Opus review): CHECK_CURRENT's purge answer must come from
+// CHECK_CURRENT's purge answer must come from
 // status_'s STICKY purging(), never a raw single-frame parse -- and a
 // tracker that does not yet have an answer (or was never wired up at all)
 // must FAIL rather than being read as "not purging" (CLAUDE.md's "Blank !=
@@ -278,10 +276,9 @@ TEST_CASE(purge_target_from_normal_start_is_a_5500ms_hold_not_a_tap) {
 }
 
 TEST_CASE(purge_target_with_an_active_but_not_in_this_frame_purge_does_nothing) {
-  // Finding 2 (Opus review): the STICKY purging() must be trusted over a
-  // single frame -- the status loop alternates, and PLAN.md risk 4 (the
-  // purge layout is unresolved) makes a single-frame miss of an active
-  // purge plausible, not just theoretical. This seeds a genuine Purge
+  // The STICKY purging() must be trusted over a single frame: the status
+  // loop alternates, and the purge screen layout is unresolved, so a
+  // single-frame miss of an active purge is plausible, not theoretical. This seeds a genuine Purge
   // sighting, then lets the CURRENT frame move on to something that
   // mentions Purge nowhere at all (simulating the alternation), well
   // within status.h's ~12s sticky window -- purging() must still read
@@ -673,8 +670,7 @@ TEST_CASE(normal_target_from_boosting_start_normalises_through_continuous_with_p
 TEST_CASE(normalise_guard_caps_at_4_taps_and_fails_cleanly_without_ever_applying_the_target) {
   // A unit that never leaves "Boost Airflow" no matter how many Main taps
   // land -- the same class of failure AdjustField's own guard exists to
-  // bound elsewhere in this component (PLAN.md risk 6: "bound the loop,
-  // don't trust luck"). Proves the guard trips at exactly NORMALISE_GUARD
+  // bound elsewhere in this component: bound the loop, don't trust luck. Proves the guard trips at exactly NORMALISE_GUARD
   // (4) taps and the sequence FAILS outright rather than proceeding to tap
   // the target's own press count on top of an unknown boost state -- see
   // after_probe_()'s own comment for why that would be worse than refusing.
@@ -863,12 +859,11 @@ TEST_CASE(normal_target_normalise_with_moving_line2_does_not_trip_the_stuck_bail
   }
 }
 
-// ================================================== Purge -> Boost (risk 3) --
+// ========================================================= Purge -> Boost --
 
 TEST_CASE(boost30_target_from_purging_start_cancels_first_then_probes_then_applies) {
-  // PLAN.md risk 3's own worked example: "Purge -> Boost 30 is a 5.5s
-  // cancel hold, an 8s probe, up to four normalising taps with probes, then
-  // one tap." This simulates the cheapest case of that path -- the cancel
+  // Purge -> Boost 30 is a 5.5s cancel hold, an 8s probe, up to four
+  // normalising taps with probes, then one tap. This simulates the cheapest case of that path -- the cancel
   // hold works first time and the unit is confirmed Normal on the very
   // first probe, so no normalising taps are needed at all, leaving exactly
   // two episodes: the cancel HOLD and the single apply TAP.
@@ -912,7 +907,7 @@ TEST_CASE(boost30_target_from_purging_start_cancels_first_then_probes_then_appli
 TEST_CASE(set_airflow_mode_refuses_to_guess_when_purge_is_still_showing_after_the_cancel_hold) {
   // Defensive branch (seq_set_airflow_mode.cpp's PROBE_CHECK): whether the
   // 5.5s cancel hold reliably clears Purge is untested on real hardware
-  // (README "Portable core" / PLAN.md §8's "unvalidated against hardware").
+  // -- it is one of the paths still unvalidated against the unit.
   // If it somehow does not, tapping Main believing it is adjusting the
   // Normal/Boost counter would be guessing at an interaction nobody has
   // observed -- this proves that path fails loudly instead of guessing.

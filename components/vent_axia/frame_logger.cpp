@@ -27,15 +27,13 @@ void FrameLogger::log(const protocol::DisplayFrame &frame, uint32_t now_ms) {
   // (bytes 5 and 22, "probably an HD44780 DDRAM address" per protocol.h's own
   // comment -- never confirmed). Gated on the 6-byte tuple changing AND a
   // 2000ms floor rather than either alone, because nobody knows what these
-  // bytes are yet, which is the whole reason to log them: a byte that's
-  // genuinely constant gives one line and tells you everything; a byte that
-  // toggles with editor state (a cursor/blink attribute, see DISPLAY-REVIEW.md
-  // §7) stays visible; a byte that differs on every frame (a counter or
-  // frame-phase value) would flood the log at the link's ~3.3 frames/s
-  // without the floor -- with it, that case instead shows up as a steady
-  // cadence AT the 2000ms limit, and that cadence is itself the answer: it
-  // says "this byte moves every frame" without needing to prove it 3.3 times
-  // a second.
+  // bytes are yet: a byte that's genuinely constant gives one line and tells
+  // you everything; a byte that toggles with editor state (a cursor/blink
+  // attribute) stays visible; a byte that differs on every frame (a counter
+  // or frame-phase value) would flood the log at the link's ~3.3 frames/s
+  // without the floor -- with it, that case shows up as a steady cadence AT
+  // the 2000ms limit, and that cadence is itself the answer: it says "this
+  // byte moves every frame" without needing to prove it 3.3 times a second.
   //
   // The floor only bites for the 2000ms following a line that actually got
   // logged; outside that window every frame is eligible, so a first flip is
@@ -91,32 +89,28 @@ void FrameLogger::log(const protocol::DisplayFrame &frame, uint32_t now_ms) {
   // actually moves.
   //
   // A clearing transition is logged as "(none)" rather than passed over in
-  // silence. The falling edge is a finding in its own right: PLAN.md §8
-  // stage 14 names the annunciator *clearing* as the one part of
-  // humidity_boost still unobserved, and an observer should not have to
-  // infer it from log lines that stopped arriving -- inferring from an
-  // absence is exactly what this instrumentation was written to stop paying
-  // for.
+  // silence. The falling edge is a finding in its own right -- the
+  // annunciator *clearing* is the one part of humidity_boost still
+  // unobserved, and an observer should not have to infer it from log lines
+  // that stopped arriving.
   //
-  // The same RAW_LOG_MIN_INTERVAL_MS floor applies here, per line. Without
-  // it the description itself can oscillate: an open editor blinks line2
-  // between its value and blank every ~350ms, so a non-ASCII byte anywhere
-  // in that value alternates the description non-empty/empty at ~1.6
-  // lines/s -- and LeaveMenu deliberately waits out the unit's ~2-minute
-  // editor timeout (see CLAUDE.md's device invariants), which is ~190 lines
-  // from one excursion on a network-only logger. The cost is that an edge
-  // can be stamped up to 2000ms late if the same line logged just before
-  // it; read the capture's timestamps with that in mind. The stored
-  // description is NOT updated when the floor suppresses a change, so the
-  // change is simply re-detected on the next eligible frame rather than
-  // lost.
-  // The heartbeat repeats a line only while it HAS non-ASCII content: that is
-  // the state a late-connecting observer needs restated (a boost already
-  // running when they connect), and it is the state whose absence would
-  // otherwise be ambiguous. An all-ASCII line stays silent -- the
-  // unknown-byte heartbeat above already proves once a minute that this
-  // class is running, so repeating "(none)" on both lines as well would be
-  // three lines a minute to say the same thing.
+  // The same RAW_LOG_MIN_INTERVAL_MS floor applies here, per line. Without it
+  // the description itself can oscillate: an open editor blinks line2
+  // between its value and blank every ~350ms, so a non-ASCII byte anywhere in
+  // that value alternates the description non-empty/empty at ~1.6 lines/s --
+  // and LeaveMenu deliberately waits out the unit's ~2-minute editor timeout,
+  // which is ~190 lines from one excursion on a network-only logger. The cost
+  // is that an edge can be stamped up to 2000ms late if the same line logged
+  // just before it. The stored description is NOT updated when the floor
+  // suppresses a change, so the change is simply re-detected on the next
+  // eligible frame rather than lost.
+  //
+  // The heartbeat repeats a line only while it HAS non-ASCII content: the
+  // state a late-connecting observer needs restated (a boost already running
+  // when they connect). An all-ASCII line stays silent -- the unknown-byte
+  // heartbeat above already proves once a minute that this class is running,
+  // so repeating "(none)" on both lines too would be three lines a minute to
+  // say the same thing.
   const std::string desc1 = describe_unprintable(frame.line1);
   const bool line1_repeat = desc1 == this->last_logged_line1_unprintable_;
   if ((!line1_repeat || (!desc1.empty() && (now_ms - this->last_line1_log_ms_) >= RAW_LOG_HEARTBEAT_MS)) &&

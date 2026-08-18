@@ -89,15 +89,14 @@ Poll ReadSettings::poll() {
 
     case HOP_COMMIT:
       // Commits Indoor Temp's value UNTOUCHED (nothing has adjusted it) and
-      // steps the chain onto Outdoor Temp -- see PLAN.md's editing model.
+      // steps the chain onto Outdoor Temp.
       return this->tap_then_(SET, WAIT_OUTDOOR_SCREEN);
 
     // Ordering deliberately inverted from every other screen above: the
     // screen being LEFT is an open editor, which republishes every ~350ms,
-    // not a settled one -- see PLAN.md "The one place ordering still
-    // matters". Waiting for line1 to say Outdoor Temp FIRST, and only then
-    // arming the fresh-value wait below, is what stops Indoor Temp's still-
-    // blinking value from being read as Outdoor Temp's.
+    // not a settled one. Waiting for line1 to say Outdoor Temp FIRST, and
+    // only then arming the fresh-value wait below, is what stops Indoor
+    // Temp's still-blinking value from being read as Outdoor Temp's.
     case WAIT_OUTDOOR_SCREEN:
       if (this->runner_->display().screen_kind() == screens::ScreenKind::OUTDOOR_TEMP) {
         this->nav_started_ms_ = this->runner_->now_ms();
@@ -105,10 +104,10 @@ Poll ReadSettings::poll() {
       }
       if (this->elapsed() >= OUTDOOR_SCREEN_TIMEOUT_MS) {
         // Did not land on Outdoor Temp -- the chain's shape is not
-        // guaranteed (PLAN.md: a commit has been observed closing the
-        // editor outright rather than advancing). Not a reason to skip
-        // ExitEditChain: an editor may still be open on whatever screen
-        // this is, so the funnel step runs regardless -- see class comment.
+        // guaranteed: a commit has been observed closing the editor outright
+        // rather than advancing. Not a reason to skip ExitEditChain: an
+        // editor may still be open on whatever screen this is, so the
+        // funnel step runs regardless -- see class comment.
         if (this->log().warn) {
           this->log().warn("ReadSettings: did not land on Outdoor Temp after the Indoor Temp hop (line1='" +
                            this->runner_->display().text_line1() + "')");
@@ -149,10 +148,8 @@ Poll ReadSettings::poll() {
       return Poll::DONE;
 
     // step_ somehow outside the Step enum -- a bug, not a legitimate landing
-    // state (every real step above has its own explicit case, including
-    // FINISHED). Previously fell through to the same `return Poll::DONE;` as
-    // FINISHED, reporting success for a read that never actually ran to
-    // completion; FAILED routes through Runner::recover() instead.
+    // state. FAILED routes through Runner::recover() rather than reporting
+    // success for a read that never actually ran to completion.
     default:
       if (this->log().error) {
         this->log().error("ReadSettings: invalid step " + std::to_string(static_cast<int>(this->step_)));

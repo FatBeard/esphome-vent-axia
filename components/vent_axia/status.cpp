@@ -150,14 +150,13 @@ std::optional<bool> StatusTracker::get_(const Flag &flag) const {
 void StatusTracker::update(const std::string &line1, const std::string &line2, bool is_status_screen,
                             uint32_t now_ms) {
   // Advance the "time since update() last ran" clock unconditionally, before
-  // the early return below, and independently of is_status_screen. This is
-  // what makes a park invisible to the timeouts: last_frame_ms_ keeps
-  // tracking real time throughout the park, so the delta computed on the
-  // *first* status-screen frame after it resumes is small (time since that
-  // last call), not the large one spanning the whole parked interval. If
-  // this instead only advanced on status-screen frames, the flags would see
-  // one huge delta on return and age out immediately -- exactly the bug
-  // is_status_screen exists to prevent.
+  // the early return below, independently of is_status_screen. This is what
+  // makes a park invisible to the timeouts: last_frame_ms_ keeps tracking
+  // real time throughout the park, so the delta computed on the *first*
+  // status-screen frame after it resumes is small, not the large one
+  // spanning the whole parked interval. Advancing only on status-screen
+  // frames would give the flags one huge delta on return and age them out
+  // immediately.
   const uint32_t delta_ms = this->have_last_frame_ ? (now_ms - this->last_frame_ms_) : 0;
   this->last_frame_ms_ = now_ms;
   this->have_last_frame_ = true;
@@ -174,14 +173,13 @@ void StatusTracker::update(const std::string &line1, const std::string &line2, b
   touch_(this->dryout_active_, msg == LineMessage::DRYOUT_MODE, delta_ms);
   touch_(this->filter_change_due_, msg == LineMessage::CHECK_FILTER, delta_ms);
 
-  // Gated on is_status_screen the same as every touch_() call above (all of
-  // them unreachable unless is_status_screen was true -- see the early
-  // return at the top of this function): menu and diagnostic screens
-  // legitimately carry their own custom LCD glyphs (page headers and the
-  // like), any of which could in principle land on column 15 too. Only
-  // the status loop's line2 is a field where "glyphs::ALPHA at column 15"
-  // is known to mean the sensor-boost annunciator and nothing else -- see
-  // has_sensor_boost_annunciator()'s own comment.
+  // Gated on is_status_screen the same as every touch_() call above (all
+  // unreachable otherwise, via the early return at the top of this
+  // function): menu and diagnostic screens legitimately carry their own
+  // custom LCD glyphs, any of which could in principle land on column 15
+  // too. Only the status loop's line2 is a field where "glyphs::ALPHA at
+  // column 15" is known to mean the sensor-boost annunciator and nothing
+  // else.
   touch_(this->humidity_boost_, has_sensor_boost_annunciator(line2), delta_ms);
 
   const LineValues values = parse_line_values(line1, line2);
@@ -190,17 +188,15 @@ void StatusTracker::update(const std::string &line1, const std::string &line2, b
   this->countdown_minutes_ = values.countdown_minutes;
 
   // Per-episode accumulator for continuous_boost() -- see CONTINUOUS_CONFIRM_MS
-  // and continuous_boost()'s own comments (status.h). Reset to 0, rather than
-  // advanced, whenever ANY of: the episode is over (boosting_ no longer
-  // active, read POST-touch_ above -- the same reading the rest of this
-  // class already trusts), a countdown WAS parsed this frame (a timed boost,
-  // however briefly its countdown has been visible this episode), or purge
-  // was seen (a separate axis from the boost counter -- see
-  // SetAirflowMode's own class comment in sequence.h -- not to be conflated
-  // with continuous boost even though Purge also shows "Boost Airflow"-like
-  // alternation). Otherwise it advances by delta_ms, the same "time since
-  // update() last ran" interval every Flag in this class ages by, so a menu
-  // park freezes this accumulator exactly like it freezes every Flag.
+  // (status.h). Reset to 0, rather than advanced, whenever ANY of: the
+  // episode is over (boosting_ no longer active, read POST-touch_ above), a
+  // countdown WAS parsed this frame (a timed boost, however briefly its
+  // countdown has been visible this episode), or purge was seen (a separate
+  // axis from the boost counter, not to be conflated with continuous boost
+  // even though Purge also shows "Boost Airflow"-like alternation).
+  // Otherwise it advances by delta_ms, the same interval every Flag in this
+  // class ages by, so a menu park freezes this accumulator exactly like it
+  // freezes every Flag.
   if (!this->boosting_.active || values.countdown_minutes.has_value() || values.purge) {
     this->ms_without_countdown_ = 0;
   } else {
@@ -241,9 +237,9 @@ std::optional<AirflowMode> AirflowModeTracker::update(const StatusTracker &statu
   }
 
   // Purge wins outright, and deliberately leaves the latch untouched either
-  // way: purge is a separate axis from the boost counter (SetAirflowMode's
-  // own class comment, sequence.h), not something that should clear or set
-  // evidence about a boost episode that may resume once purge ends.
+  // way: purge is a separate axis from the boost counter, not something that
+  // should clear or set evidence about a boost episode that may resume once
+  // purge ends.
   if (*purging) {
     return AirflowMode::PURGE;
   }
@@ -257,25 +253,23 @@ std::optional<AirflowMode> AirflowModeTracker::update(const StatusTracker &statu
     }
     const std::optional<bool> continuous = status.continuous_boost();
     if (!remaining.has_value() && continuous.has_value() && *continuous) {
-      // Continuous boost, CONFIRMED -- see StatusTracker::continuous_boost()'s
-      // own comment for the CONTINUOUS_CONFIRM_MS window this rests on.
-      // Deliberately leaves the latch untouched either way: continuous
-      // offers no 30-vs-60 evidence of its own, and it does not clear the
-      // episode either -- boosting() stays true straight through it (all
-      // three of Boost30/Boost60/Continuous show "Boost Airflow" on line1),
-      // so whatever the latch already knew from before continuous still
-      // applies if a countdown reappears afterwards.
+      // Continuous boost, CONFIRMED -- rests on the CONTINUOUS_CONFIRM_MS
+      // window (StatusTracker::continuous_boost()). Deliberately leaves the
+      // latch untouched either way: continuous offers no 30-vs-60 evidence of
+      // its own, and it does not clear the episode either -- boosting() stays
+      // true straight through it (Boost30/Boost60/Continuous all show "Boost
+      // Airflow" on line1), so whatever the latch already knew still applies
+      // if a countdown reappears afterwards.
       return AirflowMode::BOOST_CONTINUOUS;
     }
     if (!remaining.has_value()) {
       // Not (yet) confirmed continuous: either CONTINUOUS_CONFIRM_MS hasn't
-      // elapsed yet since the countdown last disappeared (which includes the
-      // ordinary case of a timed boost whose countdown simply hasn't landed
-      // on this particular frame), or this is squarely inside the trailing
-      // ALTERNATION_TIMEOUT_MS window right after a timed boost's own
-      // expiry -- see CONTINUOUS_CONFIRM_MS's comment for why that window
-      // must not be misread as continuous. Reads as Normal until
-      // continuous_boost() itself confirms; never guess ahead of it.
+      // elapsed since the countdown last disappeared (the ordinary case of a
+      // timed boost whose countdown simply hasn't landed this frame), or this
+      // is squarely inside the trailing ALTERNATION_TIMEOUT_MS window right
+      // after a timed boost's own expiry, which must not be misread as
+      // continuous. Reads as Normal until continuous_boost() itself confirms;
+      // never guess ahead of it.
       return AirflowMode::NORMAL;
     }
     // Either >30 right now, or latched from earlier this same episode --

@@ -19,24 +19,21 @@ uint8_t SetAirflowMode::presses_for_(AirflowTarget target) {
     case AirflowTarget::BOOST_60:
       return 2;
     case AirflowTarget::BOOST_CONTINUOUS:
-      // The manual's press table, measured on this unit (mhrv_orig/
-      // vent-axia-esphome-project.md:51): 1 = Boost 30, 2 = Boost 60,
+      // The manual's press table, measured on this unit
+      // (mhrv_orig/vent-axia-esphome-project.md): 1 = Boost 30, 2 = Boost 60,
       // 3 = continuous, 4 = back to Normal.
       //
-      // Three taps in one batch is the case key_gap exists for, and the
-      // evidence is specifically about THIS target
-      // (vent-axia-esphome-project.md:88-91): 400ms "is still fast enough
-      // for the Boost press-counter: three taps land exactly on
-      // 'continuous', not on three separate 30-minute boosts". Note that
-      // Keypad's key_gap_ms_ (400ms default, keypad.h) is what enforces
-      // that, NOT the Runner's tap_duration_ms() below -- that is the
-      // duration of each individual press (50ms by default), a different
-      // quantity. Do not be tempted by
-      // mhrv_orig/controls.yaml:324's "Presses 250ms apart are counted
-      // individually and correctly": that comment predates the measurement
-      // that overturned it (250ms drops roughly one press in ten,
-      // vent-axia-esphome-project.md:84 and CLAUDE.md's key_gap invariant),
-      // and 250ms would silently merge taps here.
+      // Three taps in one batch is the case key_gap exists for: 400ms "is
+      // still fast enough for the Boost press-counter: three taps land
+      // exactly on 'continuous', not on three separate 30-minute boosts"
+      // (vent-axia-esphome-project.md). Keypad's key_gap_ms_ (400ms default)
+      // is what enforces that, NOT the Runner's tap_duration_ms() below --
+      // that is the duration of each individual press (50ms by default), a
+      // different quantity. Do not be tempted by mhrv_orig/controls.yaml's
+      // "Presses 250ms apart are counted individually and correctly": that
+      // comment predates the measurement that overturned it (250ms drops
+      // roughly one press in ten -- CLAUDE.md's key_gap invariant), and
+      // 250ms would silently merge taps here.
       return 3;
     case AirflowTarget::PURGE:
     default:
@@ -81,13 +78,12 @@ Poll SetAirflowMode::after_probe_(bool boosting_now) {
   // Stuck-tap detection (STUCK_TAP_LIMIT's own comment, sequence.h): sample
   // the SAME instantaneous read PROBE_CHECK/PROBE_WAIT just used to conclude
   // "still boosting" -- status::parse_line_values() on the CURRENT frame,
-  // deliberately not status_'s sticky purging()-style tracker. This is the
-  // same asymmetry PROBE_CHECK's own defensive re-check above already relies
-  // on (seq_set_airflow_mode.cpp:186-201): staleness here only costs one
-  // wasted comparison against a value about to be overwritten anyway,
-  // whereas a STICKY read could paper over a genuinely stuck counter for up
-  // to StatusTracker::ALTERNATION_TIMEOUT_MS, which is exactly the kind of
-  // false confidence this check exists to avoid.
+  // deliberately not status_'s sticky purging()-style tracker. Same asymmetry
+  // PROBE_CHECK's own defensive re-check below already relies on: staleness
+  // here only costs one wasted comparison against a value about to be
+  // overwritten anyway, whereas a STICKY read could paper over a genuinely
+  // stuck counter for up to StatusTracker::ALTERNATION_TIMEOUT_MS, exactly
+  // the false confidence this check exists to avoid.
   const status::LineValues probe_values =
       status::parse_line_values(this->runner_->display().raw_line1(), this->runner_->display().raw_line2());
   if (this->have_stuck_sample_ && probe_values.airflow_percent == this->last_airflow_percent_ &&
@@ -104,9 +100,9 @@ Poll SetAirflowMode::after_probe_(bool boosting_now) {
     // Named cause, not the generic "refusing to guess" wording below -- this
     // path has POSITIVE evidence of what's wrong (line2 provably did not
     // move across two taps that line1's own continued alternation shows the
-    // unit was still alive and responding to), not merely an exhausted
-    // guard with no theory attached. Captured live on 192.168.1.200, 13 Aug
-    // 2026: a toilet boost held on by a light-linked switched live.
+    // unit was still alive and responding to). Captured live on
+    // 192.168.1.200, 13 Aug 2026: a toilet boost held on by a light-linked
+    // switched live.
     if (this->log().error) {
       this->log().error(
           "SetAirflowMode: boost appears held on by an external switched live (a wired wall/toilet switch) -- "
@@ -121,8 +117,7 @@ Poll SetAirflowMode::after_probe_(bool boosting_now) {
     // mirrors mhrv_orig's own boost_set, which silently skipped applying
     // anything in exactly this situation -- refusing is safer than layering
     // the target's own presses on top of a press count that is no longer
-    // known (PLAN.md risk 6's "bound the loop, don't trust luck", same
-    // reasoning as AdjustField's own guard).
+    // known, same reasoning as AdjustField's own guard.
     if (this->log().error) {
       this->log().error("SetAirflowMode: could not normalise back to Normal after " +
                         std::to_string(static_cast<int>(NORMALISE_GUARD)) +
@@ -138,23 +133,22 @@ Poll SetAirflowMode::after_probe_(bool boosting_now) {
 
 Poll SetAirflowMode::poll() {
   switch (this->step_) {
-    // No keys pressed. Finding 1 (Opus review): first PROVE the display is
-    // actually on the status loop before trusting anything read off it, or
-    // pressing Main at all -- CLAUDE.md's "Main is never a menu key"
-    // applies to being PARKED on a menu/diagnostic screen just as much as
-    // to pressing one deliberately. This is a reachable start state, not a
-    // hypothetical one: Runner::recover()'s own exit tap does not wait for
-    // the unit to actually leave the menu, the unit's own ~2-minute
-    // timeout may still be running, and a human at the unit's own keypad
-    // can park it there at any moment. From a menu/diagnostic screen,
-    // classify_line() can never read BOOST_AIRFLOW and purging() can never
-    // be true, so without this check the probe below would conclude
-    // "Normal" with zero evidence and go on to tap Main against a boost
-    // counter whose position was never actually read -- exactly the
-    // failure WriteSetting's VERIFY step and PLAN.md's ResetFilter row
-    // ("requires the status screen") both exist to rule out elsewhere in
-    // this component. No retry window: a menu screen does not clear itself
-    // within a sequence's patience -- the unit's own timeout is minutes.
+    // No keys pressed. First PROVE the display is actually on the status
+    // loop before trusting anything read off it, or pressing Main at all --
+    // "Main is never a menu key" applies to being PARKED on a menu/
+    // diagnostic screen just as much as to pressing one deliberately. This
+    // is a reachable start state, not a hypothetical one: Runner::recover()'s
+    // own exit tap does not wait for the unit to actually leave the menu,
+    // the unit's own ~2-minute timeout may still be running, and a human at
+    // the unit's own keypad can park it there at any moment. From a menu/
+    // diagnostic screen, classify_line() can never read BOOST_AIRFLOW and
+    // purging() can never be true, so without this check the probe below
+    // would conclude "Normal" with zero evidence and go on to tap Main
+    // against a boost counter whose position was never actually read -- the
+    // same failure WriteSetting's VERIFY step and ResetFilter's own screen
+    // check both exist to rule out elsewhere in this component. No retry
+    // window: a menu screen does not clear itself within a sequence's
+    // patience -- the unit's own timeout is minutes.
     case CHECK_CURRENT: {
       if (!this->runner_->display().have_frame() ||
           screens::is_menu_screen(this->runner_->display().raw_line1())) {
@@ -165,17 +159,16 @@ Poll SetAirflowMode::poll() {
         return Poll::FAILED;
       }
 
-      // Finding 2 (Opus review): status_'s STICKY, alternation-aware
-      // purging() -- not a raw single-frame parse. The status loop
-      // alternates, which is exactly why StatusTracker models purging_ as
-      // a Flag with its own ALTERNATION_TIMEOUT_MS rather than trusting one
-      // frame (status.h's own class comment), and PLAN.md risk 4 (the
-      // purge layout is unresolved) makes a single-frame miss MORE likely,
-      // not less. A missing tracker or a not-yet-known reading (nullopt --
-      // no status frame decoded yet) must FAIL, not be read as "not
-      // purging" -- CLAUDE.md's "Blank != zero" applies to this derived
-      // boolean the same as it does to a parsed field: guessing "not
-      // purging" here could CANCEL a purge that is actually still running.
+      // status_'s STICKY, alternation-aware purging() -- not a raw
+      // single-frame parse. The status loop alternates, which is exactly why
+      // StatusTracker models purging_ as a Flag with its own
+      // ALTERNATION_TIMEOUT_MS rather than trusting one frame, and the
+      // purge layout being otherwise unresolved makes a single-frame miss
+      // MORE likely, not less. A missing tracker or a not-yet-known reading
+      // (nullopt -- no status frame decoded yet) must FAIL, not be read as
+      // "not purging" -- "Blank != zero" applies to this derived boolean the
+      // same as a parsed field: guessing "not purging" here could CANCEL a
+      // purge that is actually still running.
       if (this->status_ == nullptr) {
         if (this->log().error) {
           this->log().error("SetAirflowMode: refusing -- no StatusTracker configured (set_status() was never called)");
@@ -223,31 +216,29 @@ Poll SetAirflowMode::poll() {
       return this->hold_main_(FINISHED);
 
     // mhrv_orig's boost_probe (class comment, step 3), plus a defensive
-    // re-check of the Purge flag: this matters for the post-CANCEL_PURGE
-    // path specifically -- if the 5.5s hold somehow did not actually cancel
-    // Purge (untested on real hardware, see README "Portable core" /
-    // PLAN.md §8's "unvalidated against hardware"), classify_line() below
-    // would read Purge's line1 as "not boosting" and go on to tap Main
-    // believing it is adjusting the Normal/Boost counter -- an ambiguous,
-    // untested interaction that is safer to refuse than to guess at. A
-    // no-op for the direct (never-purging) entry path, which already
-    // confirmed this at CHECK_CURRENT.
+    // re-check of the Purge flag: matters for the post-CANCEL_PURGE path
+    // specifically -- if the 5.5s hold somehow did not actually cancel Purge
+    // (untested on real hardware), classify_line() below would read Purge's
+    // line1 as "not boosting" and go on to tap Main believing it is
+    // adjusting the Normal/Boost counter -- an ambiguous, untested
+    // interaction safer to refuse than guess at. A no-op for the direct
+    // (never-purging) entry path, which already confirmed this at
+    // CHECK_CURRENT.
     //
     // Deliberately the INSTANTANEOUS status::parse_line_values() here, NOT
-    // status_'s sticky purging() CHECK_CURRENT uses above -- this asymmetry
-    // is intentional, not an inconsistency (Opus review, Finding 2). The
-    // two checks are answering different questions with different costs for
-    // being stale: CHECK_CURRENT asks "is it currently purging", where a
-    // stale TRUE just costs one extra safe no-op (the accepted edge, class
-    // comment) but a stale FALSE risks a wrong-direction cancel hold -- the
-    // sticky flag's bias toward TRUE is exactly the safe direction there.
-    // This check asks "did the cancel hold I just ran actually fail", where
-    // it is the OPPOSITE bias that is safe: a stale sticky TRUE would stay
-    // true for up to ALTERNATION_TIMEOUT_MS (~12s) after a genuinely
-    // successful cancel and would turn every correct cancel into a false
-    // failure here, whereas a single frame that actually shows "Purge"
-    // immediately after a hold specifically meant to change that is real,
-    // trustworthy evidence the cancel failed, not a guess.
+    // status_'s sticky purging() CHECK_CURRENT uses above -- intentional,
+    // not an inconsistency. The two checks answer different questions with
+    // different costs for being stale: CHECK_CURRENT asks "is it currently
+    // purging", where a stale TRUE just costs one extra safe no-op (the
+    // accepted edge, class comment) but a stale FALSE risks a
+    // wrong-direction cancel hold -- the sticky flag's bias toward TRUE is
+    // exactly the safe direction there. This check asks "did the cancel
+    // hold I just ran actually fail", where the OPPOSITE bias is safe: a
+    // stale sticky TRUE would stay true for up to ALTERNATION_TIMEOUT_MS
+    // (~12s) after a genuinely successful cancel and would turn every
+    // correct cancel into a false failure here, whereas a single frame
+    // showing "Purge" immediately after a hold meant to change that is
+    // real, trustworthy evidence the cancel failed.
     case PROBE_CHECK:
       if (status::parse_line_values(this->runner_->display().raw_line1(), this->runner_->display().raw_line2()).purge) {
         if (this->log().error) {
@@ -284,11 +275,10 @@ Poll SetAirflowMode::poll() {
     // something else (e.g. Boost30 -> Boost60 -> Continuous -> Normal is one
     // unavoidable lap starting from Boost30) -- deliberate and harmless, not
     // a bug: this sequence is never polled or read while merely passing
-    // through it here, so nothing observes or reports that transient
-    // intermediate state. As of 13 Aug 2026 BOOST_CONTINUOUS is also a
-    // first-class TARGET in its own right (AirflowTarget's own comment,
-    // sequence.h) -- this note is only about the transient pass-through case
-    // above, not about selecting it directly.
+    // through it, so nothing observes or reports that transient intermediate
+    // state. This note is only about that transient pass-through case, not
+    // about selecting BOOST_CONTINUOUS directly, which is a first-class
+    // TARGET in its own right (AirflowTarget's own comment, sequence.h).
     case NORMALISE_SETTLE:
       return this->elapsed() >= NORMALISE_SETTLE_MS ? this->goto_step(PROBE_CHECK) : Poll::RUNNING;
 
@@ -310,11 +300,9 @@ Poll SetAirflowMode::poll() {
       return Poll::DONE;
 
     // step_ somehow outside the Step enum -- a bug, not a legitimate landing
-    // state (every real step above has its own explicit case, including
-    // FINISHED). Previously fell through to the same `return Poll::DONE;` as
-    // FINISHED, which would report an airflow-mode change as applied when
-    // the sequence had actually gone off the rails; FAILED routes through
-    // Runner::recover() instead.
+    // state. FAILED routes through Runner::recover() rather than reporting
+    // an airflow-mode change as applied when the sequence had gone off the
+    // rails.
     default:
       if (this->log().error) {
         this->log().error("SetAirflowMode: invalid step " + std::to_string(static_cast<int>(this->step_)));

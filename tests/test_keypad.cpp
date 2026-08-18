@@ -70,8 +70,8 @@ TEST_CASE(tap_emits_its_first_frame_immediately) {
 
 TEST_CASE(tap_emits_roughly_duration_over_tx_interval_frames) {
   // 50ms tap, 20ms tx_interval: frames at t=0 (immediate), 20, 40 -- three
-  // frames, matching PLAN.md's "one human press produces 6-13 frames over
-  // 110-260ms" cadence scaled down to tap_duration.
+  // frames, matching the measured "one human press produces 6-13 frames
+  // over 110-260ms" cadence scaled down to tap_duration.
   RecordingSink sink;
   Keypad kp;
   kp.set_frame_sink(sink.as_frame_sink());
@@ -269,7 +269,7 @@ TEST_CASE(under_emitting_counter_increments_when_loop_is_called_too_sparsely) {
   // and the end of the tap -- as if a loop() stall swallowed everything in
   // between -- must fit only one frame (the immediate one) instead of the
   // ~3 a healthy cadence would produce, and that must be counted and
-  // logged. This is PLAN.md risk 1's failure mode, made diagnosable.
+  // logged -- the loop()-stall failure mode, made diagnosable.
   RecordingSink sink;
   RecordingLog log;
   Keypad kp;
