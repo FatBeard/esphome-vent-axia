@@ -82,8 +82,8 @@ Under construction. See `PLAN.md` for the design and the staged rollout.
 
 ### Portable core
 
-`protocol`, `screens`, `display`, `parser`, `status`, `diagnostics` and
-`sequence` include **no ESPHome headers**. They are plain C++ compiled both
+`protocol`, `screens`, `display`, `parser`, `status`, `diagnostics`, `keypad`
+and `sequence` (with its `seq_*.cpp` bodies) include **no ESPHome headers**. They are plain C++ compiled both
 into the firmware and into the host test suite in `tests/`, which is what
 makes the protocol, the status-line decode and the menu-driving state
 machines testable without hardware. Only `vent_axia.cpp` and the platform
@@ -91,6 +91,26 @@ files (`sensor.py` and friends) touch `esphome/components/...`.
 
 If a core file stops compiling on the host, it has grown an ESPHome dependency
 and the dependency belongs on the other side of that line.
+
+### Where the measured constants come from
+
+Most timing constants in this component are not defaults or guesses -- they are
+measurements taken from the physical unit, and the comment at each one records
+the observation behind it. Some of those comments cite files by the paths
+`mhrv_orig/controls.yaml`, `mhrv_orig/summer_bypass.yaml` and
+`mhrv_orig/vent-axia-esphome-project.md`.
+
+**`mhrv_orig/` is not part of this repository.** It is the earlier
+YAML-and-lambda implementation this component replaces, kept as a local
+reference alongside it, and the paths read as though they were relative to this
+repo when they are not. Treat those citations as naming the prior
+implementation, not a file you can open from a clone.
+
+The constants themselves stand on their own -- each carries its observed
+failure or measurement in the comment beside it (for example, `key_gap` at
+250 ms dropping roughly one press in ten, or the 14.0 s measured between the
+last `Boost Airflow` frame and `boosting()` dropping). Nothing here requires
+reading the older project to understand why a number is what it is.
 
 ### Chip agnostic
 
