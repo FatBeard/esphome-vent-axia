@@ -1,9 +1,9 @@
 #pragma once
 
-// The sequence engine (PLAN.md §2). Every user-visible operation (fetch
-// diagnostics, sync clock, write a setting, set airflow mode, reset filter)
-// is a multi-second, multi-step state machine that must not block loop(),
-// must be mutually exclusive with every other one (they all fight over one
+// The sequence engine. Every user-visible operation (fetch diagnostics,
+// sync clock, write a setting, set airflow mode, reset filter) is a
+// multi-second, multi-step state machine that must not block loop(), must
+// be mutually exclusive with every other one (they all fight over one
 // display and one keypad), and must release the keypad on every exit path.
 // Plain C++17, no ESPHome headers -- see README "Portable core".
 //
@@ -16,24 +16,20 @@
 //    miss away from deadlocking the device until reboot) does not get
 //    reimplemented here, it stops existing: there is nowhere for a second
 //    root sequence to run while one is already on the stack.
-//  - The primitives every later sequence is built from: Tap, HoldUntil,
-//    GotoMenu, LeaveMenu.
+//  - The primitives every later sequence is built from: Sequence::
+//    tap_then_(), HoldUntil, GotoMenu, LeaveMenu.
 //
-// FetchDiagnostics (stage 5) and ReadSettings/WriteSetting (stage 6) are
-// declared here too, alongside the primitives, rather than in their own
-// headers -- see entities.h for the same "one growing file, not one file per
-// addition" choice. Each gets only its method bodies in its own seq_*.cpp
-// (seq_fetch_diagnostics.cpp, seq_read_settings.cpp, seq_write_setting.cpp);
-// stage 7 adds SyncClock, SetAirflowMode, ResetFilter and ManualKey the same
-// way.
+// FetchDiagnostics and ReadSettings/WriteSetting are declared here too,
+// alongside the primitives, rather than in their own headers -- see
+// entities.h for the same "one growing file, not one file per addition"
+// choice. Each gets only its method bodies in its own seq_*.cpp
+// (seq_fetch_diagnostics.cpp, seq_read_settings.cpp, seq_write_setting.cpp).
 //
-// Stage 6 also adds three primitives on top of stage 5's Tap/HoldUntil/
-// GotoMenu/LeaveMenu: OpenEditor, AdjustField and ExitEditChain -- the three
-// pieces PLAN.md's "editing model" section is about. Set is the only key
-// that is safe once an editor is open (walking Up out of one silently took a
-// 14C setpoint to 19C on the real unit), so these three primitives are the
-// only things in this component that are allowed to open one, adjust a value
-// inside one, or walk one closed.
+// OpenEditor, AdjustField and ExitEditChain are the three primitives behind
+// the unit's editing model. Set is the only key that is safe once an editor
+// is open (walking Up out of one silently took a 14C setpoint to 19C on the
+// real unit), so these three are the only things in this component that are
+// allowed to open one, adjust a value inside one, or walk one closed.
 //
 // Driven entirely by Runner::loop(uint32_t now_ms), the same discipline as
 // Keypad (see keypad.h): a Sequence never calls millis() itself, it asks its
@@ -74,8 +70,8 @@ class Sequence {
 
   /// Pumped once per loop() tick while this Sequence is on top of the
   /// Runner's stack -- never otherwise. Implementations read as a switch on
-  /// step_ (see goto_step()); PLAN.md §2's WriteSetting is the model to
-  /// match: a flat list of named steps, each one line where possible.
+  /// step_ (see goto_step()); WriteSetting below is the model to match: a
+  /// flat list of named steps, each one line where possible.
   virtual Poll poll() = 0;
 
   /// Runs once, the same tick this Sequence is first pushed -- as a root via
@@ -191,10 +187,9 @@ class Runner {
   using LogSink = Keypad::LogSink;
 
   /// Fired once a ROOT sequence finishes as FAILED, with its name -- what
-  /// backs YAML's on_sequence_failed (PLAN.md §5). Not fired for a failure
-  /// that a parent's await() would have survived (there isn't one at this
-  /// stage), and not fired for a child failing on its own -- only ever for
-  /// the whole run.
+  /// backs YAML's on_sequence_failed. Not fired for a failure that a
+  /// parent's await() would have survived, and not fired for a child
+  /// failing on its own -- only ever for the whole run.
   using FailureSink = std::function<void(const std::string &name)>;
 
   /// Keypad is mutated (tap/press/release); Display is only ever read. Both
@@ -205,24 +200,24 @@ class Runner {
   const LogSink &log() const { return this->log_; }
   void set_on_sequence_failed(FailureSink sink) { this->on_failure_ = std::move(sink); }
 
-  /// Fed by the hub every tick from its own link_up computation (PLAN.md
-  /// §7's "Link loss") -- request() refuses to start anything while this is
-  /// false, same reasoning as refusing a second root: driving the keypad at
-  /// a unit that has stopped talking to us cannot possibly succeed and would
-  /// just run out the clock on a timeout instead.
+  /// Fed by the hub every tick from its own link_up computation --
+  /// request() refuses to start anything while this is false, same
+  /// reasoning as refusing a second root: driving the keypad at a unit that
+  /// has stopped talking to us cannot possibly succeed and would just run
+  /// out the clock on a timeout instead.
   void set_link_up(bool up) { this->link_up_ = up; }
 
   /// The duration every sequence's own menu/field/commit taps use (via
   /// Sequence::tap_then_() and the handful of batch taps that queue several
   /// at once -- GotoMenu, SetAirflowMode::APPLY_TAP) -- forwarded here from
-  /// VentAxiaHub::set_tap_duration_ms() (PLAN.md §2's table: "one tap = one
-  /// menu step"), which also keeps its own copy for the four manual key
-  /// buttons and the vent_axia.tap_key action. Defaults to 50ms so behaviour
-  /// is unchanged when YAML does not override tap_duration -- keypad.h's
-  /// under_emitting_presses()'s documented remedy for a loop()-stall-dropped
-  /// press ("raise tap_duration to 100ms") previously only reached those
-  /// four buttons; this is what lets it reach every sequence tap too,
-  /// including GotoMenu/LeaveMenu and Runner::recover()'s own exit tap.
+  /// VentAxiaHub::set_tap_duration_ms(), which also keeps its own copy for
+  /// the four manual key buttons and the vent_axia.tap_key action. Defaults
+  /// to 50ms so behaviour is unchanged when YAML does not override
+  /// tap_duration -- keypad.h's under_emitting_presses()'s documented remedy
+  /// for a loop()-stall-dropped press ("raise tap_duration to 100ms")
+  /// previously only reached those four buttons; this is what lets it reach
+  /// every sequence tap too, including GotoMenu/LeaveMenu and
+  /// Runner::recover()'s own exit tap.
   void set_tap_duration_ms(uint32_t ms) { this->tap_duration_ms_ = ms; }
   uint32_t tap_duration_ms() const { return this->tap_duration_ms_; }
 
@@ -249,12 +244,12 @@ class Runner {
   /// hub's dump_config(), not meant to be published as an entity itself.
   const char *running_name() const { return this->busy() ? this->stack_[0].seq->name() : ""; }
 
-  /// True when `seq` is the ROOT of the current run -- pointer identity, so it
-  /// cannot be defeated by two sequences sharing a name. Lets a caller (e.g.
-  /// VentAxiaHub::publish_airflow_mode_()) special-case "this specific
-  /// sequence is running" without a duplicated name string to drift out of
-  /// sync, and without the false positive a name comparison would risk if two
-  /// distinct Sequence instances ever shared a name() literal.
+  /// True when `seq` is the ROOT of the current run -- pointer identity, so
+  /// it cannot be defeated by two sequences sharing a name. Lets a caller
+  /// (e.g. VentAxiaHub::publish_airflow_mode_()) special-case "this specific
+  /// sequence is running" without the false positive a name comparison
+  /// would risk if two distinct Sequence instances ever shared a name()
+  /// literal.
   bool is_running(const Sequence *seq) const { return this->busy() && this->stack_[0].seq == seq; }
 
   uint32_t now_ms() const { return this->now_ms_; }
@@ -264,15 +259,15 @@ class Runner {
   /// keypad -- there is deliberately no plain accessor for the Keypad
   /// itself, so a primitive cannot bypass what these two enforce. Same
   /// interlock VentAxiaHub::tap_key()/hold_key() enforce for every other
-  /// caller (PLAN.md §7): refused, and logged, if `mask` includes Set while
-  /// the display is currently showing a diagnostic page (page 27, "Reset",
-  /// writes and has never been tried). Returns false when refused, so a
-  /// primitive can fail fast -- see Tap::poll()/HoldUntil::poll() -- rather
-  /// than wait out a timeout for a press that was never going to happen.
-  /// This is also what makes the interlock host-testable at all: it used to
-  /// live only in vent_axia.cpp, which the host test suite cannot compile
-  /// (see README "Portable core") -- see PLAN.md §7's "asserted globally in
-  /// the test suite, not just avoided by convention".
+  /// caller: refused, and logged, if `mask` includes Set while the display
+  /// is currently showing a diagnostic page (page 27, "Reset", writes and
+  /// has never been tried). Returns false when refused, so a primitive can
+  /// fail fast -- see tap_then_()/HoldUntil::poll() -- rather than wait out
+  /// a timeout for a press that was never going to happen. This is also
+  /// what makes the interlock host-testable at all: it used to live only in
+  /// vent_axia.cpp, which the host test suite cannot compile (see README
+  /// "Portable core"), so it was asserted only by convention, not in the
+  /// test suite itself.
   bool tap(protocol::KeyMask mask, uint32_t duration_ms);
   bool press(protocol::KeyMask mask);
 
@@ -281,8 +276,8 @@ class Runner {
   void release() { this->keypad_.release(); }
   bool keypad_busy() const { return this->keypad_.busy(); }
 
-  /// The shared abort path (PLAN.md §2), run automatically whenever a root
-  /// sequence finishes as FAILED (including via timeout) -- see
+  /// The shared abort path, run automatically whenever a root sequence
+  /// finishes as FAILED (including via timeout) -- see
   /// finish_top_(). Public so a test can also drive it directly. Releases
   /// every key and, if the display is parked on a menu screen, issues the
   /// single verified exit tap -- see sequence.cpp for why this is not a
@@ -317,11 +312,11 @@ class Runner {
   void finish_top_(Poll result);
 
   /// Ported near-verbatim from what was vent_axia.cpp's
-  /// refuse_if_set_interlocked_() -- moved here (stage 5) so it is enforced
-  /// for every path that can reach the keypad, not only the pre-sequence
-  /// ones (button.py's key_* buttons, the vent_axia.tap_key/hold_key
-  /// actions), which now go through tap()/press() above too rather than
-  /// duplicating the check.
+  /// refuse_if_set_interlocked_() -- moved here so it is enforced for every
+  /// path that can reach the keypad, not only the pre-sequence ones
+  /// (button.py's key_* buttons, the vent_axia.tap_key/hold_key actions),
+  /// which now go through tap()/press() above too rather than duplicating
+  /// the check.
   bool refuse_if_set_interlocked_(protocol::KeyMask mask) const;
 
   Keypad &keypad_;
@@ -334,19 +329,17 @@ class Runner {
   uint8_t depth_{0};
   uint32_t now_ms_{0};
   uint32_t root_started_at_ms_{0};
-  // PLAN.md §2's table: "one tap = one menu step" -- default matches the
-  // hub's own tap_duration_ms_ default (vent_axia.h) so behaviour is
-  // unchanged unless YAML overrides tap_duration.
+  // Default matches the hub's own tap_duration_ms_ default (vent_axia.h) so
+  // behaviour is unchanged unless YAML overrides tap_duration.
   uint32_t tap_duration_ms_{50};
 };
 
 // --------------------------------------------------------------- primitives --
-// Needed by this stage's FetchDiagnostics and, per PLAN.md §3, by every
-// sequence that comes after it. A single tap-and-wait is Sequence::tap_then_()
-// above, not a class here -- it needs no temporary Sequence "with nowhere
-// long-lived to live" (seq_sync_clock.cpp's own phrase for exactly this),
-// since it is a helper every sequence's poll() calls directly, at whatever
-// step it is already on.
+// Needed by FetchDiagnostics and every sequence that comes after it. A
+// single tap-and-wait is Sequence::tap_then_() above, not a class here -- it
+// needs no temporary Sequence "with nowhere long-lived to live"
+// (seq_sync_clock.cpp's own phrase for exactly this), since it is a helper
+// every sequence's poll() calls directly, at whatever step it is already on.
 
 // The two inputs every worst_case_ms()/timeout_ms() derivation below needs
 // for "how long does one queued tap actually occupy the keypad" -- both are
@@ -406,11 +399,11 @@ class HoldUntil final : public Sequence {
 
 /// Absolute menu positioning by exploiting the hard stop at the top: Up past
 /// menu index 0 does nothing, so 5 taps of Up always lands on index 0
-/// regardless of where the display started (PLAN.md §2/§3) -- this counts
-/// taps, it never assumes or tracks the screen's current position, which is
-/// why it works correctly right after boot or after some other navigation
-/// left the display somewhere unknown. Menu map (PLAN.md §2): 0 status, 1 Set
-/// Clock, 2 Summer Mode, 3 Indoor Temp.
+/// regardless of where the display started -- this counts taps, it never
+/// assumes or tracks the screen's current position, which is why it works
+/// correctly right after boot or after some other navigation left the
+/// display somewhere unknown. Menu map: 0 status, 1 Set Clock, 2 Summer
+/// Mode, 3 Indoor Temp.
 class GotoMenu final : public Sequence {
  public:
   GotoMenu() = default;
@@ -418,11 +411,11 @@ class GotoMenu final : public Sequence {
 
   /// Reconfigures for a fresh target. Must only be called while this
   /// instance is NOT on the Runner's stack, same rule as HoldUntil::reset()
-  /// (see its comment). Added in stage 6 so ReadSettings/WriteSetting can
-  /// reuse ONE long-lived GotoMenu across several different targets in their
-  /// own steps (their own menu entry, then 0 to go home) rather than needing
-  /// one member per target -- see PLAN.md's "no dynamic allocation in steady
-  /// state".
+  /// (see its comment). Lets ReadSettings/WriteSetting reuse ONE long-lived
+  /// GotoMenu across several different targets in their own steps (their
+  /// own menu entry, then 0 to go home) rather than needing one member per
+  /// target -- see "no dynamic allocation in steady state" in this file's
+  /// class comment.
   void reset(uint8_t index) { this->index_ = index; }
 
   const char *name() const override { return "GotoMenu"; }
@@ -453,21 +446,20 @@ class GotoMenu final : public Sequence {
 
 /// At most ONE Up tap -- never into an open editor -- then, if the display
 /// is still showing a menu screen, waits out the unit's own ~2-minute menu
-/// timeout rather than pressing again. PLAN.md §3: mashing Up would corrupt
-/// a setting if an editor is still open (observed on the real unit: a
-/// second Up silently walked a 14°C setpoint to 19°C). This is deliberate,
-/// measured behaviour, not laziness -- do not "helpfully" retry the tap.
+/// timeout rather than pressing again. Mashing Up would corrupt a setting
+/// if an editor is still open (observed on the real unit: a second Up
+/// silently walked a 14°C setpoint to 19°C). This is deliberate, measured
+/// behaviour, not laziness -- do not "helpfully" retry the tap.
 ///
-/// Stage 7a widened the guard: TAP itself now checks Display::editor_open()
-/// before pressing anything, the same guard Runner::recover() has carried
-/// since stage 6 (see its own comment). This matters because LeaveMenu can
-/// run immediately after a sequence's own commit Set (SyncClock's LEAVE
-/// step, following its fourth/COMMIT Set) -- if that commit was dropped,
-/// the editor is still open, and Up would adjust the field under the cursor
-/// instead of navigating out, the exact 14°C->19°C failure above. So
-/// "exactly one Up" (the old contract) is now "at most one Up, and never
-/// into an open editor": when the editor is still open, TAP skips straight
-/// to WAIT_EXIT and lets the unit's own timeout close it without committing
+/// TAP itself checks Display::editor_open() before pressing anything, the
+/// same guard Runner::recover() carries (see its own comment). This matters
+/// because LeaveMenu can run immediately after a sequence's own commit Set
+/// (SyncClock's LEAVE step, following its fourth/COMMIT Set) -- if that
+/// commit was dropped, the editor is still open, and Up would adjust the
+/// field under the cursor instead of navigating out, the exact
+/// 14°C->19°C failure above. So this is at most one Up, and never into an
+/// open editor: when the editor is still open, TAP skips straight to
+/// WAIT_EXIT and lets the unit's own timeout close it without committing
 /// anything.
 class LeaveMenu final : public Sequence {
  public:
@@ -491,13 +483,13 @@ class LeaveMenu final : public Sequence {
 };
 
 // ---------------------------------------------------------- editing model --
-// Stage 6's three new primitives, per PLAN.md's "The unit's editing model":
-// OpenEditor (tap Set, confirm it actually opened, retry once), AdjustField
-// (the closed loop every field this component writes shares) and
-// ExitEditChain (the walk-out, Set only). Ported from the old
-// mhrv_orig/summer_bypass.yaml's open_editor/adjust loops/exit_edit_chain
-// scripts -- the comments there record real observations on the physical
-// unit, carried into the class comments below rather than just the code.
+// Three primitives behind the unit's editing model: OpenEditor (tap Set,
+// confirm it actually opened, retry once), AdjustField (the closed loop
+// every field this component writes shares) and ExitEditChain (the
+// walk-out, Set only). Ported from the old mhrv_orig/summer_bypass.yaml's
+// open_editor/adjust loops/exit_edit_chain scripts -- the comments there
+// record real observations on the physical unit, carried into the class
+// comments below rather than just the code.
 
 /// Taps Set and confirms an editor actually opened (Display::editor_open()),
 /// retrying once before giving up -- the old open_editor script's
@@ -507,7 +499,7 @@ class LeaveMenu final : public Sequence {
 /// and if no editor actually opened those same presses are navigation
 /// instead, walking the display back up the menu while the value being
 /// "adjusted" never budges -- observed exactly once on the real unit, before
-/// gap_ms went up to 400ms (PLAN.md §3).
+/// gap_ms went up to 400ms.
 class OpenEditor final : public Sequence {
  public:
   const char *name() const override { return "OpenEditor"; }
@@ -533,10 +525,10 @@ class OpenEditor final : public Sequence {
   uint8_t attempt_{0};
 };
 
-/// The closed loop behind every field this component writes, and (stage 7)
-/// the clock's day/hour/minute too -- shared rather than copy-pasted per
-/// field the way the old YAML's three apply_* scripts were (PLAN.md §2/§3).
-/// ValueParser/DirectionFn are what varies per field; see
+/// The closed loop behind every field this component writes, and the
+/// clock's day/hour/minute too -- shared rather than copy-pasted per field
+/// the way the old YAML's three apply_* scripts were. ValueParser/
+/// DirectionFn are what varies per field; see
 /// parse_summer_mode_field()/parse_temp_field()/direction_no_wrap() below for
 /// the concrete ones this stage uses, and read_fresh_value() for the sibling
 /// helper WriteSetting's VERIFY step and ReadSettings share with this class.
@@ -571,17 +563,17 @@ class AdjustField final : public Sequence {
   /// True if the field needs to move UP to get from cur towards want, false
   /// for DOWN. Only ever called once cur != want (see step 4 above). A
   /// parameter rather than a hardcoded `cur < want` because it is NOT always
-  /// that simple: every field this stage writes is a plain sign comparison
-  /// (none of the three wrap -- PLAN.md is explicit that parser::wrapped_delta
-  /// would be actively wrong on all three, see direction_no_wrap() below),
-  /// but stage 7's clock fields DO wrap and need a shortest-path version
-  /// instead (direction_wrap_24/direction_wrap_60 below), and this is the
-  /// seam that lets them reuse this same class.
+  /// that simple: every settings field is a plain sign comparison (none of
+  /// the three wrap -- PLAN.md is explicit that parser::wrapped_delta would
+  /// be actively wrong on all three, see direction_no_wrap() below), but the
+  /// clock fields DO wrap and need a shortest-path version instead
+  /// (direction_wrap_24/direction_wrap_60 below), and this is the seam that
+  /// lets them reuse this same class.
   using DirectionFn = bool (*)(int cur, int want);
 
   /// Supplies the field's target, re-read fresh on every CHECK iteration
-  /// rather than fixed once at reset() time -- what stage 7's clock fields
-  /// need and WriteSetting's plain fields do not: the minute field alone can
+  /// rather than fixed once at reset() time -- what the clock fields need
+  /// and WriteSetting's plain fields do not: the minute field alone can
   /// take up to ~34 taps (each up to ~1.35s -- see guard_limit's callers),
   /// long enough for a real minute (or even hour) rollover to happen
   /// mid-adjustment, and re-reading is how the loop follows it instead of
@@ -615,8 +607,8 @@ class AdjustField final : public Sequence {
   /// -- see PLAN.md's "no dynamic allocation in steady state".
   void reset(ValueParser parse, DirectionFn direction, int target, int guard_limit);
 
-  /// Stage 7's live-target form -- see TargetFn's own comment for why
-  /// SyncClock needs this and WriteSetting does not. Must only be called
+  /// The live-target form -- see TargetFn's own comment for why SyncClock
+  /// needs this and WriteSetting does not. Must only be called
   /// while this instance is NOT on the Runner's stack, same rule as
   /// HoldUntil::reset(). SyncClock reuses ONE long-lived instance across its
   /// day/hour/minute steps, same "no dynamic allocation in steady state"
@@ -718,7 +710,7 @@ bool parse_temp_field(const std::string &line2, int &out);
 /// Plain sign comparison -- correct for Summer Mode, Indoor Temp and Outdoor
 /// Temp, none of which wrap (PLAN.md is explicit that parser::wrapped_delta
 /// would be actively wrong on all three; it is for the clock's hour/minute
-/// only, stage 7).
+/// only).
 bool direction_no_wrap(int cur, int want);
 
 /// True once line2 has published something NEWER than `since_ms` (the moment
@@ -732,8 +724,8 @@ bool direction_no_wrap(int cur, int want);
 std::optional<int> read_fresh_value(const Display &display, uint32_t since_ms, AdjustField::ValueParser parse);
 
 // ------------------------------------------------------------ clock fields --
-// Stage 7's SyncClock (seq_sync_clock.cpp): the Set Clock screen's three
-// fields, shaped to match AdjustField::ValueParser/DirectionFn exactly like
+// SyncClock's (seq_sync_clock.cpp) Set Clock screen fields, shaped to match
+// AdjustField::ValueParser/DirectionFn exactly like
 // the settings fields above -- one AdjustField, three table rows in spirit,
 // even though the clock's "table" is just three named calls rather than an
 // array (there being only ever three rows, unlike SettingSpec's three that
@@ -762,12 +754,12 @@ bool direction_wrap_24(int cur, int want);
 /// Same, at modulus 60, for the minute field.
 bool direction_wrap_60(int cur, int want);
 
-/// PLAN.md §3: Up+Main to enter the diagnostic menu, hold Down 8s to auto-
-/// scroll through every page, then the verified two-stage exit (release,
-/// settle, a FRESH hold of Up -- see seq_fetch_diagnostics.cpp's poll() for
-/// why holding straight through never works). Decodes nothing itself: the
-/// hub's existing on_change callback (stage 3) publishes every page passed
-/// through as it goes by. Tracks the highest page number actually seen
+/// Up+Main to enter the diagnostic menu, hold Down 8s to auto-scroll
+/// through every page, then the verified two-stage exit (release, settle, a
+/// FRESH hold of Up -- see seq_fetch_diagnostics.cpp's poll() for why
+/// holding straight through never works). Decodes nothing itself: the hub's
+/// existing on_change callback publishes every page passed through as it
+/// goes by. Tracks the highest page number actually seen
 /// rather than waiting for a hardcoded terminator -- firmware V32/05 stops
 /// at page 27, and the old component's wait for "Diagnostic  28" hung for
 /// 60s and abandoned the display in the menu.
@@ -831,14 +823,13 @@ class FetchDiagnostics final : public Sequence {
 };
 
 // -------------------------------------------------------------- settings --
-// Stage 6: ReadSettings and WriteSetting, PLAN.md §3's remaining two
-// sequences that were not FetchDiagnostics. Both drive the same three
-// screens (Summer Mode, Indoor Temp, Outdoor Temp) via the editing-model
-// primitives just above.
+// ReadSettings and WriteSetting both drive the same three screens (Summer
+// Mode, Indoor Temp, Outdoor Temp) via the editing-model primitives just
+// above.
 
 /// One pass reading Summer Mode, Indoor Temp, then Outdoor Temp via the
-/// edit-chain hop (PLAN.md §3/§6) -- see this file's class comment for the
-/// primitives it is built from. Publishes whatever it manages to read via
+/// edit-chain hop -- see this file's class comment for the primitives it is
+/// built from. Publishes whatever it manages to read via
 /// on_switch()/on_number(); a value that doesn't parse (blank/blinking, or a
 /// screen that was never reached) is logged and simply left unpublished,
 /// same "never hard-fail a read" philosophy as the rest of this component --
@@ -904,15 +895,10 @@ class ReadSettings final : public Sequence {
   static constexpr uint32_t OUTDOOR_SCREEN_TIMEOUT_MS = 3000;
   static constexpr uint32_t OUTDOOR_VALUE_TIMEOUT_MS = 2000;
 
-  // Derived worst case, one term per step in poll() (seq_read_settings.cpp):
-  // NAV_SUMMER's GotoMenu(index 2) + WAIT_SUMMER + NAV_INDOOR's
-  // GotoMenu(index 3) + WAIT_INDOOR + OPEN_OUTDOOR's OpenEditor +
-  // HOP_COMMIT's own Set tap-and-key_gap + WAIT_OUTDOOR_SCREEN +
-  // WAIT_OUTDOOR_VALUE + EXIT_CHAIN's ExitEditChain (the dominant term, its
-  // own ~159s fallback) + HOME's GotoMenu(index 0). Replaces what used to be
-  // a hand-summed comment ("~157s... leaves only ~23s...") with an
-  // expression the compiler checks below, so it cannot go stale the way that
-  // comment could.
+  // Worst case is dominated by EXIT_CHAIN's ExitEditChain fallback (~159s).
+  // One term per step in poll() (seq_read_settings.cpp), expressed as a
+  // compiler-checked sum rather than a hand-summed comment, so it cannot go
+  // stale the way a prose estimate could.
   static constexpr uint32_t WORST_CASE_MS = GotoMenu::worst_case_ms(2) + SUMMER_TIMEOUT_MS +
                                              GotoMenu::worst_case_ms(3) + INDOOR_TIMEOUT_MS +
                                              OpenEditor::worst_case_ms() + (kDefaultTapMs + kDefaultKeyGapMs) +
@@ -970,8 +956,8 @@ std::optional<SettingId> setting_for(NumberKey key);
 
 
 /// Writes one of the three bypass settings, then reads all three back as
-/// confirmation (PLAN.md §2's WriteSetting body). configure() selects the
-/// row (SettingId) and target value before this instance is request()ed; the
+/// confirmation. configure() selects the row (SettingId) and target value
+/// before this instance is request()ed; the
 /// STEPS below are the same for all three -- see seq_write_setting.cpp's
 /// SettingSpec table for what actually differs between them. This is the
 /// first sequence in this component that presses Set: see this file's class
@@ -1044,15 +1030,11 @@ class WriteSetting final : public Sequence {
   static constexpr uint8_t MAX_MENU_INDEX = 3;
   static constexpr int MAX_GUARD_LIMIT = 40;
 
-  // Derived worst case, one term per step in poll() (seq_write_setting.cpp):
-  // NAVIGATE's GotoMenu(MAX_MENU_INDEX) + VERIFY + OPEN's OpenEditor +
-  // HOP_COMMIT's own Set tap-and-key_gap + WAIT_HOP_SCREEN + ADJUST's
-  // AdjustField(MAX_GUARD_LIMIT) + COMMIT's own Set tap-and-key_gap + SETTLE
-  // + EXIT_CHAIN's ExitEditChain + HOME's GotoMenu(0) + READ_BACK's whole
-  // nested ReadSettings run (which carries its own ExitEditChain fallback a
-  // SECOND time, see this override's own comment). Replaces what used to be
-  // a hand-summed comment ("~400s is the realistic worst-case sum") with an
-  // expression the compiler checks below.
+  // One term per step in poll() (seq_write_setting.cpp); READ_BACK's nested
+  // ReadSettings run carries its own ExitEditChain fallback a SECOND time
+  // (see this override's own comment). A compiler-checked sum rather than a
+  // hand-summed comment, so it cannot go stale the way a prose estimate
+  // could.
   static constexpr uint32_t WORST_CASE_MS =
       GotoMenu::worst_case_ms(MAX_MENU_INDEX) + VERIFY_TIMEOUT_MS + OpenEditor::worst_case_ms() +
       (kDefaultTapMs + kDefaultKeyGapMs) + HOP_SCREEN_TIMEOUT_MS + AdjustField::worst_case_ms(MAX_GUARD_LIMIT) +
@@ -1085,9 +1067,7 @@ class WriteSetting final : public Sequence {
 };
 
 // ---------------------------------------------------------------- SyncClock --
-// Stage 7: the Set Clock screen, PLAN.md §3's remaining stage-7 sequence that
-// touches this file (SetAirflowMode/ResetFilter/ManualKey are separate
-// deliverables). Ported from mhrv_orig/controls.yaml's sync_clock/
+// The Set Clock screen. Ported from mhrv_orig/controls.yaml's sync_clock/
 // sync_clock_run/adjust_day/adjust_hour/adjust_minute scripts -- see this
 // class's own comment and seq_sync_clock.cpp for where each observation on
 // the physical unit landed.
@@ -1124,8 +1104,9 @@ class WriteSetting final : public Sequence {
 /// keeps a recovery failure from making things worse.
 ///
 /// A long-lived hub member, reused on every scheduled or button-triggered
-/// run -- see PLAN.md's "no dynamic allocation in steady state". There is no
-/// real per-run state to reset in on_start(): nav_started_ms_ is written
+/// run -- see this file's class comment on "no dynamic allocation in
+/// steady state". There is no real per-run state to reset in on_start():
+/// nav_started_ms_ is written
 /// fresh at NAVIGATE (always step 0 of a new run), and every AdjustField
 /// child resets its own guard_count_ in ITS on_start(), called automatically
 /// each time this pushes it via await().
@@ -1199,17 +1180,10 @@ class SyncClock final : public Sequence {
   static constexpr int HOUR_GUARD = 14;
   static constexpr int MINUTE_GUARD = 34;
 
-  // Derived worst case, one term per step in poll() (seq_sync_clock.cpp):
-  // NAVIGATE's GotoMenu(index 1) + VERIFY (CHECK_TIME adds nothing -- it
-  // never waits, only fails fast or falls through) + OPEN's OpenEditor +
-  // ADJUST_DAY's AdjustField(DAY_GUARD) + SET_DAY's own Set tap-and-key_gap
-  // + ADJUST_HOUR's AdjustField(HOUR_GUARD) + SET_HOUR's own Set
-  // tap-and-key_gap + ADJUST_MINUTE's AdjustField(MINUTE_GUARD) + COMMIT's
-  // own Set tap-and-key_gap + SETTLE + EXIT_CHAIN's ExitEditChain (if the
-  // commit Set was dropped) + LEAVE's LeaveMenu (if the editor still has not
-  // closed by then). Replaces what used to be a hand-summed comment
-  // ("Roughly 76 + 4 + 3 + ... =~ 376s") with an expression the compiler
-  // checks below.
+  // One term per step in poll() (seq_sync_clock.cpp) -- CHECK_TIME adds
+  // nothing, since it never waits, only fails fast or falls through. A
+  // compiler-checked sum rather than a hand-summed comment, so it cannot go
+  // stale the way a prose estimate could.
   static constexpr uint32_t WORST_CASE_MS =
       GotoMenu::worst_case_ms(1) + VERIFY_TIMEOUT_MS + OpenEditor::worst_case_ms() +
       AdjustField::worst_case_ms(DAY_GUARD) + (kDefaultTapMs + kDefaultKeyGapMs) +
@@ -1244,11 +1218,9 @@ class SyncClock final : public Sequence {
 };
 
 // ------------------------------------------------------------ SetAirflowMode --
-// Stage 7's other deliverable (PLAN.md §3's SetAirflowMode row, §6's
-// airflow_mode select). Ported from mhrv_orig/controls.yaml's boost_probe/
-// boost_normalise/boost_set, extended for Purge per PLAN.md risk 3 -- see
-// SetAirflowMode's own class comment (seq_set_airflow_mode.cpp) for the full
-// step-by-step reasoning.
+// Ported from mhrv_orig/controls.yaml's boost_probe/boost_normalise/
+// boost_set, extended for Purge -- see SetAirflowMode's own class comment
+// (seq_set_airflow_mode.cpp) for the full step-by-step reasoning.
 
 /// The five targets `airflow_mode` (select.py) can be set to -- deliberately
 /// ordered to match select.py's AIRFLOW_MODE_OPTIONS list index-for-index,
@@ -1316,8 +1288,8 @@ std::optional<AirflowTarget> airflow_target_for(SelectKey key, size_t index);
 ///     describes Purge as reachable from any state) or, for a non-Purge
 ///     target, to CANCEL_PURGE first if currently purging, else straight to
 ///     the boost probe.
-///  2. CANCEL_PURGE / OPEN_PURGE: a fixed 5500ms Main hold (PLAN.md §3),
-///     via press()+elapsed() rather than HoldUntil -- its SUCCESS condition
+///  2. CANCEL_PURGE / OPEN_PURGE: a fixed 5500ms Main hold, via
+///     press()+elapsed() rather than HoldUntil -- its SUCCESS condition
 ///     is "the timer ran out", not a predicate, the same reasoning
 ///     FetchDiagnostics::HOLD_DOWN documents for its own fixed 8s hold.
 ///     CANCEL_PURGE is followed by an explicit ~400ms settle before the
@@ -1326,10 +1298,10 @@ std::optional<AirflowTarget> airflow_target_for(SelectKey key, size_t index);
 ///  3. PROBE_CHECK / PROBE_WAIT: mhrv_orig's boost_probe -- sample line1 for
 ///     "Boost Airflow" right now; if not seen, wait up to 8s for a Boost
 ///     frame (line1 alternates every ~3.2-3.5s, so a single unlucky sample
-///     can catch the other half of the cycle -- PLAN.md §3's "the probe
-///     needs up to ~8s to be conclusive").
-///  4. If boosting: tap Main once (bounded by a 4-tap guard, PLAN.md §3),
-///     wait for the tap and its key_gap to clear, wait a further 1s
+///     can catch the other half of the cycle -- the probe needs up to ~8s
+///     to be conclusive).
+///  4. If boosting: tap Main once (bounded by a 4-tap guard), wait for the
+///     tap and its key_gap to clear, wait a further 1s
 ///     (mhrv_orig's own figure -- long enough for the unit's own counter
 ///     and display to have caught up before judging it), then re-probe.
 ///     Guard-exhausted-and-still-boosting FAILS outright rather than
@@ -1353,7 +1325,7 @@ std::optional<AirflowTarget> airflow_target_for(SelectKey key, size_t index);
 /// (seq_set_airflow_mode.cpp) for the mirror-image reasoning at PROBE_CHECK,
 /// which deliberately does NOT use this same sticky reading.
 ///
-/// NOT optimistic (PLAN.md §6) -- same "the unit's own keypad is also a
+/// NOT optimistic -- same "the unit's own keypad is also a
 /// valid input device" reasoning as WriteSetting: this sequence only ever
 /// presses keys, it never publishes anything itself. What Home Assistant's
 /// airflow_mode shows comes entirely from the hub's own PASSIVE status-line
@@ -1375,14 +1347,14 @@ std::optional<AirflowTarget> airflow_target_for(SelectKey key, size_t index);
 /// each request(), see on_start() for what resets between runs.
 class SetAirflowMode final : public Sequence {
  public:
-  /// Finding 2 (Opus review of this stage): the alternation-aware, STICKY
-  /// purging() this sequence needs at CHECK_CURRENT to know "is the unit
-  /// currently purging" reliably. A single decoded frame is not enough --
-  /// the status loop alternates, which is exactly why StatusTracker models
-  /// purging_ as a Flag with its own ALTERNATION_TIMEOUT_MS rather than
-  /// trusting one frame (status.h's own class comment), and PLAN.md risk 4
-  /// (the purge layout is unresolved) makes a single-frame miss MORE
-  /// likely, not less. Must be set before request()ing this instance --
+  /// The alternation-aware, STICKY purging() this sequence needs at
+  /// CHECK_CURRENT to know "is the unit currently purging" reliably. A
+  /// single decoded frame is not enough -- the status loop alternates,
+  /// which is exactly why StatusTracker models purging_ as a Flag with its
+  /// own ALTERNATION_TIMEOUT_MS rather than trusting one frame (status.h's
+  /// own class comment), and the purge layout being otherwise unresolved
+  /// makes a single-frame miss MORE likely, not less. Must be set before
+  /// request()ing this instance --
   /// VentAxiaHub::setup() wires it to &this->status_, the exact tracker
   /// every other status-derived entity already reads from, so this is not
   /// a second, separate purge decode. A null pointer is treated the same
@@ -1463,7 +1435,7 @@ class SetAirflowMode final : public Sequence {
   // that property for taps that ARE moving the counter, just slowly.
   static constexpr uint8_t STUCK_TAP_LIMIT = 2;
 
-  // Derived worst case for the binding branch: currently purging (so
+  // Worst case for the binding branch: currently purging (so
   // CANCEL_PURGE/CANCEL_SETTLE run) and target == BOOST_CONTINUOUS (3
   // presses_for_(), the most of any target). The normalise loop
   // (PROBE_CHECK/PROBE_WAIT -> after_probe_() -> NORMALISE_WAIT/
@@ -1471,10 +1443,10 @@ class SetAirflowMode final : public Sequence {
   // of up to NORMALISE_GUARD taps, plus one FINAL probe after the last tap
   // to learn whether it can stop -- NORMALISE_GUARD+1 probes total, each
   // bounded by PROBE_TIMEOUT_MS regardless of how it resolves (a Boost frame
-  // reappearing, or the timeout itself). This is one more probe than the
-  // superseded comment counted ("4 guard iterations... 4*9.45s"), which
-  // undercounted the final post-tap probe; TIMEOUT_BUDGET_MS's headroom
-  // absorbs the difference either way (see the static_assert below).
+  // reappearing, or the timeout itself). An earlier version of this budget
+  // miscounted by omitting that final post-tap probe; TIMEOUT_BUDGET_MS's
+  // headroom absorbs the difference either way (see the static_assert
+  // below), but the +1 is deliberate, not slack.
   static constexpr uint8_t NORMALISE_PROBES = NORMALISE_GUARD + 1;
   static constexpr uint8_t MAX_APPLY_TAPS = 3;  // BOOST_CONTINUOUS -- presses_for_()'s own largest case
 
@@ -1508,7 +1480,7 @@ class SetAirflowMode final : public Sequence {
 
   AirflowTarget target_{AirflowTarget::NORMAL};
   uint8_t guard_{0};
-  const status::StatusTracker *status_{nullptr};  // Finding 2 -- set_status(), CHECK_CURRENT
+  const status::StatusTracker *status_{nullptr};  // see set_status(), CHECK_CURRENT
 
   // Per-run stuck-tap tracking (STUCK_TAP_LIMIT above) -- reset in on_start(),
   // NOT here, because this Sequence is a long-lived hub member reused across
@@ -1528,9 +1500,9 @@ class SetAirflowMode final : public Sequence {
 };
 
 // ------------------------------------------------------------- ResetFilter --
-// Stage 7's remaining deliverable, and the last thing built in this
-// component by design (PLAN.md §8 puts it last "for exactly that reason"):
-// the ONE operation with no way back from software. Ported from
+// The last thing built in this component by design (PLAN.md §8 puts it
+// last "for exactly that reason"): the ONE operation with no way back from
+// software. Ported from
 // mhrv_orig/controls.yaml's reset_filter script -- see that file's own
 // comment for how the gesture itself (a 5s Up+Down hold on the status
 // screen) was actually established: the manual originally looked
@@ -1577,10 +1549,9 @@ class SetAirflowMode final : public Sequence {
 ///     is NOT the hub's shared button/schedule instance) to re-read every
 ///     diagnostic page including 23, then checks filter_hours_source_ for
 ///     FOUR distinguishable outcomes, each logged differently -- extending
-///     mhrv_orig's own three-way log with one more case Opus review found
-///     it needed (see hours_before_'s own comment for why), because
-///     collapsing any of these into "pass" or "fail" would hide followup
-///     a human needs:
+///     mhrv_orig's own three-way log with one more case (see hours_before_'s
+///     own comment for why it's needed), because collapsing any of these
+///     into "pass" or "fail" would hide followup a human needs:
 ///       - no reading at all (filter_hours_source_ unset, or answers
 ///         nullopt) -- cannot confirm either way, WARN.
 ///       - a reading of exactly 0 -- the reset did not take, WARN.
@@ -1646,11 +1617,11 @@ class ResetFilter final : public Sequence {
   /// than "no reading". A scan-scoped signal would need new per-run
   /// tracking state on the hub side, since the decode is shared and passive
   /// rather than owned by whichever sequence is driving the scroll -- a
-  /// larger change than this stage's least-invasive route calls for, and
-  /// the same tradeoff the reference implementation already made.
+  /// larger change than this least-invasive route calls for, and the same
+  /// tradeoff the reference implementation already made.
   ///
-  /// Opus review of this stage (Finding 1) closed most of that gap WITHOUT
-  /// touching the hub at all: on_start() snapshots this source's answer
+  /// Most of that gap closes WITHOUT touching the hub at all: on_start()
+  /// snapshots this source's answer
   /// into hours_before_ BEFORE the hold, and VERIFY compares against it --
   /// see that member's own comment. What the snapshot buys: a stale-nonzero
   /// reading (the dangerous direction -- see hours_before_) can no longer
@@ -1730,7 +1701,7 @@ class ResetFilter final : public Sequence {
   FetchDiagnostics diagnostics_scan_;
 
   FilterHoursSource filter_hours_source_;
-  // Opus review (Finding 1): filter_hours_source_'s answer taken BEFORE the
+  // filter_hours_source_'s answer taken BEFORE the
   // hold, in on_start() -- the one piece of real per-run state this
   // sequence carries. Exists to catch the outcome that matters most: this
   // button is usually pressed at hours == 0, where a stale reading is also

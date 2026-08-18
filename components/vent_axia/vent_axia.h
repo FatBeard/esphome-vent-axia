@@ -69,7 +69,7 @@ namespace vent_axia {
 class DiagnosticPageTrigger : public Trigger<uint8_t, std::string> {};
 
 /// Fires once a ROOT sequence (Runner) finishes as FAILED, with its name --
-/// PLAN.md §5's on_sequence_failed. Wired from Runner::FailureSink in
+/// backs YAML's on_sequence_failed. Wired from Runner::FailureSink in
 /// setup(), the same one-directional adapter shape as DiagnosticPageTrigger
 /// above.
 class SequenceFailedTrigger : public Trigger<std::string> {};
@@ -79,31 +79,28 @@ class SequenceFailedTrigger : public Trigger<std::string> {};
 /// The component impersonates the wired remote: the MVHR pushes a 41-byte
 /// display frame roughly every 300 ms, and a keypress is a stream of 8-byte
 /// frames repeated for as long as the key is held (there is no key-up
-/// frame). Stage 2 added status-line decode (status::StatusTracker) and
-/// link liveness on top of stage 1's RX framing and display decode/publish.
-/// Stage 3 added the diagnostic page/field table (diagnostics.cpp): entirely
-/// passive, driven off whatever page the display happens to be showing --
-/// see publish_diagnostic_page_(). Stage 4 added Keypad and was the first
-/// that transmitted anything beyond the one-shot alive frame in setup():
-/// tap_key()/hold_key()/release_keys() are the primitive the sequence
-/// engine drives. Stage 5 added that engine (sequence.h's Runner) and its
-/// first concrete sequence, FetchDiagnostics. Every caller of Set still
-/// goes through the same interlock, enforced in Runner::tap()/press()
-/// (sequence.h) rather than a hub-private method, so the sequence engine's
-/// own primitives are not exempt from it either -- see Runner::tap()'s
-/// comment.
+/// frame). RX framing and display decode/publish sit alongside status-line
+/// decode (status::StatusTracker) and link liveness, and the diagnostic
+/// page/field table (diagnostics.cpp) is entirely passive, driven off
+/// whatever page the display happens to be showing -- see
+/// publish_diagnostic_page_(). Keypad and the sequence engine (sequence.h's
+/// Runner) drive everything that transmits beyond the one-shot alive frame
+/// in setup(): tap_key()/hold_key()/release_keys() are the primitive the
+/// engine's own sequences use too. Every caller of Set goes through the
+/// same interlock, enforced in Runner::tap()/press() (sequence.h) rather
+/// than a hub-private method, so the sequence engine's own primitives are
+/// not exempt from it either -- see Runner::tap()'s comment.
 ///
-/// This stage (6) adds ReadSettings and WriteSetting -- the first sequence
-/// that presses Set, the only key that writes. write_switch()/write_number()
-/// are the entry points switch.py's/number.py's platform classes drive from
-/// write_state()/control(); read_settings() is fetch_diagnostics()'s sibling
-/// for the button/switch/number readback. Neither switch nor number is
-/// optimistic (PLAN.md §6): what gets published comes only from what
-/// ReadSettings itself observed on the unit, via publish_switch_()/
-/// publish_number_(), the same "last published value" dedup shape as
-/// publish_sensor_()/publish_binary_().
+/// ReadSettings and WriteSetting are the sequences that press Set, the only
+/// key that writes. write_switch()/write_number() are the entry points
+/// switch.py's/number.py's platform classes drive from write_state()/
+/// control(); read_settings() is fetch_diagnostics()'s sibling for the
+/// button/switch/number readback. Neither switch nor number is optimistic:
+/// what gets published comes only from what ReadSettings itself observed on
+/// the unit, via publish_switch_()/publish_number_(), the same "last
+/// published value" dedup shape as publish_sensor_()/publish_binary_().
 ///
-/// Stage 7 adds SyncClock, and SetAirflowMode alongside airflow_mode
+/// SyncClock and SetAirflowMode work the same way, alongside airflow_mode
 /// (select.py) -- write_select() is control()'s entry point, same
 /// not-optimistic shape as write_switch()/write_number(), but with no
 /// sequence-driven read-back of its own: publish_airflow_mode_() derives
