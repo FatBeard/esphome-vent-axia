@@ -114,7 +114,7 @@ Poll WriteSetting::poll() {
         if (this->log_.warn) {
           this->log_.warn("WriteSetting: did not land on Outdoor Temp after the Indoor Temp hop -- nothing written "
                            "(line1='" +
-                           this->runner_->display().line1() + "')");
+                           this->runner_->display().text_line1() + "')");
         }
         this->ok_ = false;
         return this->goto_step(EXIT_CHAIN);

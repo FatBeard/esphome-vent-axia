@@ -12,6 +12,8 @@
 #include <optional>
 #include <string>
 
+#include "display.h"  // glyphs::ALPHA -- the one measured byte this predicate tests against
+
 namespace esphome {
 namespace vent_axia {
 namespace status {
@@ -43,20 +45,27 @@ LineMessage classify_line(const std::string &line1);
 /// annunciator at column 15 (the last of 16). The Sentinel Kinetic manual:
 /// "If the installation has proportional sensors or an internal humidity
 /// sensor fitted, and any of these are boosting the airflow, an alpha symbol
-/// will be displayed." Alpha is not printable ASCII, so sanitize()
-/// (display.cpp) maps it to '*' before anything downstream -- including this
-/// function -- ever sees the line; the asterisk *is* the alpha.
+/// will be displayed." The alpha glyph is byte glyphs::ALPHA (0xE0 --
+/// display.h), measured live on this unit 18 Aug 2026 (PLAN.md §8 stage 15's
+/// `GET /events` capture during a real humidity boost: raw frame line2
+/// non-ASCII byte `col 15=0xE0`). This reads line2 from the RAW lane
+/// (Display::raw_line2()) directly, an exact byte comparison, not a scan of
+/// a sanitised or transcoded copy.
 ///
-/// Column 15 exactly, not a scan of the whole line, because sanitize()'s
-/// mapping is many-to-one: it collapses EVERY non-printable byte to '*', so
-/// a whole-line search would also fire on, say, Mode 2's "Auto" glyph
-/// (mhrv_orig/vent-axia-esphome-project.md:496) or any other custom
-/// character the unit happens to be showing elsewhere on the line. The
-/// column itself was measured, not guessed: line1 is a full 16 characters,
-/// giving a pitch of 45.4 px/char from a captured screenshot ('S' at x=161
-/// to 'n' at x=845 in "Summer Bypass On"), and the asterisk's own glyph run
-/// sits at x=840-878 -- column 15, the last column, on a captured frame
-/// reading line1 "Summer Bypass On" / line2 "31%            *".
+/// Column 15 exactly, not a scan of the whole line: that is where the byte
+/// was measured, and the raw lane now makes a whole-line scan technically
+/// possible without the many-to-one ambiguity a sanitised copy used to
+/// carry -- but nothing has ever measured this unit showing glyphs::ALPHA
+/// anywhere else on the line, so widening the scan would be reasoning ahead
+/// of a capture, the exact discipline PLAN.md §8 stage 14's withdrawn 31%
+/// evidence strand argues against. The column itself was measured, not
+/// guessed: line1 is a full 16 characters, giving a pitch of 45.4 px/char
+/// from a captured screenshot ('S' at x=161 to 'n' at x=845 in "Summer
+/// Bypass On"), and the annunciator's own glyph run sits at x=840-878 --
+/// column 15, the last column, on a captured frame reading line1 "Summer
+/// Bypass On" / line2 "31%            *" (that percentage published under
+/// the pre-stage-16 sanitize()'d pipeline, the byte itself unconfirmed at
+/// the time -- see the CONFIRMED LIVE paragraph below for when it was).
 ///
 /// CORRECTED 17 Aug 2026, on the post-flash capture: that 31% was
 /// originally offered as a third line of evidence, on the reading that it
@@ -89,9 +98,9 @@ LineMessage classify_line(const std::string &line1);
 /// This is deliberately NOT the same annunciator PLAN.md §8 stage 10
 /// recorded: `ls` at columns 14-15 (`48%           ls`), seen only while
 /// Main was being tapped during a switched-live boost. Checking line2[15]
-/// alone against '*' cannot match "ls" (column 15 there holds 's', not
-/// '*'), so the two are structurally distinct rather than merely
-/// coincidentally different in the captures seen so far.
+/// alone against glyphs::ALPHA cannot match "ls" (column 15 there holds
+/// 's' == 0x73, not 0xE0), so the two are structurally distinct rather
+/// than merely coincidentally different in the captures seen so far.
 ///
 /// The size guard exists because protocol::LINE_LEN is a fixed 16,
 /// space-padded characters on the wire (protocol.h:19,51), but the host

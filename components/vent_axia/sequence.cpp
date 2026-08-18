@@ -187,7 +187,7 @@ void Runner::recover() {
   // asserted is a no-op, keypad.h).
   this->keypad_.release();
 
-  if (!screens::is_menu_screen(this->display_.line1())) {
+  if (!screens::is_menu_screen(this->display_.raw_line1())) {
     return;  // already back on the status loop -- nothing to walk out of
   }
 
@@ -331,12 +331,12 @@ Poll LeaveMenu::poll() {
       return this->runner_->keypad_busy() ? Poll::RUNNING : this->goto_step(CHECK);
 
     case CHECK:
-      return screens::is_menu_screen(this->runner_->display().line1()) ? this->goto_step(WAIT_EXIT) : Poll::DONE;
+      return screens::is_menu_screen(this->runner_->display().raw_line1()) ? this->goto_step(WAIT_EXIT) : Poll::DONE;
 
     // The unit's own menu timeout closes whatever was open, not another Up
     // -- see the class comment for why a second tap is not an option here.
     case WAIT_EXIT:
-      if (!screens::is_menu_screen(this->runner_->display().line1())) {
+      if (!screens::is_menu_screen(this->runner_->display().raw_line1())) {
         return Poll::DONE;
       }
       return this->elapsed() >= WAIT_TIMEOUT_MS ? Poll::FAILED : Poll::RUNNING;
@@ -428,7 +428,7 @@ Poll AdjustField::poll() {
       }
       // Step 3: NOT an error if this fails to parse -- see class comment.
       int cur = 0;
-      if (!this->parse_(this->runner_->display().line2(), cur)) {
+      if (!this->parse_(this->runner_->display().raw_line2(), cur)) {
         return Poll::RUNNING;
       }
       // Step 4.
@@ -561,7 +561,7 @@ std::optional<int> read_fresh_value(const Display &display, uint32_t since_ms, A
     return std::nullopt;
   }
   int v = 0;
-  if (!parse(display.line2(), v)) {
+  if (!parse(display.raw_line2(), v)) {
     return std::nullopt;
   }
   return v;

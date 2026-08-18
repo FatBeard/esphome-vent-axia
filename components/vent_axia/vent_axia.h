@@ -375,23 +375,23 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   /// run.
   void stamp_diagnostics_updated_();
 
-  /// Logs raw, pre-sanitize() frame bytes at DEBUG -- visible under the
-  /// `level: DEBUG` both mhrv.yaml and example/production.yaml already run,
-  /// so this needs no new config option. A live capture during a humidity
-  /// boost is meant to settle three questions with no decoding change of
-  /// its own: which byte the α annunciator actually is (0xE0 is currently
-  /// an inference from the HD44780 A00 ROM, never measured on this unit),
-  /// which CGRAM slots (0x00-0x07) this unit uses, and whether
+  /// Logs raw frame bytes at DEBUG -- visible under the `level: DEBUG` both
+  /// mhrv.yaml and example/production.yaml already run, so this needs no
+  /// new config option. Stage 15's live capture (PLAN.md §8) settled which
+  /// byte the α annunciator is (glyphs::ALPHA, display.h) and that the six
+  /// `unknown_*` frame bytes are constant across ordinary navigation; still
+  /// open is which CGRAM slots (0x00-0x07) this unit uses, and whether
   /// unknown_row1_addr/unknown_row2_addr carry a cursor or blink attribute
-  /// that could replace editor_open()'s 1200ms staleness heuristic with a
-  /// direct protocol read -- that heuristic is the one CLAUDE.md records as
-  /// having silently taken a 14°C setpoint to 19°C. See
+  /// during an OPEN EDITOR specifically (stage 15's capture never opened
+  /// one) that could replace editor_open()'s 1200ms staleness heuristic
+  /// with a direct protocol read -- that heuristic is the one CLAUDE.md
+  /// records as having silently taken a 14°C setpoint to 19°C. See
   /// DISPLAY-INSTRUMENTATION-PLAN.md and DISPLAY-REVIEW.md §6/§7.
   ///
-  /// Must read frame.line1/line2 -- the RAW strings straight off the wire
-  /// -- never display_.line1()/line2(), which are already sanitize()'d and
-  /// would defeat the entire point of the stage: sanitize() is exactly the
-  /// many-to-one collapse this instrumentation exists to see past.
+  /// Must read frame.line1/line2 -- the strings straight off the wire, for
+  /// THIS frame -- never display_.raw_line1()/raw_line2(): this call runs
+  /// before display_.update() below, so at this point the raw lane still
+  /// holds the previous frame's text, not this one's.
   void log_raw_frame_bytes_(const protocol::DisplayFrame &frame, uint32_t now_ms);
 
   /// Floor between log lines from log_raw_frame_bytes_(), applied separately

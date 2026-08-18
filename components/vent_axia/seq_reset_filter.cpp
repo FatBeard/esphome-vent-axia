@@ -49,7 +49,7 @@ Poll ResetFilter::poll() {
     // minutes pressing keys before an operation that cannot be undone.
     case CHECK_STATUS: {
       if (!this->runner_->display().have_frame() ||
-          screens::is_menu_screen(this->runner_->display().line1())) {
+          screens::is_menu_screen(this->runner_->display().raw_line1())) {
         if (this->log_.error) {
           // Actionable, not just diagnostic -- this is what a human sees
           // when the button appears to do nothing. The display returns to
@@ -58,13 +58,13 @@ Poll ResetFilter::poll() {
           // it has.
           this->log_.error(
               "ResetFilter: refusing -- display is not on the status screen (line1='" +
-              this->runner_->display().line1() +
+              this->runner_->display().text_line1() +
               "'). The display returns to the status loop on its own -- press this button again once it has.");
         }
         return Poll::FAILED;
       }
       if (this->log_.info) {
-        this->log_.info("ResetFilter: holding Up+Down on '" + this->runner_->display().line1() + "'");
+        this->log_.info("ResetFilter: holding Up+Down on '" + this->runner_->display().text_line1() + "'");
       }
       return this->goto_step(HOLD);
     }
@@ -102,8 +102,8 @@ Poll ResetFilter::poll() {
       // prompt ever does show up here, this line is where a human first
       // sees it, not a code path that reacts to it.
       if (this->log_.info) {
-        this->log_.info("ResetFilter: after hold, line1='" + this->runner_->display().line1() + "' line2='" +
-                         this->runner_->display().line2() + "'");
+        this->log_.info("ResetFilter: after hold, line1='" + this->runner_->display().text_line1() + "' line2='" +
+                         this->runner_->display().text_line2() + "'");
       }
       return this->goto_step(FETCH);
 

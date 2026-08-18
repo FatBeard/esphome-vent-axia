@@ -35,7 +35,7 @@ Poll ReadSettings::poll() {
       }
       if (this->elapsed() >= SUMMER_TIMEOUT_MS) {
         if (this->log_.warn) {
-          this->log_.warn("ReadSettings: Summer Mode unreadable (line1='" + this->runner_->display().line1() + "')");
+          this->log_.warn("ReadSettings: Summer Mode unreadable (line1='" + this->runner_->display().text_line1() + "')");
         }
         return this->goto_step(NAV_INDOOR);
       }
@@ -64,7 +64,7 @@ Poll ReadSettings::poll() {
       }
       if (this->elapsed() >= INDOOR_TIMEOUT_MS) {
         if (this->log_.warn) {
-          this->log_.warn("ReadSettings: Indoor Temp unreadable (line1='" + this->runner_->display().line1() + "')");
+          this->log_.warn("ReadSettings: Indoor Temp unreadable (line1='" + this->runner_->display().text_line1() + "')");
         }
         // indoor_read_ok_ stays false -- the outdoor hop is skipped below.
         return this->goto_step(OPEN_OUTDOOR);
@@ -116,7 +116,7 @@ Poll ReadSettings::poll() {
         // this is, so the funnel step runs regardless -- see class comment.
         if (this->log_.warn) {
           this->log_.warn("ReadSettings: did not land on Outdoor Temp after the Indoor Temp hop (line1='" +
-                           this->runner_->display().line1() + "')");
+                           this->runner_->display().text_line1() + "')");
         }
         return this->goto_step(EXIT_CHAIN);
       }

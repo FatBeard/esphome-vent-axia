@@ -72,7 +72,7 @@ std::vector<EpisodeSpan> episode_spans_from(const RecordingSink &sink) {
 void feed(Display &disp, status::StatusTracker &status, const std::string &line1, const std::string &line2,
           uint32_t now_ms) {
   disp.update(vatest::pad16(line1), vatest::pad16(line2), now_ms);
-  status.update(disp.line1(), disp.line2(), disp.screen_kind() == screens::ScreenKind::STATUS, now_ms);
+  status.update(disp.raw_line1(), disp.raw_line2(), disp.screen_kind() == screens::ScreenKind::STATUS, now_ms);
 }
 
 }  // namespace

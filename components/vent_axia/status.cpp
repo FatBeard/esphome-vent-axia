@@ -117,7 +117,7 @@ LineMessage classify_line(const std::string &line1) {
 }
 
 bool has_sensor_boost_annunciator(const std::string &line2) {
-  return line2.size() >= 16 && line2[15] == '*';
+  return line2.size() >= 16 && static_cast<unsigned char>(line2[15]) == glyphs::ALPHA;
 }
 
 LineValues parse_line_values(const std::string &line1, const std::string &line2) {
@@ -178,9 +178,9 @@ void StatusTracker::update(const std::string &line1, const std::string &line2, b
   // them unreachable unless is_status_screen was true -- see the early
   // return at the top of this function): menu and diagnostic screens
   // legitimately carry their own custom LCD glyphs (page headers and the
-  // like), which sanitize() would ALSO collapse to '*' at some column. Only
-  // the status loop's line2 is a field where "'*' at column 15" is known to
-  // mean the sensor-boost annunciator and nothing else -- see
+  // like), any of which could in principle land on column 15 too. Only
+  // the status loop's line2 is a field where "glyphs::ALPHA at column 15"
+  // is known to mean the sensor-boost annunciator and nothing else -- see
   // has_sensor_boost_annunciator()'s own comment.
   touch_(this->humidity_boost_, has_sensor_boost_annunciator(line2), delta_ms);
 

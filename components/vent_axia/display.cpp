@@ -36,32 +36,46 @@ std::string describe_unprintable(const std::string &raw) {
   return out;
 }
 
-std::string sanitize(const std::string &raw) {
-  std::string out = raw;
-  for (char &c : out) {
-    if (std::isprint(static_cast<unsigned char>(c)) == 0) {
-      c = '*';
+std::string to_utf8(const std::string &raw) {
+  std::string out;
+  out.reserve(raw.size());  // exact for the all-ASCII case, which is the common one
+  for (char c : raw) {
+    const auto byte = static_cast<unsigned char>(c);
+    if (byte >= 0x20 && byte <= 0x7E) {
+      out += static_cast<char>(byte);
+    } else if (byte == glyphs::ALPHA) {
+      out += "\xCE\xB1";  // U+03B1 GREEK SMALL LETTER ALPHA, UTF-8
+    } else {
+      out += '<';
+      out += to_hex_byte(byte).substr(2);  // to_hex_byte() returns "0xXX"; want just "XX"
+      out += '>';
     }
   }
   return out;
 }
 
 void Display::update(const std::string &raw_line1, const std::string &raw_line2, uint32_t now_ms) {
-  const std::string s1 = sanitize(raw_line1);
-  const std::string s2 = sanitize(raw_line2);
-
   have_frame_ = true;
 
   bool line1_changed = false;
   bool line2_changed = false;
 
-  if (s1 != line1_) {
-    line1_ = s1;
+  // Dedup on the RAW text, not a transcoded/sanitised copy: two distinct
+  // non-printable bytes in the same column (e.g. a genuine byte change that
+  // both happen to render as "<XX>" or, pre-stage-16, both collapsed to the
+  // same '*') must each be seen as a change. Deduplicating on any lossy
+  // representation reintroduces exactly the glyph-to-glyph blindness
+  // DISPLAY-REVIEW.md §5 identifies -- see test_display.cpp's regression
+  // test for the case this line exists to fix.
+  if (raw_line1 != raw_line1_) {
+    raw_line1_ = raw_line1;
+    text_line1_ = to_utf8(raw_line1_);  // only a changed line pays the transcode cost
     line1_changed_at_ms_ = now_ms;
     line1_changed = true;
   }
-  if (s2 != line2_) {
-    line2_ = s2;
+  if (raw_line2 != raw_line2_) {
+    raw_line2_ = raw_line2;
+    text_line2_ = to_utf8(raw_line2_);
     line2_changed_at_ms_ = now_ms;
     line2_changed = true;
   }
