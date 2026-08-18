@@ -139,7 +139,15 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   // takes an explicit duration per call, so this hub-level default is what
   // the key_* buttons and an omitted `duration` on vent_axia.tap_key fall
   // back to.
-  void set_tap_duration_ms(uint32_t ms) { this->tap_duration_ms_ = ms; }
+  // Also forwarded to runner_ -- every sequence's own tap sites read it from
+  // there (Sequence::tap_then_(), GotoMenu, SetAirflowMode's batch taps),
+  // not from this hub copy, which is kept only for the four manual key_*
+  // buttons and vent_axia.tap_key's own fallback (see Runner::
+  // tap_duration_ms()'s own comment).
+  void set_tap_duration_ms(uint32_t ms) {
+    this->tap_duration_ms_ = ms;
+    this->runner_.set_tap_duration_ms(ms);
+  }
   uint32_t tap_duration_ms() const { return this->tap_duration_ms_; }
   void set_tx_interval_ms(uint32_t ms) { this->keypad_.set_tx_interval_ms(ms); }
   void set_key_gap_ms(uint32_t ms) { this->keypad_.set_key_gap_ms(ms); }

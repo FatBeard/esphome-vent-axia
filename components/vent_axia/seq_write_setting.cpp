@@ -22,7 +22,6 @@ struct SettingSpec {
 
 namespace {
 constexpr protocol::KeyMask SET = protocol::key_mask(protocol::Key::SET);
-constexpr uint32_t TAP_MS = 50;  // "one tap = one menu step", PLAN.md §2
 
 // Outdoor Temp's row deliberately names Indoor Temp's menu_index/screen: it
 // is reached THROUGH Indoor Temp's editor (WriteSetting::poll()'s
@@ -94,13 +93,7 @@ Poll WriteSetting::poll() {
       // Commits Indoor Temp's value UNTOUCHED -- AdjustField has not run
       // yet, so this is a no-op write, safe precisely because nothing has
       // touched the value being committed (PLAN.md).
-      if (!this->runner_->tap(SET, TAP_MS)) {
-        return Poll::FAILED;  // refused by the Set interlock -- see Runner::tap()
-      }
-      return this->goto_step(WAIT_HOP_TAP);
-
-    case WAIT_HOP_TAP:
-      return this->runner_->keypad_busy() ? Poll::RUNNING : this->goto_step(WAIT_HOP_SCREEN);
+      return this->tap_then_(SET, WAIT_HOP_SCREEN);
 
     case WAIT_HOP_SCREEN:
       if (this->runner_->display().screen_kind() == screens::ScreenKind::OUTDOOR_TEMP) {
@@ -137,13 +130,7 @@ Poll WriteSetting::poll() {
       // has the identical property already.
 
     case COMMIT:
-      if (!this->runner_->tap(SET, TAP_MS)) {
-        return Poll::FAILED;
-      }
-      return this->goto_step(WAIT_COMMIT_TAP);
-
-    case WAIT_COMMIT_TAP:
-      return this->runner_->keypad_busy() ? Poll::RUNNING : this->goto_step(SETTLE);
+      return this->tap_then_(SET, SETTLE);
 
     case SETTLE:
       return this->elapsed() >= SETTLE_MS ? this->goto_step(EXIT_CHAIN) : Poll::RUNNING;

@@ -8,14 +8,6 @@
 namespace esphome {
 namespace vent_axia {
 
-namespace {
-// Shared by GotoMenu, LeaveMenu and Runner::recover() -- all three issue
-// plain menu-navigation taps, as distinct from a sequence-specific hold
-// duration (FetchDiagnostics' 8s Down, say). 50ms matches the hub's own
-// tap_duration default (vent_axia.h): "one tap = one menu step".
-constexpr uint32_t MENU_TAP_MS = 50;
-}  // namespace
-
 // ------------------------------------------------------------- Sequence --
 
 Poll Sequence::goto_step(uint8_t s) {
@@ -39,6 +31,27 @@ Poll Sequence::await(Sequence &child, uint8_t on_ok) {
 }
 
 const Keypad::LogSink &Sequence::log() const { return this->runner_->log(); }
+
+Poll Sequence::tap_then_(protocol::KeyMask mask, uint8_t next_step) {
+  // this->runner_->tap_duration_ms(), NOT a hardcoded duration -- see this
+  // method's own header comment and Runner::tap_duration_ms()'s: every
+  // sequence tap goes through here (or one of the handful of batch-tap
+  // sites this helper does not fit, see sequence.h's Tap-removal comment)
+  // so raising tap_duration reaches all of them, not just the four manual
+  // key buttons.
+  if (!this->runner_->tap(mask, this->runner_->tap_duration_ms())) {
+    return Poll::FAILED;  // refused by the Set interlock -- see Runner::tap()
+  }
+  this->tap_resume_step_ = next_step;
+  return this->goto_step(WAIT_TAP_STEP);
+}
+
+Poll Sequence::pump() {
+  if (this->step_ == WAIT_TAP_STEP) {
+    return this->runner_->keypad_busy() ? Poll::RUNNING : this->goto_step(this->tap_resume_step_);
+  }
+  return this->poll();
+}
 
 // --------------------------------------------------------------- Runner --
 
@@ -87,7 +100,7 @@ void Runner::loop(uint32_t now_ms) {
   }
 
   Sequence *top = this->stack_[this->depth_ - 1].seq;
-  const Poll result = top->poll();
+  const Poll result = top->pump();
   if (result != Poll::RUNNING) {
     this->finish_top_(result);
   }
@@ -223,18 +236,7 @@ void Runner::recover() {
   // especially) is written to work correctly from an unknown starting
   // screen, so the next request() does not need to wait for this unwind to
   // finish before it can proceed.
-  this->keypad_.tap(protocol::key_mask(protocol::Key::UP), MENU_TAP_MS);
-}
-
-// ------------------------------------------------------------------ Tap --
-
-void Tap::on_start() { this->sent_ = this->runner_->tap(this->mask_, this->duration_ms_); }
-
-Poll Tap::poll() {
-  if (!this->sent_) {
-    return Poll::FAILED;  // refused by the Set interlock -- see Runner::tap()
-  }
-  return this->runner_->keypad_busy() ? Poll::RUNNING : Poll::DONE;
+  this->keypad_.tap(protocol::key_mask(protocol::Key::UP), this->tap_duration_ms());
 }
 
 // ------------------------------------------------------------ HoldUntil --
@@ -283,7 +285,7 @@ Poll GotoMenu::poll() {
     // drain", not five separate steps.
     case QUEUE_UP:
       for (int i = 0; i < 5; i++) {
-        this->runner_->tap(protocol::key_mask(protocol::Key::UP), MENU_TAP_MS);
+        this->runner_->tap(protocol::key_mask(protocol::Key::UP), this->runner_->tap_duration_ms());
       }
       return this->goto_step(WAIT_UP);
 
@@ -297,7 +299,7 @@ Poll GotoMenu::poll() {
     // is already empty, so WAIT_DOWN below falls through immediately.
     case QUEUE_DOWN:
       for (uint8_t i = 0; i < this->index_; i++) {
-        this->runner_->tap(protocol::key_mask(protocol::Key::DOWN), MENU_TAP_MS);
+        this->runner_->tap(protocol::key_mask(protocol::Key::DOWN), this->runner_->tap_duration_ms());
       }
       return this->goto_step(WAIT_DOWN);
 
@@ -326,11 +328,7 @@ Poll LeaveMenu::poll() {
       if (this->runner_->display().editor_open(this->runner_->now_ms())) {
         return this->goto_step(WAIT_EXIT);
       }
-      this->runner_->tap(protocol::key_mask(protocol::Key::UP), MENU_TAP_MS);
-      return this->goto_step(WAIT_TAP);
-
-    case WAIT_TAP:
-      return this->runner_->keypad_busy() ? Poll::RUNNING : this->goto_step(CHECK);
+      return this->tap_then_(protocol::key_mask(protocol::Key::UP), CHECK);
 
     case CHECK:
       return screens::is_menu_screen(this->runner_->display().raw_line1()) ? this->goto_step(WAIT_EXIT) : Poll::DONE;
@@ -355,13 +353,7 @@ void OpenEditor::on_start() { this->attempt_ = 0; }
 Poll OpenEditor::poll() {
   switch (this->step_) {
     case TAP:
-      if (!this->runner_->tap(protocol::key_mask(protocol::Key::SET), MENU_TAP_MS)) {
-        return Poll::FAILED;  // refused by the Set interlock -- see Runner::tap()
-      }
-      return this->goto_step(WAIT_TAP);
-
-    case WAIT_TAP:
-      return this->runner_->keypad_busy() ? Poll::RUNNING : this->goto_step(SETTLE);
+      return this->tap_then_(protocol::key_mask(protocol::Key::SET), SETTLE);
 
     case SETTLE:
       return this->elapsed() >= SETTLE_MS ? this->goto_step(CHECK) : Poll::RUNNING;
@@ -442,7 +434,10 @@ Poll AdjustField::poll() {
       const bool up = this->direction_(cur, want);
       const protocol::KeyMask mask =
           up ? protocol::key_mask(protocol::Key::UP) : protocol::key_mask(protocol::Key::DOWN);
-      this->runner_->tap(mask, MENU_TAP_MS);  // never Set -- always accepted, see Runner::tap()
+      // never Set -- always accepted, see Runner::tap(). Not tap_then_(): the
+      // wait below is for line2 to actually change (or CHANGE_TIMEOUT_MS),
+      // not merely for the keypad to go idle again.
+      this->runner_->tap(mask, this->runner_->tap_duration_ms());
       return this->goto_step(WAIT_CHANGE);
     }
 
@@ -479,13 +474,7 @@ Poll ExitEditChain::poll() {
       this->commits_++;
       // Set only -- see class comment. This is the one place in the whole
       // component that commits an edit-in-progress on purpose.
-      if (!this->runner_->tap(protocol::key_mask(protocol::Key::SET), MENU_TAP_MS)) {
-        return Poll::FAILED;  // refused by the Set interlock -- see Runner::tap()
-      }
-      return this->goto_step(WAIT_TAP);
-
-    case WAIT_TAP:
-      return this->runner_->keypad_busy() ? Poll::RUNNING : this->goto_step(SETTLE);
+      return this->tap_then_(protocol::key_mask(protocol::Key::SET), SETTLE);
 
     case SETTLE:
       // Longer than editor_open()'s own settle_ms_ (1200ms default) so the

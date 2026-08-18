@@ -48,6 +48,7 @@ class ScriptedSequence final : public Sequence {
   uint32_t do_elapsed() const { return this->elapsed(); }
   uint8_t current_step() const { return this->step_; }
   bool do_press(protocol::KeyMask mask) { return this->runner_->press(mask); }
+  Poll do_tap_then(protocol::KeyMask mask, uint8_t next_step) { return this->tap_then_(mask, next_step); }
 
   const char *name_{"Scripted"};
   std::function<Poll(ScriptedSequence &)> on_poll;
@@ -257,7 +258,15 @@ TEST_CASE(runner_does_not_refuse_set_on_a_non_diagnostic_screen) {
 
 // ============================================================ primitives --
 
-TEST_CASE(tap_issues_one_tap_and_completes_once_idle) {
+// tap_then_() replaced the old standalone Tap primitive (never used in
+// production -- only these tests instantiated it, see the report for the
+// full reasoning): a protected Sequence helper rather than a class, so a
+// caller chaining taps needs no temporary Sequence "with nowhere long-lived
+// to live" (seq_sync_clock.cpp's own phrase for exactly this problem).
+// ScriptedSequence::do_tap_then() exposes it here the same way do_await()/
+// do_goto() expose the other protected primitives.
+
+TEST_CASE(tap_then_issues_one_tap_and_resumes_only_once_idle) {
   Keypad kp;
   Display disp;
   Runner runner(kp, disp);
@@ -267,18 +276,56 @@ TEST_CASE(tap_issues_one_tap_and_completes_once_idle) {
   sink.current_now = &clock.now;
   kp.set_frame_sink(sink.as_frame_sink());
 
-  Tap tap(UP, 50);
-  CHECK(runner.request(tap));
+  ScriptedSequence seq;
+  seq.on_poll = [](ScriptedSequence &self) {
+    return self.current_step() == 0 ? self.do_tap_then(UP, 1) : Poll::DONE;
+  };
+
+  CHECK(runner.request(seq));
   clock.advance(600);  // comfortably past the 50ms tap plus the 400ms gap
 
   CHECK(!runner.busy());
   CHECK(!kp.busy());
+  CHECK(seq.last_result == Poll::DONE);
   const auto episodes = episodes_from(sink);
   CHECK_EQ(episodes.size(), static_cast<size_t>(1));
   CHECK_EQ(episodes[0], UP);
 }
 
-TEST_CASE(tap_fails_fast_when_the_set_interlock_refuses_it) {
+// Part C.1: the wait is "keypad idle again", i.e. tap duration PLUS
+// key_gap_ms -- not merely the tap's own duration_ms elapsing. Distinguishes
+// tap_then_() from a naive "wait duration_ms then resume", which would have
+// resumed the caller before Keypad's own mandatory silence (keypad.h's
+// key_gap invariant) has actually run, and so could fire the very next tap
+// too soon.
+TEST_CASE(tap_then_completes_only_after_the_keypads_key_gap_not_merely_the_tap_duration) {
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+  kp.set_key_gap_ms(400);
+
+  ScriptedSequence seq;
+  seq.on_poll = [](ScriptedSequence &self) {
+    return self.current_step() == 0 ? self.do_tap_then(UP, 1) : Poll::DONE;
+  };
+
+  CHECK(runner.request(seq));
+  Clock clock{kp, runner};
+  clock.advance(100);  // past the 50ms tap itself, nowhere near the 400ms key_gap
+  CHECK(runner.busy());  // still resolving tap_then_ -- key_gap has not elapsed yet
+  CHECK(kp.busy());
+
+  clock.advance(500);  // comfortably past tap + key_gap, with headroom for pump()'s own resume tick
+  CHECK(!runner.busy());
+  CHECK(seq.last_result == Poll::DONE);
+}
+
+// Part C.2: a tap refused by the Set interlock (Runner::tap()) must fail the
+// sequence outright, not leave it waiting on a keypad that was never
+// actually asked to do anything -- WAIT_TAP_STEP is only entered once the
+// tap is confirmed queued.
+TEST_CASE(tap_then_fails_the_sequence_fast_when_the_set_interlock_refuses_it) {
   Keypad kp;
   Display disp;
   Runner runner(kp, disp);
@@ -289,13 +336,69 @@ TEST_CASE(tap_fails_fast_when_the_set_interlock_refuses_it) {
   sink.current_now = &clock.now;
   kp.set_frame_sink(sink.as_frame_sink());
 
-  Tap tap(SET, 50);
-  CHECK(runner.request(tap));
+  ScriptedSequence seq;
+  seq.on_poll = [](ScriptedSequence &self) {
+    return self.current_step() == 0 ? self.do_tap_then(SET, 1) : Poll::DONE;
+  };
+
+  CHECK(runner.request(seq));
   clock.advance(100);
 
   CHECK(!runner.busy());
   CHECK(sink.frames.empty());  // the refused tap never reached the keypad
   CHECK(!kp.busy());
+  CHECK(seq.last_result == Poll::FAILED);
+}
+
+// Part C.3 / Part A's own regression: tap_then_() reads its duration from
+// Runner::tap_duration_ms(), not a hardcoded 50ms -- the direct test that
+// raising tap_duration (keypad.h's documented remedy for
+// under_emitting_presses()) actually reaches a sequence's own taps, not just
+// the four manual key buttons (VentAxiaHub::set_tap_duration_ms() forwards
+// to both).
+TEST_CASE(a_non_default_runner_tap_duration_is_used_by_a_sequence_tap) {
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+  runner.set_tap_duration_ms(100);  // vs. the 50ms default -- keypad.h's "raise tap_duration to 100ms"
+  RecordingSink sink;
+  Clock clock{kp, runner};
+  sink.current_now = &clock.now;
+  kp.set_frame_sink(sink.as_frame_sink());
+
+  ScriptedSequence seq;
+  seq.on_poll = [](ScriptedSequence &self) {
+    return self.current_step() == 0 ? self.do_tap_then(UP, 1) : Poll::DONE;
+  };
+
+  CHECK(runner.request(seq));
+  clock.advance(140);
+  // Assert on FRAME TIMESTAMPS, and specifically on when transmission
+  // STOPS. Two weaker assertions were tried first and neither actually
+  // fails when tap_then_() ignores tap_duration_ms(), so both are recorded
+  // here rather than quietly replaced:
+  //
+  //   - kp.busy() is also true throughout the mandatory 400ms key_gap that
+  //     follows every tap, so it reads identically for a 50ms and a 100ms
+  //     tap.
+  //   - "a frame later than 50ms" is true either way, because the tap does
+  //     not START until t=40: kp.loop() runs before runner.loop() on each
+  //     tick, so the tap queued during the t=20 tick is not picked up until
+  //     t=40.
+  //
+  // Measured, both ways: a 50ms tap emits frames at t=40,60,80 and then
+  // goes silent; the configured 100ms tap keeps transmitting to t=100 and
+  // t=120. A frame at or after t=100 is therefore only reachable if the
+  // configured duration was honoured.
+  CHECK(!sink.frames.empty());
+  CHECK(sink.frames.back().first >= 100);
+
+  clock.advance(500);  // comfortably past the 100ms tap plus the 400ms gap
+  CHECK(!runner.busy());
+  const auto episodes = episodes_from(sink);
+  CHECK_EQ(episodes.size(), static_cast<size_t>(1));
+  CHECK_EQ(episodes[0], UP);
 }
 
 TEST_CASE(hold_until_completes_when_the_predicate_becomes_true_and_releases_the_key) {

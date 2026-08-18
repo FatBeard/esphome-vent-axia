@@ -8,7 +8,6 @@ namespace vent_axia {
 
 namespace {
 constexpr protocol::KeyMask MAIN = protocol::key_mask(protocol::Key::MAIN);
-constexpr uint32_t TAP_MS = 50;  // "one tap = one menu step", PLAN.md §2 -- same figure every other tap uses
 }  // namespace
 
 uint8_t SetAirflowMode::presses_for_(AirflowTarget target) {
@@ -30,8 +29,9 @@ uint8_t SetAirflowMode::presses_for_(AirflowTarget target) {
       // for the Boost press-counter: three taps land exactly on
       // 'continuous', not on three separate 30-minute boosts". Note that
       // Keypad's key_gap_ms_ (400ms default, keypad.h) is what enforces
-      // that, NOT TAP_MS above -- TAP_MS is the 50ms duration of each
-      // individual press, a different quantity. Do not be tempted by
+      // that, NOT the Runner's tap_duration_ms() below -- that is the
+      // duration of each individual press (50ms by default), a different
+      // quantity. Do not be tempted by
       // mhrv_orig/controls.yaml:324's "Presses 250ms apart are counted
       // individually and correctly": that comment predates the measurement
       // that overturned it (250ms drops roughly one press in ten,
@@ -132,7 +132,7 @@ Poll SetAirflowMode::after_probe_(bool boosting_now) {
   }
   this->guard_++;
   // never Set -- always accepted, see Runner::tap()
-  this->runner_->tap(MAIN, TAP_MS);
+  this->runner_->tap(MAIN, this->runner_->tap_duration_ms());
   return this->goto_step(NORMALISE_WAIT);
 }
 
@@ -298,7 +298,7 @@ Poll SetAirflowMode::poll() {
     case APPLY_TAP: {
       const uint8_t presses = presses_for_(this->target_);
       for (uint8_t i = 0; i < presses; i++) {
-        this->runner_->tap(MAIN, TAP_MS);  // never Set -- always accepted, see Runner::tap()
+        this->runner_->tap(MAIN, this->runner_->tap_duration_ms());  // never Set -- always accepted, see Runner::tap()
       }
       return this->goto_step(APPLY_WAIT);
     }

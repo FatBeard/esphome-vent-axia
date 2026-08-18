@@ -548,7 +548,7 @@ TEST_CASE(sync_clock_presses_set_not_up_when_the_commit_set_is_dropped_and_the_e
   // through both SETTLE's 1800ms wait and EXIT_CHAIN's own first check, so
   // editor_open() reads true the whole time. Loop until the NEXT episode
   // (EXIT_CHAIN's own commit Set) is actually transmitted, rather than a
-  // fixed budget -- robust to exactly how many ticks WAIT_COMMIT/SETTLE take.
+  // fixed budget -- robust to exactly how many ticks COMMIT/SETTLE take.
   bool blink_on = true;
   while (episodes_from(sink).size() == episodes_after_commit) {
     clock.advance(350);

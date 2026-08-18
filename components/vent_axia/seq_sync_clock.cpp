@@ -7,7 +7,6 @@ namespace vent_axia {
 
 namespace {
 constexpr protocol::KeyMask SET = protocol::key_mask(protocol::Key::SET);
-constexpr uint32_t TAP_MS = 50;  // "one tap = one menu step", PLAN.md §2
 
 const char *const kDayNames[7] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
 
@@ -140,17 +139,9 @@ Poll SyncClock::poll() {
       return this->await(this->adjust_field_, SET_DAY);
 
     // Each further Set accepts the current field and advances to the next --
-    // never Tap(), which would need a temporary Sequence with nowhere
-    // long-lived to live; this mirrors WriteSetting's own COMMIT/
-    // WAIT_COMMIT_TAP shape.
+    // tap_then_(), same shape as WriteSetting's own COMMIT.
     case SET_DAY:
-      if (!this->runner_->tap(SET, TAP_MS)) {
-        return Poll::FAILED;  // refused by the Set interlock -- see Runner::tap()
-      }
-      return this->goto_step(WAIT_SET_DAY);
-
-    case WAIT_SET_DAY:
-      return this->runner_->keypad_busy() ? Poll::RUNNING : this->goto_step(ADJUST_HOUR);
+      return this->tap_then_(SET, ADJUST_HOUR);
 
     // Hour wraps at 24 and takes the shortest path -- direction_wrap_24, not
     // direction_no_wrap. Guard 14: the old script's own hour field needs at
@@ -162,13 +153,7 @@ Poll SyncClock::poll() {
       return this->await(this->adjust_field_, SET_HOUR);
 
     case SET_HOUR:
-      if (!this->runner_->tap(SET, TAP_MS)) {
-        return Poll::FAILED;
-      }
-      return this->goto_step(WAIT_SET_HOUR);
-
-    case WAIT_SET_HOUR:
-      return this->runner_->keypad_busy() ? Poll::RUNNING : this->goto_step(ADJUST_MINUTE);
+      return this->tap_then_(SET, ADJUST_MINUTE);
 
     // Minute wraps at 60, same shortest-path reasoning as hour. Guard 34:
     // the old script's own minute field needs at most 30 presses -- the
@@ -186,13 +171,7 @@ Poll SyncClock::poll() {
     // entirely (unlike SET_DAY/SET_HOUR, which only advance to the next
     // field).
     case COMMIT:
-      if (!this->runner_->tap(SET, TAP_MS)) {
-        return Poll::FAILED;
-      }
-      return this->goto_step(WAIT_COMMIT);
-
-    case WAIT_COMMIT:
-      return this->runner_->keypad_busy() ? Poll::RUNNING : this->goto_step(SETTLE);
+      return this->tap_then_(SET, SETTLE);
 
     // NOT just the old script's delay before a log line anymore -- see
     // SETTLE_MS's own comment. Long enough that EXIT_CHAIN's editor_open()

@@ -136,12 +136,41 @@ class Sequence {
   /// comment.
   const Keypad::LogSink &log() const;
 
+  /// Queues one tap, at the Runner's configured tap_duration_ms() (PLAN.md
+  /// §2's table: "one tap = one menu step" -- NOT a hardcoded duration, so
+  /// raising it, keypad.h's documented remedy for a loop()-stall-dropped
+  /// press, reaches every menu tap in every sequence rather than only the
+  /// four manual key buttons), and completes at `next_step` once the keypad
+  /// is idle again -- including the mandatory key_gap, so a caller chaining
+  /// taps needs no delay step of its own. Returns Poll::FAILED if the tap
+  /// was refused by the Set interlock (Runner::tap()), same as every
+  /// hand-rolled tap-then-wait pair this replaces.
+  Poll tap_then_(protocol::KeyMask mask, uint8_t next_step);
+
   Runner *runner_{nullptr};
   uint8_t step_{0};
   uint32_t entered_{0};
 
  private:
   friend class Runner;
+
+  // Reserved step value meaning "a tap_then_() call is in flight", handled
+  // by pump() below before any derived poll() ever sees step_ take this
+  // value -- no sequence in this file uses a Step enum anywhere near 255
+  // (verified), so this is safe to reserve unconditionally rather than
+  // needing per-sequence coordination.
+  static constexpr uint8_t WAIT_TAP_STEP = 255;
+
+  /// What Runner::loop() actually pumps, instead of poll() directly:
+  /// handles WAIT_TAP_STEP itself (RUNNING while the keypad is still busy,
+  /// otherwise resumes at tap_resume_step_) and delegates everything else
+  /// straight to the derived poll(). Kept out of poll() itself so every
+  /// sequence's own switch stays a flat, complete list of ONLY its own
+  /// named steps -- a derived class never needs a default: case that knows
+  /// WAIT_TAP_STEP exists.
+  Poll pump();
+
+  uint8_t tap_resume_step_{0};  // where tap_then_() resumes once the keypad goes idle -- see pump()
 };
 
 /// Owns the stack, the clock, the per-root timeout and the shared recovery
@@ -182,6 +211,20 @@ class Runner {
   /// a unit that has stopped talking to us cannot possibly succeed and would
   /// just run out the clock on a timeout instead.
   void set_link_up(bool up) { this->link_up_ = up; }
+
+  /// The duration every sequence's own menu/field/commit taps use (via
+  /// Sequence::tap_then_() and the handful of batch taps that queue several
+  /// at once -- GotoMenu, SetAirflowMode::APPLY_TAP) -- forwarded here from
+  /// VentAxiaHub::set_tap_duration_ms() (PLAN.md §2's table: "one tap = one
+  /// menu step"), which also keeps its own copy for the four manual key
+  /// buttons and the vent_axia.tap_key action. Defaults to 50ms so behaviour
+  /// is unchanged when YAML does not override tap_duration -- keypad.h's
+  /// under_emitting_presses()'s documented remedy for a loop()-stall-dropped
+  /// press ("raise tap_duration to 100ms") previously only reached those
+  /// four buttons; this is what lets it reach every sequence tap too,
+  /// including GotoMenu/LeaveMenu and Runner::recover()'s own exit tap.
+  void set_tap_duration_ms(uint32_t ms) { this->tap_duration_ms_ = ms; }
+  uint32_t tap_duration_ms() const { return this->tap_duration_ms_; }
 
   /// Starts `seq` as a new root sequence. Refuses (logging which sequence is
   /// blocking, or that the link is down) rather than queuing or interrupting
@@ -281,32 +324,19 @@ class Runner {
   uint8_t depth_{0};
   uint32_t now_ms_{0};
   uint32_t root_started_at_ms_{0};
+  // PLAN.md §2's table: "one tap = one menu step" -- default matches the
+  // hub's own tap_duration_ms_ default (vent_axia.h) so behaviour is
+  // unchanged unless YAML overrides tap_duration.
+  uint32_t tap_duration_ms_{50};
 };
 
 // --------------------------------------------------------------- primitives --
 // Needed by this stage's FetchDiagnostics and, per PLAN.md §3, by every
-// sequence that comes after it.
-
-/// Issues runner_->tap(mask, duration_ms) once (in on_start(), never
-/// repeated -- tap() enqueues, it is not idempotent like press()) and
-/// completes once !runner_->keypad_busy(), i.e. once the mandatory key_gap
-/// has elapsed too, not just the tap itself -- so a caller chaining Tap
-/// after Tap via await() never needs a delay step of its own.
-class Tap final : public Sequence {
- public:
-  Tap(protocol::KeyMask mask, uint32_t duration_ms) : mask_(mask), duration_ms_(duration_ms) {}
-
-  const char *name() const override { return "Tap"; }
-  void on_start() override;
-  Poll poll() override;
-
- private:
-  protocol::KeyMask mask_;
-  uint32_t duration_ms_;
-  // Whether on_start()'s tap() call was actually queued, or refused by the
-  // Set interlock (Runner::tap()) -- see poll()'s fast-fail on false.
-  bool sent_{false};
-};
+// sequence that comes after it. A single tap-and-wait is Sequence::tap_then_()
+// above, not a class here -- it needs no temporary Sequence "with nowhere
+// long-lived to live" (seq_sync_clock.cpp's own phrase for exactly this),
+// since it is a helper every sequence's poll() calls directly, at whatever
+// step it is already on.
 
 /// Asserts `mask` and holds it until `predicate` is true, or fails at
 /// `timeout_ms`. Releases the key in on_finish() on EVERY exit path --
@@ -402,7 +432,7 @@ class LeaveMenu final : public Sequence {
   Poll poll() override;
 
  private:
-  enum Step : uint8_t { TAP, WAIT_TAP, CHECK, WAIT_EXIT };
+  enum Step : uint8_t { TAP, CHECK, WAIT_EXIT };
 
   // The unit's own menu timeout is ~2 minutes; this is that plus headroom,
   // not a guess -- PLAN.md §3.
@@ -434,7 +464,7 @@ class OpenEditor final : public Sequence {
   Poll poll() override;
 
  private:
-  enum Step : uint8_t { TAP, WAIT_TAP, SETTLE, CHECK };
+  enum Step : uint8_t { TAP, SETTLE, CHECK };
 
   // Matches the old open_editor script's `delay: 700ms` -- long enough for
   // the unit to start blinking the value if an editor really opened.
@@ -576,7 +606,7 @@ class ExitEditChain final : public Sequence {
   Poll poll() override;
 
  private:
-  enum Step : uint8_t { CHECK, WAIT_TAP, SETTLE, WAIT_TIMEOUT };
+  enum Step : uint8_t { CHECK, SETTLE, WAIT_TIMEOUT };
 
   static constexpr uint8_t MAX_COMMITS = 4;
   static constexpr uint32_t COMMIT_SETTLE_MS = 1800;
@@ -765,7 +795,6 @@ class ReadSettings final : public Sequence {
     WAIT_INDOOR,
     OPEN_OUTDOOR,
     HOP_COMMIT,
-    WAIT_HOP_TAP,
     WAIT_OUTDOOR_SCREEN,
     WAIT_OUTDOOR_VALUE,
     EXIT_CHAIN,
@@ -857,11 +886,9 @@ class WriteSetting final : public Sequence {
     VERIFY,
     OPEN,
     HOP_COMMIT,
-    WAIT_HOP_TAP,
     WAIT_HOP_SCREEN,
     ADJUST,
     COMMIT,
-    WAIT_COMMIT_TAP,
     SETTLE,
     EXIT_CHAIN,
     HOME,
@@ -984,13 +1011,10 @@ class SyncClock final : public Sequence {
     OPEN,
     ADJUST_DAY,
     SET_DAY,
-    WAIT_SET_DAY,
     ADJUST_HOUR,
     SET_HOUR,
-    WAIT_SET_HOUR,
     ADJUST_MINUTE,
     COMMIT,
-    WAIT_COMMIT,
     SETTLE,
     EXIT_CHAIN,
     LEAVE,

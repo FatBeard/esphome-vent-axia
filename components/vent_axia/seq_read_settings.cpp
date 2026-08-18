@@ -7,7 +7,6 @@ namespace vent_axia {
 
 namespace {
 constexpr protocol::KeyMask SET = protocol::key_mask(protocol::Key::SET);
-constexpr uint32_t TAP_MS = 50;  // "one tap = one menu step", PLAN.md §2
 }  // namespace
 
 void ReadSettings::on_start() { this->indoor_read_ok_ = false; }
@@ -91,13 +90,7 @@ Poll ReadSettings::poll() {
     case HOP_COMMIT:
       // Commits Indoor Temp's value UNTOUCHED (nothing has adjusted it) and
       // steps the chain onto Outdoor Temp -- see PLAN.md's editing model.
-      if (!this->runner_->tap(SET, TAP_MS)) {
-        return Poll::FAILED;  // refused by the Set interlock -- see Runner::tap()
-      }
-      return this->goto_step(WAIT_HOP_TAP);
-
-    case WAIT_HOP_TAP:
-      return this->runner_->keypad_busy() ? Poll::RUNNING : this->goto_step(WAIT_OUTDOOR_SCREEN);
+      return this->tap_then_(SET, WAIT_OUTDOOR_SCREEN);
 
     // Ordering deliberately inverted from every other screen above: the
     // screen being LEFT is an open editor, which republishes every ~350ms,
