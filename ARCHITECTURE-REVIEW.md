@@ -419,3 +419,55 @@ mode the keypad suppresses transmission but `Runner` still runs sequences to
 completion, so a scheduled `fetch_diagnostics` fails on timeout every day and
 fires `on_sequence_failed`. Not a defect — soak-testing the exact code path is
 the documented purpose — but the failure noise is worth a deliberate decision.
+
+## 5. What this branch actually changed
+
+Ten commits off `main`, nothing pushed. Every stage was verified independently
+of the agent that implemented it: rebuild, re-run the suite, and for the
+behavioural changes a mutation — break the fix, confirm the new test fails,
+restore it.
+
+| Commit | Findings | Effect |
+|---|---|---|
+| `44efe0f` | — | This document |
+| `ce6a8ab` | F12 | README says where `mhrv_orig/` actually lives; the portable-core file list stops omitting `keypad` and the `seq_*.cpp` |
+| `3670c88` | F1 | `LogSink` moves to `Runner`; 8 sequence classes lose their own copy, `setup()` loses 8 lambda triples |
+| `69d2a72` | F3, F4 | `tap_duration` reaches every menu tap; `Sequence::tap_then_()` replaces the hand-rolled pairs; the dead `Tap` class is gone |
+| `1b41220` | F2, F7 | The airflow-mode derivation moves into `status::AirflowModeTracker` where tests can reach it; `strcmp` becomes `Runner::is_running()` |
+| `a7ede64` | F5, F6 | A link drop aborts the run in progress; root timeout budgets are `static_assert`ed against their own worst case |
+| `ddc8014` | F8, F9, F11 | An out-of-range step fails instead of reporting success; `FrameLogger` leaves the hub and gains tests; the key mappings move to where `-Werror` reaches |
+| `e10027b`, `680f072` | F12 | Comment prune |
+| `c195105` | F10 | `sequence.h` splits into engine / primitives / sequences |
+
+Host tests: 235 at the branch point, 252 now. Both firmware targets compile.
+
+### Two things I got wrong, corrected in place
+
+**F8 as originally written was false.** It claimed that deleting the `default:`
+arms in `write_switch`/`write_number`/`write_select` would turn an unhandled
+enum member into a compile error. Mutation-testing it — adding a `DUMMY_UNMAPPED`
+member to `SwitchKey` and compiling `mhrv.yaml` — produced a *warning* and
+`exit=0`. `-Werror` belongs to `tests/CMakeLists.txt`, not the firmware build,
+and those three functions live in `vent_axia.cpp`, the single file the host
+suite excludes. No arrangement of `default:` arms in that file could ever have
+bought the guarantee. The fix was to move the mappings into the portable core
+(`setting_for`, `airflow_target_for`), where the same mutation now produces
+`error: enumeration value 'DUMMY_UNMAPPED' not handled in switch`. F8's text
+above has been rewritten to say this rather than the original claim.
+
+**The comment prune came in at 9%, not the ~50% intended.** Every category
+targeted was removed everywhere it appeared — stage numbering, review
+attribution, bare `PLAN.md §N` pointers, cross-file line numbers, prose
+restating the code. What remains is dated live captures, pixel derivations,
+measured byte values and timing observations. The premise that these files were
+padded with narration turned out to be only partly right: there was narration,
+it is gone, and it was not most of the volume.
+
+### Not done
+
+**Stage 2, a `SequenceContext` bundling the remaining injected dependencies,
+was dropped as not an improvement.** After F1 removed the logging wiring, four
+of the five remaining dependencies are used by exactly one sequence each and
+only one forwarding site was left. A shared context would also hand `SyncClock`
+visibility of `filter_hours`, which it has no business seeing. Worth doing only
+if a second consumer ever appears for one of them.
