@@ -298,7 +298,11 @@ void VentAxiaHub::log_raw_frame_bytes_(const protocol::DisplayFrame &frame, uint
   if (unknown_changed && !unknown_floor_clear) {
     this->unknown_change_suppressed_ = true;
   }
-  if ((unknown_changed || this->unknown_change_suppressed_) && unknown_floor_clear) {
+  // The heartbeat re-emits an unchanged tuple every RAW_LOG_HEARTBEAT_MS --
+  // see its comment in vent_axia.h for why log-on-change alone is
+  // unobservable here. It is longer than the floor, so it cannot fight it.
+  const bool unknown_heartbeat_due = (now_ms - this->last_unknown_log_ms_) >= RAW_LOG_HEARTBEAT_MS;
+  if ((unknown_changed || this->unknown_change_suppressed_ || unknown_heartbeat_due) && unknown_floor_clear) {
     // Each byte gets an explicit static_cast<unsigned> before %02X: uint8_t
     // undergoes default argument promotion to (signed) int across the
     // variadic ESP_LOGD boundary, which -Wformat reads as a mismatch against
@@ -311,7 +315,7 @@ void VentAxiaHub::log_raw_frame_bytes_(const protocol::DisplayFrame &frame, uint
              static_cast<unsigned>(frame.unknown_row1_addr), static_cast<unsigned>(frame.unknown_row2_addr),
              (this->unknown_change_suppressed_ && !unknown_changed)
                  ? "  (these bytes also moved and came back inside the rate limit)"
-                 : "");
+                 : (unknown_changed ? "" : "  (unchanged -- heartbeat)"));
     this->last_logged_unknown_header_ = frame.unknown_header;
     this->last_logged_unknown_row1_addr_ = frame.unknown_row1_addr;
     this->last_logged_unknown_row2_addr_ = frame.unknown_row2_addr;
@@ -349,17 +353,28 @@ void VentAxiaHub::log_raw_frame_bytes_(const protocol::DisplayFrame &frame, uint
   // description is NOT updated when the floor suppresses a change, so the
   // change is simply re-detected on the next eligible frame rather than
   // lost.
+  // The heartbeat repeats a line only while it HAS non-ASCII content: that is
+  // the state a late-connecting observer needs restated (a boost already
+  // running when they connect), and it is the state whose absence would
+  // otherwise be ambiguous. An all-ASCII line stays silent -- the
+  // unknown-byte heartbeat above already proves once a minute that this
+  // function is running, so repeating "(none)" on both lines as well would
+  // be three lines a minute to say the same thing.
   const std::string desc1 = describe_unprintable(frame.line1);
-  if (desc1 != this->last_logged_line1_unprintable_ &&
+  const bool line1_repeat = desc1 == this->last_logged_line1_unprintable_;
+  if ((!line1_repeat || (!desc1.empty() && (now_ms - this->last_line1_log_ms_) >= RAW_LOG_HEARTBEAT_MS)) &&
       (now_ms - this->last_line1_log_ms_) >= RAW_LOG_MIN_INTERVAL_MS) {
-    ESP_LOGD(TAG, "raw frame: line1 non-ASCII: %s", desc1.empty() ? "(none)" : desc1.c_str());
+    ESP_LOGD(TAG, "raw frame: line1 non-ASCII: %s%s", desc1.empty() ? "(none)" : desc1.c_str(),
+             line1_repeat ? "  (unchanged -- heartbeat)" : "");
     this->last_logged_line1_unprintable_ = desc1;
     this->last_line1_log_ms_ = now_ms;
   }
   const std::string desc2 = describe_unprintable(frame.line2);
-  if (desc2 != this->last_logged_line2_unprintable_ &&
+  const bool line2_repeat = desc2 == this->last_logged_line2_unprintable_;
+  if ((!line2_repeat || (!desc2.empty() && (now_ms - this->last_line2_log_ms_) >= RAW_LOG_HEARTBEAT_MS)) &&
       (now_ms - this->last_line2_log_ms_) >= RAW_LOG_MIN_INTERVAL_MS) {
-    ESP_LOGD(TAG, "raw frame: line2 non-ASCII: %s", desc2.empty() ? "(none)" : desc2.c_str());
+    ESP_LOGD(TAG, "raw frame: line2 non-ASCII: %s%s", desc2.empty() ? "(none)" : desc2.c_str(),
+             line2_repeat ? "  (unchanged -- heartbeat)" : "");
     this->last_logged_line2_unprintable_ = desc2;
     this->last_line2_log_ms_ = now_ms;
   }

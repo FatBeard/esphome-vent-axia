@@ -402,6 +402,19 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   /// kept varying).
   static constexpr uint32_t RAW_LOG_MIN_INTERVAL_MS = 2000;
 
+  /// Interval at which log_raw_frame_bytes_() re-emits a line even though
+  /// nothing changed. Log-on-change alone is unobservable on this device:
+  /// the logger is network-only (mhrv.yaml sets `baud_rate: 0`, since UART0
+  /// is the MVHR link), so the first-frame baseline is written a few hundred
+  /// ms after boot, long before WiFi and the /events stream are up, and goes
+  /// nowhere. If the unknown bytes are then constant -- the likeliest case --
+  /// nothing is ever logged again, and an observer connecting later cannot
+  /// tell "these bytes never move" from "the instrumentation is broken". The
+  /// same holds for an annunciator that appeared before they connected. One
+  /// line a minute costs nothing on a logger that only transmits to a
+  /// connected client, and converts both silences into a positive statement.
+  static constexpr uint32_t RAW_LOG_HEARTBEAT_MS = 60000;
+
   bool read_only_{false};
   protocol::Framer framer_;
   Display display_;
