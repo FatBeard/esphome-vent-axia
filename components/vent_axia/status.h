@@ -74,6 +74,18 @@ LineMessage classify_line(const std::string &line1);
 /// rather than quietly deleted because the mistake -- reading a Low rate as
 /// a Normal one -- is the kind that would otherwise be made again.
 ///
+/// CONFIRMED LIVE 17 Aug 2026, on a real humidity boost (PLAN.md §8 stage
+/// 14's live-confirmation notes): line2 read "36%            *" with indoor
+/// humidity at 74%, i.e. this function firing on the actual hardware and not
+/// only on a screenshot. Two facts from that capture matter here. Line1 read
+/// "Normal Airflow" (alternating with "Summer Bypass On") and never "Boost
+/// Airflow" -- so on this unit a sensor boost is invisible everywhere except
+/// column 15, which is the whole reason this function exists. And the rate
+/// modulated, 36% -> 34%, while line1 and the humidity readout both held --
+/// which is the proportional-control evidence the withdrawn 31% strand above
+/// was reaching for, and unlike that strand it comes from movement rather
+/// than from one reading next to a remembered baseline.
+///
 /// This is deliberately NOT the same annunciator PLAN.md §8 stage 10
 /// recorded: `ls` at columns 14-15 (`48%           ls`), seen only while
 /// Main was being tapped during a switched-live boost. Checking line2[15]
@@ -265,6 +277,17 @@ class StatusTracker {
   // behaviour on menu/diagnostic screens (a diagnostics fetch or clock sync
   // must not be read as the annunciator clearing) comes for free from the
   // same touch_()/update() machinery every other Flag here already uses.
+  //
+  // Retro-checked against the live boost of 17 Aug 2026: the annunciator was
+  // STEADY, not blinking. display_line_2 publishes only on an actual string
+  // change (vent_axia.cpp's line2_changed gate), and over ~114s of status
+  // frames it published "36%            *" exactly twice -- at connect, and
+  // on return from a read_settings excursion -- while line1 alternated ~35
+  // times. So a direct read would have worked too; the Flag is KEPT because
+  // that capture never tapped a key, which is the only condition under which
+  // stage 10 saw this zone of line2 blink, and 12s of trailing lag is free
+  // against a state lasting many minutes. Do not "simplify" it to a direct
+  // read on the strength of one keypress-free capture.
   Flag humidity_boost_{ALTERNATION_TIMEOUT_MS};
 
   std::optional<int> airflow_percent_;
