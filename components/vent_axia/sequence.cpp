@@ -99,6 +99,29 @@ void Runner::loop(uint32_t now_ms) {
     return;
   }
 
+  // Mid-run link loss (PLAN.md §7 "Link loss"). request() only refuses to
+  // START a run while the link is down (see its own comment) -- nothing
+  // rechecks link_up_ once depth_ > 0, so a drop partway through was
+  // previously only ever caught by the ROOT timeout above running all the
+  // way out (up to 450s for SyncClock, 480s for WriteSetting). By then the
+  // display has stopped updating too, so every predicate that reads it has
+  // stalled -- AdjustField::CHECK in particular: its guard_count_ only
+  // increments after a SUCCESSFUL parse (sequence.cpp's own AdjustField::
+  // poll(), step 3), so a display that has frozen mid-run never advances it
+  // either, and the run just keeps queueing taps at a unit that is not
+  // listening until the root timeout finally does the job this check now
+  // does much sooner. No extra debounce needed here: the hub computes
+  // link_up as `have_frame_ && (now - last_frame_at_ms_) < LINK_TIMEOUT_MS`
+  // (30s), so link_up_ going false already means a full 30s of total
+  // silence, not a blip.
+  if (!this->link_up_) {
+    if (this->log_.error) {
+      this->log_.error("sequence: " + std::string(root->name()) + " aborting -- link dropped mid-run");
+    }
+    this->finish_top_(Poll::FAILED);  // cascades through every nested frame -- see its comment
+    return;
+  }
+
   Sequence *top = this->stack_[this->depth_ - 1].seq;
   const Poll result = top->pump();
   if (result != Poll::RUNNING) {
@@ -293,7 +316,7 @@ Poll GotoMenu::poll() {
       return this->runner_->keypad_busy() ? Poll::RUNNING : this->goto_step(SETTLE_UP);
 
     case SETTLE_UP:
-      return this->elapsed() >= 500 ? this->goto_step(QUEUE_DOWN) : Poll::RUNNING;
+      return this->elapsed() >= SETTLE_MS ? this->goto_step(QUEUE_DOWN) : Poll::RUNNING;
 
     // index_ == 0 (status) queues nothing here, which is correct: the queue
     // is already empty, so WAIT_DOWN below falls through immediately.
@@ -307,7 +330,7 @@ Poll GotoMenu::poll() {
       return this->runner_->keypad_busy() ? Poll::RUNNING : this->goto_step(SETTLE_DOWN);
 
     case SETTLE_DOWN:
-      return this->elapsed() >= 500 ? Poll::DONE : Poll::RUNNING;
+      return this->elapsed() >= SETTLE_MS ? Poll::DONE : Poll::RUNNING;
 
     default:
       return Poll::DONE;

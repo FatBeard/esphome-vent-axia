@@ -192,6 +192,111 @@ TEST_CASE(request_refuses_when_the_link_is_down) {
   CHECK_EQ(seq.start_count, 0);
 }
 
+// A link drop mid-run (PLAN.md §7 "Link loss"): request() only refuses to
+// START a run while the link is down (the test above) -- these three cover
+// what happens when link_up_ goes false AFTER a run is already under way,
+// which nothing checked at all before this fix, leaving the ROOT timeout as
+// the only backstop (up to 450s for SyncClock).
+
+TEST_CASE(a_link_drop_mid_run_aborts_the_root_and_releases_the_keypad) {
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+
+  std::string failed_name;
+  runner.set_on_sequence_failed([&](const std::string &name) { failed_name = name; });
+
+  ScriptedSequence root;
+  root.name_ = "Root";
+  root.on_poll = [](ScriptedSequence &self) {
+    self.do_press(UP);  // holds forever on its own -- only the link drop should end this run
+    return Poll::RUNNING;
+  };
+
+  CHECK(runner.request(root));
+  Clock clock{kp, runner};
+  clock.tick();  // one poll while the link is up -- the run is genuinely under way
+  CHECK_EQ(root.poll_count, 1);
+  CHECK_EQ(root.finish_count, 0);
+
+  // The hub's own link_up computation (have_frame_ && now-last_frame_at_ms_
+  // < LINK_TIMEOUT_MS) going false -- already debounced to 30s of total
+  // silence by the time this happens for real, see sequence.cpp's comment.
+  runner.set_link_up(false);
+  clock.tick();  // loop() must catch this BEFORE polling root again
+
+  CHECK_EQ(root.poll_count, 1);  // never polled again once the link was seen down
+  CHECK_EQ(root.finish_count, 1);
+  CHECK(root.last_result == Poll::FAILED);
+  CHECK(!runner.busy());
+  CHECK(failed_name == "Root");
+
+  clock.tick();  // recover()'s release() takes effect on the following loop() tick -- see the timeout test above
+  CHECK(!kp.busy());
+}
+
+TEST_CASE(a_link_drop_while_a_nested_child_is_on_top_cascades_to_the_root) {
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+
+  ScriptedSequence child;
+  child.name_ = "Child";
+  child.on_poll = [](ScriptedSequence &) { return Poll::RUNNING; };  // never finishes on its own
+
+  ScriptedSequence root;
+  root.name_ = "Root";
+  root.on_poll = [&](ScriptedSequence &self) {
+    return self.current_step() == 0 ? self.do_await(child, 1) : Poll::DONE;
+  };
+
+  CHECK(runner.request(root));
+  Clock clock{kp, runner};
+  clock.tick();  // root's poll(): awaits child, pushes it
+  clock.tick();  // child's poll(): RUNNING -- confirms it is genuinely the one on top of the stack
+
+  CHECK_EQ(child.start_count, 1);
+  CHECK_EQ(child.poll_count, 1);
+  CHECK_EQ(child.finish_count, 0);
+
+  runner.set_link_up(false);
+  clock.tick();  // the abort must fire before child.poll() runs again, same as the plain-root case above
+
+  CHECK_EQ(child.poll_count, 1);  // never polled again
+  CHECK_EQ(child.finish_count, 1);
+  CHECK(child.last_result == Poll::FAILED);
+  CHECK_EQ(root.poll_count, 1);  // root itself was never polled again either -- see the cascade test above
+  CHECK_EQ(root.finish_count, 1);
+  CHECK(root.last_result == Poll::FAILED);
+  CHECK(!runner.busy());
+}
+
+TEST_CASE(a_run_is_unaffected_while_the_link_stays_up) {
+  // Guards against an over-eager abort: three RUNNING polls then DONE, with
+  // the link left up throughout, must finish exactly the way it would have
+  // before this fix existed at all.
+  Keypad kp;
+  Display disp;
+  Runner runner(kp, disp);
+  runner.set_link_up(true);
+
+  ScriptedSequence root;
+  root.on_poll = [](ScriptedSequence &self) { return self.poll_count < 3 ? Poll::RUNNING : Poll::DONE; };
+
+  CHECK(runner.request(root));
+  Clock clock{kp, runner};
+  clock.tick();
+  clock.tick();
+  clock.tick();
+
+  CHECK_EQ(root.poll_count, 3);
+  CHECK_EQ(root.finish_count, 1);
+  CHECK(root.last_result == Poll::DONE);
+  CHECK(!runner.busy());
+}
+
 TEST_CASE(the_stack_does_not_overflow_a_5th_nesting_level_fails_cleanly) {
   CHECK_EQ(static_cast<int>(Runner::MAX_DEPTH), 4);  // this test assumes the documented depth
 

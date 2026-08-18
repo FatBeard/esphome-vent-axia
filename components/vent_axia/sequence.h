@@ -233,9 +233,11 @@ class Runner {
   bool request(Sequence &seq);
 
   /// Pumps whichever Sequence is on top of the stack, exactly once. Also
-  /// enforces the per-root timeout (see Sequence::timeout_ms()) and, on
-  /// exhausting it, aborts the whole run and calls recover() -- see
-  /// finish_top_().
+  /// enforces the per-root timeout (see Sequence::timeout_ms()) and a
+  /// mid-run link drop (link_up_ going false while depth_ > 0 -- request()
+  /// only ever checks it before STARTING a run, see request()'s own
+  /// comment), aborting the whole run and calling recover() on either --
+  /// see finish_top_().
   void loop(uint32_t now_ms);
 
   /// True whenever a root sequence is in progress, whatever depth it has
@@ -346,6 +348,22 @@ class Runner {
 // since it is a helper every sequence's poll() calls directly, at whatever
 // step it is already on.
 
+// The two inputs every worst_case_ms()/timeout_ms() derivation below needs
+// for "how long does one queued tap actually occupy the keypad" -- both are
+// runtime-configurable (Runner::set_tap_duration_ms(), Keypad::
+// set_key_gap_ms()) and so cannot themselves be constexpr, but every root
+// budget in this file is sized against the DOCUMENTED defaults (50ms tap,
+// 400ms key_gap -- keypad.h's key_gap_ms_{400}, Runner's own
+// tap_duration_ms_{50}), same as the hand-arithmetic comments these
+// constants replace already assumed. If YAML ever raises either default
+// (key_gap.h's validate_key_gap floors it at 400ms but does not cap it, and
+// raising tap_duration is the documented remedy for a loop()-stall-dropped
+// press -- keypad.h's under_emitting_presses()), the REAL worst case grows
+// past what the static_asserts below encode; they are only as good as this
+// assumption, which is why it is spelled out here rather than left implicit.
+constexpr uint32_t kDefaultTapMs = 50;
+constexpr uint32_t kDefaultKeyGapMs = 400;
+
 /// Asserts `mask` and holds it until `predicate` is true, or fails at
 /// `timeout_ms`. Releases the key in on_finish() on EVERY exit path --
 /// success, timeout, or being aborted because something above this in the
@@ -410,8 +428,25 @@ class GotoMenu final : public Sequence {
   const char *name() const override { return "GotoMenu"; }
   Poll poll() override;
 
+  /// Worst case for a run targeting `down_taps` (the menu index, 0-3 on this
+  /// unit -- see the class comment's menu map): the fixed 5 Up taps, each
+  /// occupying a tap and its key_gap, plus SETTLE_MS; then `down_taps` Down
+  /// taps the same way, plus a second SETTLE_MS -- SETTLE_DOWN is unconditional,
+  /// even when down_taps is 0 and QUEUE_DOWN/WAIT_DOWN cost nothing (poll()'s
+  /// own SETTLE_DOWN case does not skip the wait just because the queue was
+  /// already empty). Public so root sequences nesting this (ReadSettings,
+  /// WriteSetting, SyncClock) can derive their own timeout_ms() from it.
+  static constexpr uint32_t worst_case_ms(uint8_t down_taps) {
+    return (5 + down_taps) * (kDefaultTapMs + kDefaultKeyGapMs) + SETTLE_MS + SETTLE_MS;
+  }
+
  private:
   enum Step : uint8_t { QUEUE_UP, WAIT_UP, SETTLE_UP, QUEUE_DOWN, WAIT_DOWN, SETTLE_DOWN };
+
+  // SETTLE_UP/SETTLE_DOWN's own wait, named rather than the bare 500 poll()
+  // used before this constant existed -- give the display time to settle on
+  // the landed screen before whatever runs next reads it.
+  static constexpr uint32_t SETTLE_MS = 500;
 
   uint8_t index_{0};
 };
@@ -438,6 +473,14 @@ class LeaveMenu final : public Sequence {
  public:
   const char *name() const override { return "LeaveMenu"; }
   Poll poll() override;
+
+  /// Worst case: one tap-and-its-key_gap (TAP, assuming the editor was
+  /// already closed so it is actually taken) plus the full WAIT_EXIT
+  /// timeout -- the editor-still-open branch that skips the tap outright is
+  /// cheaper, not the worst case. Public so root sequences that nest this
+  /// (SyncClock, and via ExitEditChain's own fallback) can derive their own
+  /// timeout_ms() from it rather than restating this sum by hand.
+  static constexpr uint32_t worst_case_ms() { return kDefaultTapMs + kDefaultKeyGapMs + WAIT_TIMEOUT_MS; }
 
  private:
   enum Step : uint8_t { TAP, CHECK, WAIT_EXIT };
@@ -470,6 +513,14 @@ class OpenEditor final : public Sequence {
   const char *name() const override { return "OpenEditor"; }
   void on_start() override;
   Poll poll() override;
+
+  /// Worst case: MAX_ATTEMPTS full cycles (a tap-and-its-key_gap, then the
+  /// SETTLE wait) before giving up -- the retry that made the old
+  /// open_editor script's `repeat: count: 2` worth porting, see the class
+  /// comment. Public for the same reason LeaveMenu::worst_case_ms() is.
+  static constexpr uint32_t worst_case_ms() {
+    return MAX_ATTEMPTS * (kDefaultTapMs + kDefaultKeyGapMs + SETTLE_MS);
+  }
 
  private:
   enum Step : uint8_t { TAP, SETTLE, CHECK };
@@ -576,6 +627,15 @@ class AdjustField final : public Sequence {
   void on_start() override;
   Poll poll() override;
 
+  /// Worst case for a run with `guard_limit` taps available: each iteration
+  /// is a tap-and-its-key_gap plus up to the full CHANGE_TIMEOUT_MS wait --
+  /// see the class comment's step 6. Public so root sequences configuring
+  /// this with a specific field's guard_limit (WriteSetting, SyncClock) can
+  /// derive their own timeout_ms() from it.
+  static constexpr uint32_t worst_case_ms(int guard_limit) {
+    return static_cast<uint32_t>(guard_limit) * (kDefaultTapMs + kDefaultKeyGapMs + CHANGE_TIMEOUT_MS);
+  }
+
  private:
   enum Step : uint8_t { CHECK, WAIT_CHANGE };
 
@@ -612,6 +672,17 @@ class ExitEditChain final : public Sequence {
   const char *name() const override { return "ExitEditChain"; }
   void on_start() override;
   Poll poll() override;
+
+  /// Worst case: MAX_COMMITS full CHECK/SETTLE cycles (each a tap-and-its-
+  /// key_gap plus the COMMIT_SETTLE_MS wait) before giving up on committing
+  /// at all, plus the full WAIT_TIMEOUT fallback -- see the class comment.
+  /// Public so root sequences that nest this (ReadSettings, WriteSetting --
+  /// once directly and once more inside WriteSetting::read_back_'s own
+  /// outdoor hop -- and SyncClock) can derive their own timeout_ms() from it
+  /// rather than restating this sum by hand.
+  static constexpr uint32_t worst_case_ms() {
+    return MAX_COMMITS * (COMMIT_SETTLE_MS + kDefaultTapMs + kDefaultKeyGapMs) + FALLBACK_TIMEOUT_MS;
+  }
 
  private:
   enum Step : uint8_t { CHECK, SETTLE, WAIT_TIMEOUT };
@@ -719,6 +790,18 @@ class FetchDiagnostics final : public Sequence {
   Poll poll() override;
   void on_finish(Poll result) override;
 
+  /// Sum of every step's own timeout -- this class has no timeout_ms()
+  /// override of its own (Sequence::timeout_ms()'s 180s default only ever
+  /// applies when this runs as the ROOT, which nothing in this component
+  /// does; see ResetFilter's own comment for "only ever consulted for
+  /// whichever Sequence is currently the ROOT"). Public so ResetFilter,
+  /// which pushes this as a CHILD and so is bounded by ITS OWN timeout_ms()
+  /// instead, can fold this worst case into that derivation.
+  static constexpr uint32_t worst_case_ms() {
+    return ENTER_TIMEOUT_MS + ENTER_SETTLE_MS + HOLD_DOWN_MS + DOWN_SETTLE_MS + TO_PAGE_00_TIMEOUT_MS +
+           PAGE_00_SETTLE_MS + EXIT_TIMEOUT_MS;
+  }
+
  private:
   bool at_page_00_() const;
   void track_page_();
@@ -787,13 +870,17 @@ class ReadSettings final : public Sequence {
   Poll poll() override;
   void on_finish(Poll result) override;
 
-  // The outdoor hop nests ExitEditChain's own up-to-~157s fallback wait (4
-  // commits, ~7.2s, plus up to 150s waiting out the unit's own timeout) --
+  // The outdoor hop nests ExitEditChain's own up-to-~159s fallback wait --
   // see Sequence::timeout_ms()'s comment on why anything nesting a wait like
-  // that needs a root budget with real headroom above it. The default 180s
-  // leaves only ~23s for two GotoMenus, three value-waits and the hop's own
-  // navigation on top of that -- not comfortable, so this is raised.
-  uint32_t timeout_ms() const override { return 240000; }
+  // that needs a root budget with real headroom above it. TIMEOUT_BUDGET_MS
+  // is checked against WORST_CASE_MS below (static_assert), not trusted by
+  // eye.
+  uint32_t timeout_ms() const override { return TIMEOUT_BUDGET_MS; }
+
+  /// WriteSetting nests a whole ReadSettings run as its own READ_BACK step
+  /// (confirming what actually landed) -- public so WriteSetting's own
+  /// worst-case derivation can fold this one in rather than restating it.
+  static constexpr uint32_t worst_case_ms() { return WORST_CASE_MS; }
 
  private:
   enum Step : uint8_t {
@@ -816,6 +903,27 @@ class ReadSettings final : public Sequence {
   static constexpr uint32_t INDOOR_TIMEOUT_MS = 3000;
   static constexpr uint32_t OUTDOOR_SCREEN_TIMEOUT_MS = 3000;
   static constexpr uint32_t OUTDOOR_VALUE_TIMEOUT_MS = 2000;
+
+  // Derived worst case, one term per step in poll() (seq_read_settings.cpp):
+  // NAV_SUMMER's GotoMenu(index 2) + WAIT_SUMMER + NAV_INDOOR's
+  // GotoMenu(index 3) + WAIT_INDOOR + OPEN_OUTDOOR's OpenEditor +
+  // HOP_COMMIT's own Set tap-and-key_gap + WAIT_OUTDOOR_SCREEN +
+  // WAIT_OUTDOOR_VALUE + EXIT_CHAIN's ExitEditChain (the dominant term, its
+  // own ~159s fallback) + HOME's GotoMenu(index 0). Replaces what used to be
+  // a hand-summed comment ("~157s... leaves only ~23s...") with an
+  // expression the compiler checks below, so it cannot go stale the way that
+  // comment could.
+  static constexpr uint32_t WORST_CASE_MS = GotoMenu::worst_case_ms(2) + SUMMER_TIMEOUT_MS +
+                                             GotoMenu::worst_case_ms(3) + INDOOR_TIMEOUT_MS +
+                                             OpenEditor::worst_case_ms() + (kDefaultTapMs + kDefaultKeyGapMs) +
+                                             OUTDOOR_SCREEN_TIMEOUT_MS + OUTDOOR_VALUE_TIMEOUT_MS +
+                                             ExitEditChain::worst_case_ms() + GotoMenu::worst_case_ms(0);
+
+  static constexpr uint32_t TIMEOUT_BUDGET_MS = 240000;
+  static_assert(TIMEOUT_BUDGET_MS > WORST_CASE_MS,
+                "ReadSettings' root budget must exceed its own worst-case sum, or a legitimate run (e.g. the "
+                "outdoor hop's ExitEditChain genuinely waiting out its own fallback) can be killed mid-wait by the "
+                "root timeout instead of being allowed to finish on its own");
 
   GotoMenu goto_menu_;      // reused for NAV_SUMMER, NAV_INDOOR and HOME -- reset() before each
   OpenEditor open_editor_;  // the outdoor hop's opening move
@@ -876,17 +984,16 @@ class WriteSetting final : public Sequence {
   Poll poll() override;
   void on_finish(Poll result) override;
 
-  // Nests ExitEditChain's own up-to-~157s fallback wait potentially TWICE --
-  // once directly (EXIT_CHAIN below) and once more inside read_back_'s own
-  // outdoor hop (READ_BACK) -- on top of AdjustField's own worst case
-  // (guard_limit 40 taps for a temperature, each up to ~1.35s, so up to
-  // ~54s) and the rest of the navigation/verify/settle steps. ~400s is the
-  // realistic worst-case sum; this leaves comfortable headroom above it
-  // rather than cutting it close, for the same reason Sequence::timeout_ms()
-  // gives LeaveMenu's 130s wait headroom: a root budget that expires WHILE
-  // ExitEditChain is patiently waiting out a genuinely still-open editor
-  // would abandon the run at the worst possible moment.
-  uint32_t timeout_ms() const override { return 480000; }
+  // Nests ExitEditChain's own fallback wait potentially TWICE -- once
+  // directly (EXIT_CHAIN below) and once more inside read_back_'s own
+  // outdoor hop (READ_BACK) -- on top of AdjustField's own worst case and
+  // the rest of the navigation/verify/settle steps. TIMEOUT_BUDGET_MS is
+  // checked against WORST_CASE_MS below (static_assert): a root budget that
+  // expires WHILE ExitEditChain is patiently waiting out a genuinely
+  // still-open editor would abandon the run at the worst possible moment,
+  // same reasoning as Sequence::timeout_ms()'s own comment on LeaveMenu's
+  // 130s wait.
+  uint32_t timeout_ms() const override { return TIMEOUT_BUDGET_MS; }
 
  private:
   enum Step : uint8_t {
@@ -907,6 +1014,38 @@ class WriteSetting final : public Sequence {
   static constexpr uint32_t VERIFY_TIMEOUT_MS = 3000;      // PLAN.md §2's WriteSetting body
   static constexpr uint32_t HOP_SCREEN_TIMEOUT_MS = 3000;  // matches ReadSettings' own outdoor hop
   static constexpr uint32_t SETTLE_MS = 1800;              // PLAN.md §2's WriteSetting body
+
+  // The worst-case menu_index and guard_limit across every row this shared,
+  // reused instance might be configure()d for (seq_write_setting.cpp's
+  // SettingSpec table): Indoor/Outdoor Temp's menu_index 3 (vs. Summer
+  // Mode's 2) and guard_limit 40 (vs. Summer Mode's 3) are both the binding
+  // case, and Outdoor Temp alone exercises HOP_COMMIT/WAIT_HOP_SCREEN -- so
+  // the derivation below assumes all three at once, which no single actual
+  // run does, making it a genuine worst case rather than an average one.
+  static constexpr uint8_t MAX_MENU_INDEX = 3;
+  static constexpr int MAX_GUARD_LIMIT = 40;
+
+  // Derived worst case, one term per step in poll() (seq_write_setting.cpp):
+  // NAVIGATE's GotoMenu(MAX_MENU_INDEX) + VERIFY + OPEN's OpenEditor +
+  // HOP_COMMIT's own Set tap-and-key_gap + WAIT_HOP_SCREEN + ADJUST's
+  // AdjustField(MAX_GUARD_LIMIT) + COMMIT's own Set tap-and-key_gap + SETTLE
+  // + EXIT_CHAIN's ExitEditChain + HOME's GotoMenu(0) + READ_BACK's whole
+  // nested ReadSettings run (which carries its own ExitEditChain fallback a
+  // SECOND time, see this override's own comment). Replaces what used to be
+  // a hand-summed comment ("~400s is the realistic worst-case sum") with an
+  // expression the compiler checks below.
+  static constexpr uint32_t WORST_CASE_MS =
+      GotoMenu::worst_case_ms(MAX_MENU_INDEX) + VERIFY_TIMEOUT_MS + OpenEditor::worst_case_ms() +
+      (kDefaultTapMs + kDefaultKeyGapMs) + HOP_SCREEN_TIMEOUT_MS + AdjustField::worst_case_ms(MAX_GUARD_LIMIT) +
+      (kDefaultTapMs + kDefaultKeyGapMs) + SETTLE_MS + ExitEditChain::worst_case_ms() + GotoMenu::worst_case_ms(0) +
+      ReadSettings::worst_case_ms();
+
+  static constexpr uint32_t TIMEOUT_BUDGET_MS = 480000;
+  static_assert(TIMEOUT_BUDGET_MS > WORST_CASE_MS,
+                "WriteSetting's root budget must exceed its own worst-case sum, or a legitimate run (ExitEditChain "
+                "genuinely waiting out its own fallback, potentially twice -- once directly, once inside the "
+                "READ_BACK confirmation pass) can be killed mid-wait by the root timeout instead of being allowed "
+                "to finish on its own");
 
   SettingId id_{SettingId::SUMMER_MODE};
   const SettingSpec *spec_{nullptr};
@@ -991,25 +1130,17 @@ class SyncClock final : public Sequence {
   Poll poll() override;
   void on_finish(Poll result) override;
 
-  // Worst case: the three guard limits (8+14+34 = 56 taps -- the old
-  // script's own numbers, carried into DAY_GUARD/HOUR_GUARD/MINUTE_GUARD
-  // below) each up to ~1.35s (AdjustField's own worst case: WAIT_CHANGE's
-  // 900ms plus a tap and its mandatory key_gap, ~450ms) -- 56 * 1.35s =~
-  // 76s -- plus NAVIGATE's GotoMenu(1) (a handful of seconds, ~4s), VERIFY's
-  // 3s budget, OPEN's own worst case (one retry: two Set-tap-plus-700ms-
-  // settle cycles, ~2.3s), three plain Set taps advancing/committing the
-  // editor (~1.35s), SETTLE's now-1800ms wait (~1.8s -- raised stage 7a from
-  // the old script's 700ms; see SETTLE_MS's own comment for why), EXIT_
-  // CHAIN's own worst case if the commit Set was dropped and the fourth Set
-  // never actually landed (~157s -- ExitEditChain's own 4-commits-then-150s-
-  // fallback shape, the same figure ReadSettings'/WriteSetting's own
-  // timeout_ms() comments use), and LEAVE's own worst case (a tap plus
-  // LeaveMenu::WAIT_TIMEOUT_MS, ~130.5s) if the editor still somehow has not
-  // closed by then. Roughly 76 + 4 + 3 + 2.3 + 1.35 + 1.8 + 157 + 130.5 =~
-  // 376s -- the old 300s budget no longer has headroom above that, so this
-  // is raised to 450s (~74s of headroom), same "comfortable, not cutting it
-  // close" reasoning as WriteSetting's own timeout_ms().
-  uint32_t timeout_ms() const override { return 450000; }
+  // Worst case: the three guard limits (DAY_GUARD/HOUR_GUARD/MINUTE_GUARD --
+  // the old script's own numbers) each drive an AdjustField that can run up
+  // to its own worst case, plus NAVIGATE's GotoMenu(1), VERIFY's budget,
+  // OPEN's own worst case, three plain Set taps advancing/committing the
+  // editor (SET_DAY/SET_HOUR/COMMIT), SETTLE's wait, EXIT_CHAIN's own worst
+  // case if the commit Set was dropped and the fourth Set never actually
+  // landed, and LEAVE's own worst case if the editor still somehow has not
+  // closed by then. TIMEOUT_BUDGET_MS is checked against WORST_CASE_MS below
+  // (static_assert) rather than trusted by eye -- same "comfortable, not
+  // cutting it close" reasoning as WriteSetting's own timeout_ms().
+  uint32_t timeout_ms() const override { return TIMEOUT_BUDGET_MS; }
 
  private:
   enum Step : uint8_t {
@@ -1048,6 +1179,31 @@ class SyncClock final : public Sequence {
   static constexpr int DAY_GUARD = 8;
   static constexpr int HOUR_GUARD = 14;
   static constexpr int MINUTE_GUARD = 34;
+
+  // Derived worst case, one term per step in poll() (seq_sync_clock.cpp):
+  // NAVIGATE's GotoMenu(index 1) + VERIFY (CHECK_TIME adds nothing -- it
+  // never waits, only fails fast or falls through) + OPEN's OpenEditor +
+  // ADJUST_DAY's AdjustField(DAY_GUARD) + SET_DAY's own Set tap-and-key_gap
+  // + ADJUST_HOUR's AdjustField(HOUR_GUARD) + SET_HOUR's own Set
+  // tap-and-key_gap + ADJUST_MINUTE's AdjustField(MINUTE_GUARD) + COMMIT's
+  // own Set tap-and-key_gap + SETTLE + EXIT_CHAIN's ExitEditChain (if the
+  // commit Set was dropped) + LEAVE's LeaveMenu (if the editor still has not
+  // closed by then). Replaces what used to be a hand-summed comment
+  // ("Roughly 76 + 4 + 3 + ... =~ 376s") with an expression the compiler
+  // checks below.
+  static constexpr uint32_t WORST_CASE_MS =
+      GotoMenu::worst_case_ms(1) + VERIFY_TIMEOUT_MS + OpenEditor::worst_case_ms() +
+      AdjustField::worst_case_ms(DAY_GUARD) + (kDefaultTapMs + kDefaultKeyGapMs) +
+      AdjustField::worst_case_ms(HOUR_GUARD) + (kDefaultTapMs + kDefaultKeyGapMs) +
+      AdjustField::worst_case_ms(MINUTE_GUARD) + (kDefaultTapMs + kDefaultKeyGapMs) + SETTLE_MS +
+      ExitEditChain::worst_case_ms() + LeaveMenu::worst_case_ms();
+
+  static constexpr uint32_t TIMEOUT_BUDGET_MS = 450000;
+  static_assert(TIMEOUT_BUDGET_MS > WORST_CASE_MS,
+                "SyncClock's root budget must exceed its own worst-case sum, or a legitimate run (ExitEditChain "
+                "genuinely waiting out a dropped commit Set, then LeaveMenu waiting out the unit's own menu "
+                "timeout on top of that) can be killed mid-wait by the root timeout instead of being allowed to "
+                "finish on its own");
 
   bool day_target_(int &out) const;
   bool hour_target_(int &out) const;
@@ -1213,17 +1369,17 @@ class SetAirflowMode final : public Sequence {
   Poll poll() override;
   void on_finish(Poll result) override;
 
-  // Worst case: CANCEL_PURGE/OPEN_PURGE (5.5s) + CANCEL_SETTLE (0.4s) + the
-  // normalise loop's own worst case (4 guard iterations, each up to
-  // ~8s probe + ~0.45s tap+key_gap + 1s settle =~ 9.45s -- 4*9.45 =~ 37.8s)
-  // + APPLY's own worst case (3 taps, for BOOST_CONTINUOUS, ~1.35s) -- about
-  // 45s. Comfortable headroom above that, same "don't cut it close"
-  // reasoning as every other
-  // timeout_ms() override in this file -- and in practice unreachable, since
-  // every RUNNING state in this sequence is already internally bounded (see
-  // the class comment), unlike e.g. WriteSetting's VERIFY/OPEN steps which
-  // wait on a specific screen that might never arrive.
-  uint32_t timeout_ms() const override { return 90000; }
+  // Worst case: the binding branch is target != PURGE while the unit IS
+  // currently purging (CANCEL_PURGE runs, unlike the direct entry path) and
+  // the target is BOOST_CONTINUOUS (APPLY's 3 taps, the most of any target).
+  // TIMEOUT_BUDGET_MS is checked against WORST_CASE_MS below (static_assert)
+  // rather than trusted by eye -- same "don't cut it close" reasoning as
+  // every other timeout_ms() override in this file, and in practice
+  // unreachable, since every RUNNING state in this sequence is already
+  // internally bounded (see the class comment), unlike e.g. WriteSetting's
+  // VERIFY/OPEN steps which wait on a specific screen that might never
+  // arrive.
+  uint32_t timeout_ms() const override { return TIMEOUT_BUDGET_MS; }
 
  private:
   enum Step : uint8_t {
@@ -1277,6 +1433,34 @@ class SetAirflowMode final : public Sequence {
   // NORMALISE_GUARD) -- collapsing the two constants together would give up
   // that property for taps that ARE moving the counter, just slowly.
   static constexpr uint8_t STUCK_TAP_LIMIT = 2;
+
+  // Derived worst case for the binding branch: currently purging (so
+  // CANCEL_PURGE/CANCEL_SETTLE run) and target == BOOST_CONTINUOUS (3
+  // presses_for_(), the most of any target). The normalise loop
+  // (PROBE_CHECK/PROBE_WAIT -> after_probe_() -> NORMALISE_WAIT/
+  // NORMALISE_SETTLE, seq_set_airflow_mode.cpp) runs one probe BEFORE each
+  // of up to NORMALISE_GUARD taps, plus one FINAL probe after the last tap
+  // to learn whether it can stop -- NORMALISE_GUARD+1 probes total, each
+  // bounded by PROBE_TIMEOUT_MS regardless of how it resolves (a Boost frame
+  // reappearing, or the timeout itself). This is one more probe than the
+  // superseded comment counted ("4 guard iterations... 4*9.45s"), which
+  // undercounted the final post-tap probe; TIMEOUT_BUDGET_MS's headroom
+  // absorbs the difference either way (see the static_assert below).
+  static constexpr uint8_t NORMALISE_PROBES = NORMALISE_GUARD + 1;
+  static constexpr uint8_t MAX_APPLY_TAPS = 3;  // BOOST_CONTINUOUS -- presses_for_()'s own largest case
+
+  static constexpr uint32_t WORST_CASE_MS = PURGE_HOLD_MS + CANCEL_SETTLE_MS +
+                                             NORMALISE_PROBES * PROBE_TIMEOUT_MS +
+                                             NORMALISE_GUARD * (kDefaultTapMs + kDefaultKeyGapMs) +
+                                             NORMALISE_GUARD * NORMALISE_SETTLE_MS +
+                                             MAX_APPLY_TAPS * (kDefaultTapMs + kDefaultKeyGapMs);
+
+  static constexpr uint32_t TIMEOUT_BUDGET_MS = 90000;
+  static_assert(TIMEOUT_BUDGET_MS > WORST_CASE_MS,
+                "SetAirflowMode's root budget must exceed its own worst-case sum (cancelling an in-progress purge, "
+                "then normalising back to Normal against the full NORMALISE_GUARD, then applying "
+                "BOOST_CONTINUOUS's 3 taps), or a legitimate run can be killed mid-wait by the root timeout "
+                "instead of being allowed to finish on its own");
 
   /// Shared by CANCEL_PURGE and OPEN_PURGE: holds Main for the fixed
   /// PURGE_HOLD_MS, then releases and moves to `next_step` -- see the class
@@ -1457,23 +1641,20 @@ class ResetFilter final : public Sequence {
   Poll poll() override;
   void on_finish(Poll result) override;
 
-  // Worst case: HOLD's fixed 5500ms + RELEASE_SETTLE's fixed 1000ms +
-  // diagnostics_scan_'s own worst case AS A CHILD -- which is what actually
-  // bounds this, not FetchDiagnostics' own (inherited, unused-as-a-child)
-  // timeout_ms(): Sequence::timeout_ms()'s own comment is explicit that it
-  // is "only ever consulted for whichever Sequence is currently the ROOT",
-  // so only THIS override matters once diagnostics_scan_ is pushed as a
-  // child below. FetchDiagnostics' own step timeouts sum to
-  // ENTER_TIMEOUT_MS(15000) + ENTER_SETTLE_MS(300) + HOLD_DOWN_MS(8000) +
-  // DOWN_SETTLE_MS(400) + TO_PAGE_00_TIMEOUT_MS(20000) +
-  // PAGE_00_SETTLE_MS(250) + EXIT_TIMEOUT_MS(15000) = 58950ms (see
-  // seq_fetch_diagnostics.cpp). 5500 + 1000 + 58950 =~ 65.5s. Comfortable
-  // headroom above that, same "don't cut it close" reasoning as every other
-  // timeout_ms() override in this file, so a legitimate full scan -- even
-  // one that ultimately fails on ITS OWN internal timeout rather than
-  // succeeding -- always gets to finish deciding that for itself instead of
-  // being cut off mid-wait by this sequence's own budget expiring first.
-  uint32_t timeout_ms() const override { return 120000; }
+  // Worst case: HOLD's fixed HOLD_MS + RELEASE_SETTLE's fixed
+  // RELEASE_SETTLE_MS + diagnostics_scan_'s own worst case AS A CHILD --
+  // which is what actually bounds this, not FetchDiagnostics' own
+  // (inherited, unused-as-a-child) timeout_ms(): Sequence::timeout_ms()'s
+  // own comment is explicit that it is "only ever consulted for whichever
+  // Sequence is currently the ROOT", so only THIS override matters once
+  // diagnostics_scan_ is pushed as a child below (CHECK_STATUS and VERIFY
+  // add nothing -- both are synchronous checks with no wait of their own).
+  // TIMEOUT_BUDGET_MS is checked against WORST_CASE_MS below
+  // (static_assert), so a legitimate full scan -- even one that ultimately
+  // fails on ITS OWN internal timeout rather than succeeding -- always gets
+  // to finish deciding that for itself instead of being cut off mid-wait by
+  // this sequence's own budget expiring first.
+  uint32_t timeout_ms() const override { return TIMEOUT_BUDGET_MS; }
 
  private:
   enum Step : uint8_t { CHECK_STATUS, HOLD, RELEASE_SETTLE, FETCH, VERIFY, FINISHED };
@@ -1491,6 +1672,14 @@ class ResetFilter final : public Sequence {
   // logged the moment this settle ends -- see the class comment. Neither
   // purpose is served by rushing this down to 400ms.
   static constexpr uint32_t RELEASE_SETTLE_MS = 1000;
+
+  static constexpr uint32_t WORST_CASE_MS = HOLD_MS + RELEASE_SETTLE_MS + FetchDiagnostics::worst_case_ms();
+
+  static constexpr uint32_t TIMEOUT_BUDGET_MS = 120000;
+  static_assert(TIMEOUT_BUDGET_MS > WORST_CASE_MS,
+                "ResetFilter's root budget must exceed its own worst-case sum, or a legitimate full diagnostics "
+                "scan (diagnostics_scan_, pushed as a child) can be killed mid-wait by the root timeout instead of "
+                "being allowed to finish -- or fail -- on its own");
 
   // A DEDICATED FetchDiagnostics instance, not the hub's shared
   // button/schedule one (VentAxiaHub::fetch_diagnostics_) -- same reasoning

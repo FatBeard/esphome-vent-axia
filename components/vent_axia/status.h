@@ -202,6 +202,22 @@ class StatusTracker {
   /// costs about 3% of it.
   static constexpr uint32_t CONTINUOUS_CONFIRM_MS = 20000;
 
+  // CLAUDE.md's own invariant, enforced rather than left to prose: a confirm
+  // window AT OR BELOW ALTERNATION_TIMEOUT_MS would report continuous boost
+  // on EVERY timed-boost expiry, not just a genuine continuous episode --
+  // boosting_ (a Flag whose own timeout IS ALTERNATION_TIMEOUT_MS) stays
+  // sticky-true for up to that long after a timed boost's countdown vanishes
+  // from line2, so continuous_boost()'s "no countdown seen for
+  // CONTINUOUS_CONFIRM_MS" test would trivially pass during that trailing
+  // window on every single expiry. Do NOT "tidy" these two constants toward
+  // each other -- see CONTINUOUS_CONFIRM_MS's own comment for the live
+  // measurement (14.0s) this headroom is measured against.
+  static_assert(CONTINUOUS_CONFIRM_MS > ALTERNATION_TIMEOUT_MS,
+                "CONTINUOUS_CONFIRM_MS must exceed ALTERNATION_TIMEOUT_MS, or continuous_boost() reports true on "
+                "every timed-boost expiry (boosting_ stays sticky-true for up to ALTERNATION_TIMEOUT_MS after the "
+                "countdown vanishes from line2, so a confirm window at or below it never distinguishes that "
+                "trailing window from a genuine continuous episode)");
+
   /// Feeds one decoded frame. `is_status_screen` must be false whenever
   /// line1 is a menu/diagnostic screen -- see the class comment -- so a
   /// diagnostics fetch or clock sync parking the display elsewhere freezes
