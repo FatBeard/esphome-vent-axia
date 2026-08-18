@@ -99,7 +99,7 @@ TEST_CASE(a_menu_screen_at_start_refuses_without_pressing_anything) {
   feed(disp, status, "Summer Mode", "On", clock.now);
 
   SetAirflowMode seq;
-  seq.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   seq.set_status(&status);
   seq.configure(AirflowTarget::NORMAL);
   CHECK(runner.request(seq));
@@ -127,7 +127,7 @@ TEST_CASE(a_diagnostic_screen_at_start_refuses_without_pressing_anything) {
   feed(disp, status, "Diagnostic  05", "018 029 %      ", clock.now);
 
   SetAirflowMode seq;
-  seq.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   seq.set_status(&status);
   seq.configure(AirflowTarget::BOOST_30);
   CHECK(runner.request(seq));
@@ -165,7 +165,7 @@ TEST_CASE(set_airflow_mode_fails_when_no_status_frame_has_ever_been_decoded) {
   disp.update(vatest::pad16("Normal Airflow"), vatest::pad16("18%"), 0);
 
   SetAirflowMode seq;
-  seq.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   seq.set_status(&status);
   seq.configure(AirflowTarget::NORMAL);
   CHECK(runner.request(seq));
@@ -195,7 +195,7 @@ TEST_CASE(set_airflow_mode_fails_when_no_status_tracker_was_ever_configured) {
   disp.update(vatest::pad16("Normal Airflow"), vatest::pad16("18%"), 0);
 
   SetAirflowMode seq;
-  seq.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   seq.configure(AirflowTarget::NORMAL);
   CHECK(runner.request(seq));
 
@@ -229,7 +229,7 @@ TEST_CASE(purge_target_when_already_purging_needs_no_keys_at_all) {
   feed(disp, status, "Purge", "120 m", clock.now);
 
   SetAirflowMode seq;
-  seq.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   seq.set_status(&status);
   seq.configure(AirflowTarget::PURGE);
   CHECK(runner.request(seq));
@@ -260,7 +260,7 @@ TEST_CASE(purge_target_from_normal_start_is_a_5500ms_hold_not_a_tap) {
   feed(disp, status, "Normal Airflow", "18%", clock.now);
 
   SetAirflowMode seq;
-  seq.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   seq.set_status(&status);
   seq.configure(AirflowTarget::PURGE);
   CHECK(runner.request(seq));
@@ -303,7 +303,7 @@ TEST_CASE(purge_target_with_an_active_but_not_in_this_frame_purge_does_nothing) 
   feed(disp, status, "Normal Airflow", "18%", clock.now);
 
   SetAirflowMode seq;
-  seq.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   seq.set_status(&status);
   seq.configure(AirflowTarget::PURGE);
   CHECK(runner.request(seq));
@@ -335,7 +335,7 @@ TEST_CASE(boost_target_with_that_same_still_purging_state_issues_the_cancel_hold
   feed(disp, status, "Normal Airflow", "18%", clock.now);
 
   SetAirflowMode seq;
-  seq.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   seq.set_status(&status);
   seq.configure(AirflowTarget::BOOST_30);
   CHECK(runner.request(seq));
@@ -382,7 +382,7 @@ TEST_CASE(normal_target_from_normal_start_needs_no_taps_but_still_pays_for_one_p
   feed(disp, status, "Normal Airflow", "18%", clock.now);
 
   SetAirflowMode seq;
-  seq.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   seq.set_status(&status);
   seq.configure(AirflowTarget::NORMAL);
   CHECK(runner.request(seq));
@@ -415,7 +415,7 @@ TEST_CASE(boost30_target_from_normal_start_needs_exactly_one_tap) {
   feed(disp, status, "Normal Airflow", "18%", clock.now);
 
   SetAirflowMode seq;
-  seq.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   seq.set_status(&status);
   seq.configure(AirflowTarget::BOOST_30);
   CHECK(runner.request(seq));
@@ -445,7 +445,7 @@ TEST_CASE(boost60_target_from_normal_start_needs_exactly_two_taps) {
   feed(disp, status, "Normal Airflow", "18%", clock.now);
 
   SetAirflowMode seq;
-  seq.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   seq.set_status(&status);
   seq.configure(AirflowTarget::BOOST_60);
   CHECK(runner.request(seq));
@@ -499,7 +499,7 @@ TEST_CASE(boost_continuous_target_from_normal_start_needs_exactly_three_taps) {
   feed(disp, status, "Normal Airflow", "18%", clock.now);
 
   SetAirflowMode seq;
-  seq.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   seq.set_status(&status);
   seq.configure(AirflowTarget::BOOST_CONTINUOUS);
   CHECK(runner.request(seq));
@@ -542,7 +542,7 @@ TEST_CASE(probe_catches_a_boost_frame_that_arrives_mid_wait_rather_than_only_sam
   feed(disp, status, "Check Filter", "48%", clock.now);
 
   SetAirflowMode seq;
-  seq.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   seq.set_status(&status);
   seq.configure(AirflowTarget::NORMAL);
   CHECK(runner.request(seq));
@@ -616,7 +616,7 @@ TEST_CASE(normal_target_from_boosting_start_normalises_through_continuous_with_p
   feed(disp, status, "Boost Airflow", "48%       30m", clock.now);
 
   SetAirflowMode seq;
-  seq.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   seq.set_status(&status);
   seq.configure(AirflowTarget::NORMAL);
   CHECK(runner.request(seq));
@@ -704,7 +704,7 @@ TEST_CASE(normalise_guard_caps_at_4_taps_and_fails_cleanly_without_ever_applying
   feed(disp, status, "Boost Airflow", std::to_string(pct) + "%", clock.now);
 
   SetAirflowMode seq;
-  seq.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   seq.set_status(&status);
   seq.configure(AirflowTarget::BOOST_30);  // the target is irrelevant here -- normalising never gets there
   CHECK(runner.request(seq));
@@ -778,7 +778,7 @@ TEST_CASE(switched_live_boost_bails_early_after_two_unmoving_main_taps) {
   feed_current();
 
   SetAirflowMode seq;
-  seq.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   seq.set_status(&status);
   seq.configure(AirflowTarget::NORMAL);
   CHECK(runner.request(seq));
@@ -834,7 +834,7 @@ TEST_CASE(normal_target_normalise_with_moving_line2_does_not_trip_the_stuck_bail
   feed(disp, status, "Boost Airflow", "48%       30m", clock.now);
 
   SetAirflowMode seq;
-  seq.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   seq.set_status(&status);
   seq.configure(AirflowTarget::NORMAL);
   CHECK(runner.request(seq));
@@ -886,7 +886,7 @@ TEST_CASE(boost30_target_from_purging_start_cancels_first_then_probes_then_appli
   feed(disp, status, "Purge", "120 m", clock.now);
 
   SetAirflowMode seq;
-  seq.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   seq.set_status(&status);
   seq.configure(AirflowTarget::BOOST_30);
   CHECK(runner.request(seq));
@@ -930,7 +930,7 @@ TEST_CASE(set_airflow_mode_refuses_to_guess_when_purge_is_still_showing_after_th
   feed(disp, status, "Purge", "120 m", clock.now);  // never changes -- the cancel does not "take"
 
   SetAirflowMode seq;
-  seq.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   seq.set_status(&status);
   seq.configure(AirflowTarget::BOOST_30);
   CHECK(runner.request(seq));

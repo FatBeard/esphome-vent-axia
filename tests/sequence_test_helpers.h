@@ -65,10 +65,11 @@ inline std::vector<KeyMask> episodes_from(const RecordingSink &sink) {
 }
 
 /// Records severities the same way test_keypad.cpp's RecordingLog does.
-/// Reused for Runner::LogSink, Keypad::LogSink, FetchDiagnostics::LogSink,
-/// AdjustField::LogSink and SyncClock::LogSink -- all the same type
-/// (`using` aliases of Keypad::LogSink, see sequence.h), so one fixture
-/// covers all of them.
+/// Reused for both Runner::LogSink and Keypad::LogSink -- the same type
+/// (`using LogSink = Keypad::LogSink`, see sequence.h), so one fixture
+/// covers both. Every Sequence reaches the sink through its Runner (see
+/// Sequence::log()), so setting it on the Runner is enough to observe what
+/// any sequence under test logs.
 struct RecordingLog {
   int info_count{0};
   int warn_count{0};

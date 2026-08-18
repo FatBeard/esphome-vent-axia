@@ -111,8 +111,8 @@ Poll WriteSetting::poll() {
         // guaranteed (PLAN.md). An editor may still be open on whatever
         // screen this is either way, so EXIT_CHAIN runs regardless -- see
         // class comment on ok_.
-        if (this->log_.warn) {
-          this->log_.warn("WriteSetting: did not land on Outdoor Temp after the Indoor Temp hop -- nothing written "
+        if (this->log().warn) {
+          this->log().warn("WriteSetting: did not land on Outdoor Temp after the Indoor Temp hop -- nothing written "
                            "(line1='" +
                            this->runner_->display().text_line1() + "')");
         }

@@ -27,15 +27,16 @@ Poll ReadSettings::poll() {
           if (this->on_switch_) {
             this->on_switch_(SwitchKey::SUMMER_MODE, *v != 0);
           }
-          if (this->log_.info) {
-            this->log_.info(std::string("ReadSettings: Summer Mode is ") + (*v != 0 ? "On" : "Off"));
+          if (this->log().info) {
+            this->log().info(std::string("ReadSettings: Summer Mode is ") + (*v != 0 ? "On" : "Off"));
           }
           return this->goto_step(NAV_INDOOR);
         }
       }
       if (this->elapsed() >= SUMMER_TIMEOUT_MS) {
-        if (this->log_.warn) {
-          this->log_.warn("ReadSettings: Summer Mode unreadable (line1='" + this->runner_->display().text_line1() + "')");
+        if (this->log().warn) {
+          this->log().warn("ReadSettings: Summer Mode unreadable (line1='" + this->runner_->display().text_line1() +
+                           "')");
         }
         return this->goto_step(NAV_INDOOR);
       }
@@ -55,16 +56,17 @@ Poll ReadSettings::poll() {
           if (this->on_number_) {
             this->on_number_(NumberKey::BYPASS_INDOOR_TEMP, *v);
           }
-          if (this->log_.info) {
-            this->log_.info("ReadSettings: Bypass minimum indoor temperature is " + std::to_string(*v) + " C");
+          if (this->log().info) {
+            this->log().info("ReadSettings: Bypass minimum indoor temperature is " + std::to_string(*v) + " C");
           }
           this->indoor_read_ok_ = true;
           return this->goto_step(OPEN_OUTDOOR);
         }
       }
       if (this->elapsed() >= INDOOR_TIMEOUT_MS) {
-        if (this->log_.warn) {
-          this->log_.warn("ReadSettings: Indoor Temp unreadable (line1='" + this->runner_->display().text_line1() + "')");
+        if (this->log().warn) {
+          this->log().warn("ReadSettings: Indoor Temp unreadable (line1='" + this->runner_->display().text_line1() +
+                           "')");
         }
         // indoor_read_ok_ stays false -- the outdoor hop is skipped below.
         return this->goto_step(OPEN_OUTDOOR);
@@ -114,8 +116,8 @@ Poll ReadSettings::poll() {
         // editor outright rather than advancing). Not a reason to skip
         // ExitEditChain: an editor may still be open on whatever screen
         // this is, so the funnel step runs regardless -- see class comment.
-        if (this->log_.warn) {
-          this->log_.warn("ReadSettings: did not land on Outdoor Temp after the Indoor Temp hop (line1='" +
+        if (this->log().warn) {
+          this->log().warn("ReadSettings: did not land on Outdoor Temp after the Indoor Temp hop (line1='" +
                            this->runner_->display().text_line1() + "')");
         }
         return this->goto_step(EXIT_CHAIN);
@@ -128,14 +130,14 @@ Poll ReadSettings::poll() {
         if (this->on_number_) {
           this->on_number_(NumberKey::BYPASS_OUTDOOR_TEMP, *v);
         }
-        if (this->log_.info) {
-          this->log_.info("ReadSettings: Bypass minimum outdoor temperature is " + std::to_string(*v) + " C");
+        if (this->log().info) {
+          this->log().info("ReadSettings: Bypass minimum outdoor temperature is " + std::to_string(*v) + " C");
         }
         return this->goto_step(EXIT_CHAIN);
       }
       if (this->elapsed() >= OUTDOOR_VALUE_TIMEOUT_MS) {
-        if (this->log_.warn) {
-          this->log_.warn("ReadSettings: Outdoor Temp value unreadable");
+        if (this->log().warn) {
+          this->log().warn("ReadSettings: Outdoor Temp value unreadable");
         }
         return this->goto_step(EXIT_CHAIN);
       }

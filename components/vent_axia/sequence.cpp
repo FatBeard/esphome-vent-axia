@@ -38,6 +38,8 @@ Poll Sequence::await(Sequence &child, uint8_t on_ok) {
   return Poll::RUNNING;
 }
 
+const Keypad::LogSink &Sequence::log() const { return this->runner_->log(); }
+
 // --------------------------------------------------------------- Runner --
 
 bool Runner::request(Sequence &seq) {
@@ -420,9 +422,9 @@ Poll AdjustField::poll() {
       // if it is genuinely unavailable: there is nothing to adjust towards.
       int want = 0;
       if (!this->target_ || !this->target_(want)) {
-        if (this->log_.error) {
-          this->log_.error("AdjustField: target unavailable -- aborting rather than adjusting towards an unknown "
-                            "value");
+        if (this->log().error) {
+          this->log().error("AdjustField: target unavailable -- aborting rather than adjusting towards an unknown "
+                             "value");
         }
         return Poll::FAILED;
       }
@@ -468,8 +470,8 @@ Poll ExitEditChain::poll() {
         return Poll::DONE;  // the common case: the chain has already been walked off its end
       }
       if (this->commits_ >= MAX_COMMITS) {
-        if (this->log_.warn) {
-          this->log_.warn("sequence: editor still open after " + std::to_string(static_cast<int>(MAX_COMMITS)) +
+        if (this->log().warn) {
+          this->log().warn("sequence: editor still open after " + std::to_string(static_cast<int>(MAX_COMMITS)) +
                            " commits -- waiting out the unit's own ~2-minute timeout");
         }
         return this->goto_step(WAIT_TIMEOUT);

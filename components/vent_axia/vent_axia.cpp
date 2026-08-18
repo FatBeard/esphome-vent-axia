@@ -92,11 +92,6 @@ void VentAxiaHub::setup() {
     }
   });
 
-  this->fetch_diagnostics_.set_log_sink({
-      [](const std::string &msg) { ESP_LOGI(TAG, "%s", msg.c_str()); },
-      [](const std::string &msg) { ESP_LOGW(TAG, "%s", msg.c_str()); },
-      [](const std::string &msg) { ESP_LOGE(TAG, "%s", msg.c_str()); },
-  });
   this->fetch_diagnostics_.set_on_success([this] { this->stamp_diagnostics_updated_(); });
 
   // Stage 6: read_settings_ (the button's own instance) and write_setting_
@@ -107,19 +102,9 @@ void VentAxiaHub::setup() {
   auto publish_switch = [this](SwitchKey key, bool value) { this->publish_switch_(key, value); };
   auto publish_number = [this](NumberKey key, int value) { this->publish_number_(key, value); };
 
-  this->read_settings_.set_log_sink({
-      [](const std::string &msg) { ESP_LOGI(TAG, "%s", msg.c_str()); },
-      [](const std::string &msg) { ESP_LOGW(TAG, "%s", msg.c_str()); },
-      [](const std::string &msg) { ESP_LOGE(TAG, "%s", msg.c_str()); },
-  });
   this->read_settings_.set_on_switch(publish_switch);
   this->read_settings_.set_on_number(publish_number);
 
-  this->write_setting_.set_log_sink({
-      [](const std::string &msg) { ESP_LOGI(TAG, "%s", msg.c_str()); },
-      [](const std::string &msg) { ESP_LOGW(TAG, "%s", msg.c_str()); },
-      [](const std::string &msg) { ESP_LOGE(TAG, "%s", msg.c_str()); },
-  });
   this->write_setting_.set_on_switch(publish_switch);
   this->write_setting_.set_on_number(publish_number);
 
@@ -129,11 +114,6 @@ void VentAxiaHub::setup() {
   // undefined (the ESP32-IDF example declares no `time:` platform at all):
   // the #else branch below is what makes that true, returning "unavailable"
   // rather than failing to build.
-  this->sync_clock_.set_log_sink({
-      [](const std::string &msg) { ESP_LOGI(TAG, "%s", msg.c_str()); },
-      [](const std::string &msg) { ESP_LOGW(TAG, "%s", msg.c_str()); },
-      [](const std::string &msg) { ESP_LOGE(TAG, "%s", msg.c_str()); },
-  });
   this->sync_clock_.set_time_source([this](int &dow_display, int &hour, int &minute) -> bool {
 #ifdef USE_TIME
     if (this->time_ == nullptr) {
@@ -162,15 +142,6 @@ void VentAxiaHub::setup() {
 #endif
   });
 
-  // Stage 7's other deliverable: set_airflow_mode_ needs only a log sink,
-  // unlike sync_clock_/write_setting_/read_settings_ above -- it publishes
-  // nothing of its own (PLAN.md §6 "Not optimistic", see its class comment
-  // in sequence.h), so there is no switch/number-style sink to wire here.
-  this->set_airflow_mode_.set_log_sink({
-      [](const std::string &msg) { ESP_LOGI(TAG, "%s", msg.c_str()); },
-      [](const std::string &msg) { ESP_LOGW(TAG, "%s", msg.c_str()); },
-      [](const std::string &msg) { ESP_LOGE(TAG, "%s", msg.c_str()); },
-  });
   // Finding 2 (Opus review of this stage): the alternation-aware, sticky
   // purging() this sequence's CHECK_CURRENT needs to answer "is the unit
   // currently purging" reliably -- the exact same tracker every other
@@ -184,13 +155,7 @@ void VentAxiaHub::setup() {
   // design (PLAN.md §8): the one irreversible operation. reset_filter_'s
   // OWN dedicated FetchDiagnostics child (sequence.h's diagnostics_scan_,
   // NOT fetch_diagnostics_ above -- see that member's own comment for why)
-  // needs the same log sink and on_success stamp every other diagnostic
-  // scrape gets; set_log_sink() already forwards to it internally.
-  this->reset_filter_.set_log_sink({
-      [](const std::string &msg) { ESP_LOGI(TAG, "%s", msg.c_str()); },
-      [](const std::string &msg) { ESP_LOGW(TAG, "%s", msg.c_str()); },
-      [](const std::string &msg) { ESP_LOGE(TAG, "%s", msg.c_str()); },
-  });
+  // needs the same on_success stamp every other diagnostic scrape gets.
   // A genuine full diagnostic scrape happens inside this sequence's own
   // chained scan exactly as it does for the button/schedule path, so the
   // timestamp should reflect it the same way -- see

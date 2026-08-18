@@ -82,7 +82,7 @@ TEST_CASE(a_menu_screen_at_start_refuses_without_pressing_anything) {
   disp.update(vatest::pad16("Summer Mode"), vatest::pad16("On"), clock.now);
 
   ResetFilter seq;
-  seq.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   CHECK(runner.request(seq));
 
   clock.advance(200);
@@ -113,7 +113,7 @@ TEST_CASE(a_diagnostic_screen_at_start_refuses_without_pressing_anything) {
   disp.update(vatest::pad16("Diagnostic  05"), vatest::pad16("018 029 %      "), clock.now);
 
   ResetFilter seq;
-  seq.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   CHECK(runner.request(seq));
 
   clock.advance(200);
@@ -141,7 +141,7 @@ TEST_CASE(no_frame_at_all_refuses_without_pressing_anything) {
   kp.set_frame_sink(sink.as_frame_sink());
 
   ResetFilter seq;
-  seq.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   CHECK(runner.request(seq));
 
   clock.advance(200);
@@ -172,7 +172,7 @@ TEST_CASE(the_hold_is_a_simultaneous_up_plus_down_mask_for_5500ms_not_two_taps) 
   disp.update(vatest::pad16("Normal Airflow"), vatest::pad16("18%"), clock.now);
 
   ResetFilter seq;
-  seq.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   CHECK(runner.request(seq));
 
   // Partway through the hold: exactly one key mask on the wire, the OR of
@@ -252,7 +252,7 @@ TEST_CASE(after_the_hold_it_chains_a_diagnostics_scan_before_finishing) {
   disp.update(vatest::pad16("Normal Airflow"), vatest::pad16("18%"), clock.now);
 
   ResetFilter seq;
-  seq.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   CHECK(runner.request(seq));
 
   clock.advance(5600);  // HOLD_MS (5500ms) clears
@@ -299,7 +299,7 @@ TEST_CASE(a_diagnostics_scan_that_cannot_even_enter_the_menu_fails_the_whole_seq
   disp.update(vatest::pad16("Normal Airflow"), vatest::pad16("18%"), clock.now);
 
   ResetFilter seq;
-  seq.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   CHECK(runner.request(seq));
 
   clock.advance(5600);   // HOLD_MS clears
@@ -331,7 +331,7 @@ TEST_CASE(no_filter_hours_source_configured_logs_cannot_confirm_and_still_succee
   disp.update(vatest::pad16("Normal Airflow"), vatest::pad16("18%"), clock.now);
 
   ResetFilter seq;
-  seq.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   // set_filter_hours_source() deliberately never called.
   CHECK(runner.request(seq));
 
@@ -360,7 +360,7 @@ TEST_CASE(a_filter_hours_source_answering_nullopt_logs_cannot_confirm) {
   disp.update(vatest::pad16("Normal Airflow"), vatest::pad16("18%"), clock.now);
 
   ResetFilter seq;
-  seq.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   seq.set_filter_hours_source([]() -> std::optional<int> { return std::nullopt; });
   CHECK(runner.request(seq));
 
@@ -385,7 +385,7 @@ TEST_CASE(a_filter_hours_source_still_reading_zero_logs_the_reset_did_not_take) 
   disp.update(vatest::pad16("Normal Airflow"), vatest::pad16("18%"), clock.now);
 
   ResetFilter seq;
-  seq.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   seq.set_filter_hours_source([]() -> std::optional<int> { return 0; });
   CHECK(runner.request(seq));
 
@@ -417,7 +417,7 @@ TEST_CASE(a_filter_hours_source_reading_nonzero_and_changed_logs_confirmed_with_
   disp.update(vatest::pad16("Normal Airflow"), vatest::pad16("18%"), clock.now);
 
   ResetFilter seq;
-  seq.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   int calls = 0;
   seq.set_filter_hours_source([&calls]() -> std::optional<int> {
     calls++;
@@ -461,7 +461,7 @@ TEST_CASE(a_filter_hours_source_reading_nonzero_but_unchanged_from_before_the_ho
   disp.update(vatest::pad16("Normal Airflow"), vatest::pad16("18%"), clock.now);
 
   ResetFilter seq;
-  seq.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   seq.set_filter_hours_source([]() -> std::optional<int> { return 4380; });  // same value every call
   CHECK(runner.request(seq));
 
@@ -507,7 +507,7 @@ TEST_CASE(root_timeout_still_releases_the_key_and_recovers) {
   disp.update(vatest::pad16("Normal Airflow"), vatest::pad16("18%"), 0);
 
   ResetFilter seq;
-  seq.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   CHECK(runner.request(seq));
 
   Clock clock{kp, runner};
@@ -535,7 +535,7 @@ TEST_CASE(a_check_status_refusal_leaves_the_keypad_untouched) {
   disp.update(vatest::pad16("Set Clock"), vatest::pad16("Mon 12:00"), clock.now);
 
   ResetFilter seq;
-  seq.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   CHECK(runner.request(seq));
 
   clock.advance(200);

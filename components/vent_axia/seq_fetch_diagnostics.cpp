@@ -153,13 +153,13 @@ void FetchDiagnostics::on_finish(Poll result) {
 
   const int of = this->highest_page_seen_ + 1;
   const int captured = this->count_seen_pages_();
-  if (this->log_.info) {
+  if (this->log().info) {
     // "of" is derived from the highest page number actually seen this run,
     // never a hardcoded constant that could go stale on a firmware update
     // (PLAN.md §3/§7 -- see the class comment). A mismatch between the two
     // numbers, e.g. "26 of 28", means a page was skipped mid-scroll, which
     // is worth knowing and would otherwise be completely invisible.
-    this->log_.info("FetchDiagnostics: captured " + std::to_string(captured) + " of " + std::to_string(of) +
+    this->log().info("FetchDiagnostics: captured " + std::to_string(captured) + " of " + std::to_string(of) +
                      " pages (highest " + std::to_string(this->highest_page_seen_) + ")");
   }
   if (this->on_success_) {

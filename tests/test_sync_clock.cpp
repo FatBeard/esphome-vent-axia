@@ -345,7 +345,7 @@ TEST_CASE(sync_clock_corrects_all_three_fields_with_exactly_four_sets_and_leaves
   kp.set_frame_sink(sink.as_frame_sink());
 
   SyncClock sync_clock;
-  sync_clock.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   sync_clock.set_time_source([](int &dow_display, int &hour, int &minute) {
     dow_display = 0;  // Mon
     hour = 0;
@@ -488,7 +488,7 @@ TEST_CASE(sync_clock_presses_set_not_up_when_the_commit_set_is_dropped_and_the_e
   kp.set_frame_sink(sink.as_frame_sink());
 
   SyncClock sync_clock;
-  sync_clock.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   sync_clock.set_time_source([](int &dow_display, int &hour, int &minute) {
     // Matches the display below exactly, so day/hour/minute each need ZERO
     // adjust taps -- gets to COMMIT (the fourth Set) via the shortest
@@ -616,7 +616,7 @@ TEST_CASE(sync_clock_settled_commit_does_not_trigger_a_spurious_exit_chain) {
   kp.set_frame_sink(sink.as_frame_sink());
 
   SyncClock sync_clock;
-  sync_clock.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   sync_clock.set_time_source([](int &dow_display, int &hour, int &minute) {
     dow_display = 0;  // Mon
     hour = 10;
@@ -698,7 +698,7 @@ TEST_CASE(sync_clock_aborts_without_pressing_set_when_set_clock_screen_never_app
   kp.set_frame_sink(sink.as_frame_sink());
 
   SyncClock sync_clock;
-  sync_clock.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   sync_clock.set_time_source([](int &dow_display, int &hour, int &minute) {
     dow_display = 0;
     hour = 0;
@@ -733,7 +733,7 @@ TEST_CASE(sync_clock_aborts_without_pressing_set_when_line2_never_renders_a_vali
   kp.set_frame_sink(sink.as_frame_sink());
 
   SyncClock sync_clock;
-  sync_clock.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   sync_clock.set_time_source([](int &dow_display, int &hour, int &minute) {
     dow_display = 0;
     hour = 0;
@@ -777,7 +777,7 @@ TEST_CASE(sync_clock_aborts_and_transmits_no_set_when_the_time_source_is_unavail
   kp.set_frame_sink(sink.as_frame_sink());
 
   SyncClock sync_clock;
-  sync_clock.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   sync_clock.set_time_source([](int &, int &, int &) { return false; });  // no time source at all
 
   CHECK(runner.request(sync_clock));

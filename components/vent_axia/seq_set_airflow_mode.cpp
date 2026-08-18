@@ -107,8 +107,8 @@ Poll SetAirflowMode::after_probe_(bool boosting_now) {
     // unit was still alive and responding to), not merely an exhausted
     // guard with no theory attached. Captured live on 192.168.1.200, 13 Aug
     // 2026: a toilet boost held on by a light-linked switched live.
-    if (this->log_.error) {
-      this->log_.error(
+    if (this->log().error) {
+      this->log().error(
           "SetAirflowMode: boost appears held on by an external switched live (a wired wall/toilet switch) -- "
           "the display has not moved across " +
           std::to_string(static_cast<int>(this->stuck_taps_)) +
@@ -123,8 +123,8 @@ Poll SetAirflowMode::after_probe_(bool boosting_now) {
     // the target's own presses on top of a press count that is no longer
     // known (PLAN.md risk 6's "bound the loop, don't trust luck", same
     // reasoning as AdjustField's own guard).
-    if (this->log_.error) {
-      this->log_.error("SetAirflowMode: could not normalise back to Normal after " +
+    if (this->log().error) {
+      this->log().error("SetAirflowMode: could not normalise back to Normal after " +
                         std::to_string(static_cast<int>(NORMALISE_GUARD)) +
                         " Main taps -- refusing to guess the unit's boost state from here");
     }
@@ -158,8 +158,8 @@ Poll SetAirflowMode::poll() {
     case CHECK_CURRENT: {
       if (!this->runner_->display().have_frame() ||
           screens::is_menu_screen(this->runner_->display().raw_line1())) {
-        if (this->log_.error) {
-          this->log_.error("SetAirflowMode: refusing -- display is not on the status loop (line1='" +
+        if (this->log().error) {
+          this->log().error("SetAirflowMode: refusing -- display is not on the status loop (line1='" +
                             this->runner_->display().text_line1() + "')");
         }
         return Poll::FAILED;
@@ -177,15 +177,15 @@ Poll SetAirflowMode::poll() {
       // boolean the same as it does to a parsed field: guessing "not
       // purging" here could CANCEL a purge that is actually still running.
       if (this->status_ == nullptr) {
-        if (this->log_.error) {
-          this->log_.error("SetAirflowMode: refusing -- no StatusTracker configured (set_status() was never called)");
+        if (this->log().error) {
+          this->log().error("SetAirflowMode: refusing -- no StatusTracker configured (set_status() was never called)");
         }
         return Poll::FAILED;
       }
       const std::optional<bool> currently_purging = this->status_->purging();
       if (!currently_purging.has_value()) {
-        if (this->log_.error) {
-          this->log_.error("SetAirflowMode: refusing -- purge state not yet known (no status frame decoded yet)");
+        if (this->log().error) {
+          this->log().error("SetAirflowMode: refusing -- purge state not yet known (no status frame decoded yet)");
         }
         return Poll::FAILED;
       }
@@ -250,8 +250,8 @@ Poll SetAirflowMode::poll() {
     // trustworthy evidence the cancel failed, not a guess.
     case PROBE_CHECK:
       if (status::parse_line_values(this->runner_->display().raw_line1(), this->runner_->display().raw_line2()).purge) {
-        if (this->log_.error) {
-          this->log_.error(
+        if (this->log().error) {
+          this->log().error(
               "SetAirflowMode: still showing Purge after the cancel hold -- refusing to guess what Main taps "
               "would do from here");
         }

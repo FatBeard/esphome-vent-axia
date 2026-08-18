@@ -127,6 +127,15 @@ class Sequence {
   /// stack is already at its fixed depth -- see Runner::MAX_DEPTH.
   Poll await(Sequence &child, uint8_t on_ok);
 
+  /// The Runner's own log sink -- see Runner::log(). Every sequence reaches
+  /// it through here rather than carrying a LogSink of its own, so there is
+  /// exactly one place a sink is ever set (VentAxiaHub::setup() wires only
+  /// the Runner) and no forwarding step that a child sequence can be left
+  /// out of. NOT valid inside a constructor: runner_ is only assigned by
+  /// Runner::push_child_(), before on_start() runs -- see this file's class
+  /// comment.
+  const Keypad::LogSink &log() const;
+
   Runner *runner_{nullptr};
   uint8_t step_{0};
   uint32_t entered_{0};
@@ -164,6 +173,7 @@ class Runner {
   Runner(Keypad &keypad, const Display &display) : keypad_(keypad), display_(display) {}
 
   void set_log_sink(LogSink sink) { this->log_ = std::move(sink); }
+  const LogSink &log() const { return this->log_; }
   void set_on_sequence_failed(FailureSink sink) { this->on_failure_ = std::move(sink); }
 
   /// Fed by the hub every tick from its own link_up computation (PLAN.md
@@ -505,9 +515,6 @@ class AdjustField final : public Sequence {
   /// is the same shape for the same reason.
   using TargetFn = std::function<bool(int &out)>;
 
-  using LogSink = Keypad::LogSink;
-  void set_log_sink(LogSink sink) { this->log_ = std::move(sink); }
-
   AdjustField() = default;
 
   /// The fixed-target form every field but the clock's uses (WriteSetting) --
@@ -541,7 +548,6 @@ class AdjustField final : public Sequence {
   TargetFn target_;
   int guard_limit_{0};
   int guard_count_{0};
-  LogSink log_;
 };
 
 /// The walk-out: leaves any open editor without changing a thing, by
@@ -565,9 +571,6 @@ class AdjustField final : public Sequence {
 /// a display state this primitive was never able to confirm was safe.
 class ExitEditChain final : public Sequence {
  public:
-  using LogSink = Keypad::LogSink;
-  void set_log_sink(LogSink sink) { this->log_ = std::move(sink); }
-
   const char *name() const override { return "ExitEditChain"; }
   void on_start() override;
   Poll poll() override;
@@ -582,7 +585,6 @@ class ExitEditChain final : public Sequence {
   static constexpr uint32_t FALLBACK_TIMEOUT_MS = 150000;
 
   uint8_t commits_{0};
-  LogSink log_;
 };
 
 // ------------------------------------------------------- settings fields --
@@ -665,7 +667,6 @@ bool direction_wrap_60(int cur, int want);
 /// run -- see on_start() for what gets reset between runs.
 class FetchDiagnostics final : public Sequence {
  public:
-  using LogSink = Keypad::LogSink;
   /// Called once, only after a fully successful run -- the hub uses this to
   /// stamp diagnostics_updated with the current wall-clock time. The
   /// indirection exists because portable core has no notion of wall-clock
@@ -673,7 +674,6 @@ class FetchDiagnostics final : public Sequence {
   /// time::RealTimeClock, the hub does that on the other side of the sink.
   using SuccessSink = std::function<void()>;
 
-  void set_log_sink(LogSink sink) { this->log_ = std::move(sink); }
   void set_on_success(SuccessSink sink) { this->on_success_ = std::move(sink); }
 
   const char *name() const override { return "FetchDiagnostics"; }
@@ -704,7 +704,6 @@ class FetchDiagnostics final : public Sequence {
   static constexpr size_t MAX_PAGE_INDEX = 100;
 
   HoldUntil hold_;  // reused across steps 1, 5 and 7 -- see HoldUntil's class comment
-  LogSink log_;
   SuccessSink on_success_;
   int highest_page_seen_{-1};
   std::array<bool, MAX_PAGE_INDEX> seen_pages_{};
@@ -739,16 +738,9 @@ class FetchDiagnostics final : public Sequence {
 /// for what resets between runs.
 class ReadSettings final : public Sequence {
  public:
-  using LogSink = Keypad::LogSink;
   using SwitchSink = std::function<void(SwitchKey, bool)>;
   using NumberSink = std::function<void(NumberKey, int)>;
 
-  void set_log_sink(LogSink sink) {
-    this->log_ = sink;
-    // Forwarded once, here, rather than every run -- ExitEditChain is a
-    // private member (see below) the hub cannot reach directly.
-    this->exit_chain_.set_log_sink(std::move(sink));
-  }
   void set_on_switch(SwitchSink sink) { this->on_switch_ = std::move(sink); }
   void set_on_number(NumberSink sink) { this->on_number_ = std::move(sink); }
 
@@ -799,7 +791,6 @@ class ReadSettings final : public Sequence {
   // mhrv_orig/summer_bypass.yaml's own guard on enter_outdoor_editor.
   bool indoor_read_ok_{false};
 
-  LogSink log_;
   SwitchSink on_switch_;
   NumberSink on_number_;
 };
@@ -834,20 +825,6 @@ struct SettingSpec;
 /// each request(), see on_start() for what else resets.
 class WriteSetting final : public Sequence {
  public:
-  using LogSink = Keypad::LogSink;
-
-  void set_log_sink(LogSink sink) {
-    this->log_ = sink;
-    // Forwarded once, here -- exit_chain_, adjust_field_ and read_back_ are
-    // private members the hub cannot reach directly. read_back_ is a full
-    // ReadSettings, so this also reaches ITS OWN exit_chain_ (see
-    // ReadSettings::set_log_sink). adjust_field_ forwarding added stage 7a --
-    // it previously had a log_ member and an unavailable-target error with
-    // nothing wired up to receive it, so that failure mode logged nothing.
-    this->exit_chain_.set_log_sink(sink);
-    this->adjust_field_.set_log_sink(sink);
-    this->read_back_.set_log_sink(std::move(sink));
-  }
   void set_on_switch(ReadSettings::SwitchSink sink) { this->read_back_.set_on_switch(std::move(sink)); }
   void set_on_number(ReadSettings::NumberSink sink) { this->read_back_.set_on_number(std::move(sink)); }
 
@@ -912,8 +889,6 @@ class WriteSetting final : public Sequence {
   AdjustField adjust_field_;
   ExitEditChain exit_chain_;
   ReadSettings read_back_;
-
-  LogSink log_;
 };
 
 // ---------------------------------------------------------------- SyncClock --
@@ -963,8 +938,6 @@ class WriteSetting final : public Sequence {
 /// each time this pushes it via await().
 class SyncClock final : public Sequence {
  public:
-  using LogSink = Keypad::LogSink;
-
   /// Wall-clock time to sync the unit's own clock to, injected the same way
   /// FetchDiagnostics::SuccessSink lets the hub touch wall-clock time from
   /// the other side of the portable-core boundary (README "Portable core"):
@@ -977,16 +950,6 @@ class SyncClock final : public Sequence {
   /// than not syncing at all, so both count as "unavailable" the same way.
   using TimeSource = std::function<bool(int &dow_display, int &hour, int &minute)>;
 
-  void set_log_sink(LogSink sink) {
-    this->log_ = sink;
-    // Forwarded, here, rather than every run -- adjust_field_ and
-    // exit_chain_ are private members the hub cannot reach directly, same
-    // pattern as ReadSettings::set_log_sink/WriteSetting::set_log_sink.
-    // adjust_field_ forwarding added stage 7a -- see WriteSetting's own
-    // set_log_sink comment for why that one mattered.
-    this->adjust_field_.set_log_sink(sink);
-    this->exit_chain_.set_log_sink(std::move(sink));
-  }
   void set_time_source(TimeSource source) { this->time_source_ = std::move(source); }
 
   const char *name() const override { return "SyncClock"; }
@@ -1070,7 +1033,6 @@ class SyncClock final : public Sequence {
   LeaveMenu leave_menu_;
 
   uint32_t nav_started_ms_{0};
-  LogSink log_;
   TimeSource time_source_;
 };
 
@@ -1196,9 +1158,6 @@ enum class AirflowTarget : uint8_t { NORMAL, BOOST_30, BOOST_60, BOOST_CONTINUOU
 /// each request(), see on_start() for what resets between runs.
 class SetAirflowMode final : public Sequence {
  public:
-  using LogSink = Keypad::LogSink;
-  void set_log_sink(LogSink sink) { this->log_ = std::move(sink); }
-
   /// Finding 2 (Opus review of this stage): the alternation-aware, STICKY
   /// purging() this sequence needs at CHECK_CURRENT to know "is the unit
   /// currently purging" reliably. A single decoded frame is not enough --
@@ -1304,7 +1263,6 @@ class SetAirflowMode final : public Sequence {
 
   AirflowTarget target_{AirflowTarget::NORMAL};
   uint8_t guard_{0};
-  LogSink log_;
   const status::StatusTracker *status_{nullptr};  // Finding 2 -- set_status(), CHECK_CURRENT
 
   // Per-run stuck-tap tracking (STUCK_TAP_LIMIT above) -- reset in on_start(),
@@ -1410,17 +1368,6 @@ class SetAirflowMode final : public Sequence {
 /// the button's own instance.
 class ResetFilter final : public Sequence {
  public:
-  using LogSink = Keypad::LogSink;
-
-  void set_log_sink(LogSink sink) {
-    this->log_ = sink;
-    // Forwarded once, here -- diagnostics_scan_ is a private member the hub
-    // cannot reach directly, same pattern as every other sequence in this
-    // file that owns a child (ReadSettings::set_log_sink,
-    // WriteSetting::set_log_sink, SyncClock::set_log_sink).
-    this->diagnostics_scan_.set_log_sink(std::move(sink));
-  }
-
   /// Wired to diagnostics_scan_'s own SuccessSink -- a genuine full
   /// diagnostic scrape happens inside this sequence exactly as it does for
   /// the button/schedule path, so diagnostics_updated should be stamped the
@@ -1532,7 +1479,6 @@ class ResetFilter final : public Sequence {
   // rather than one thing that merely happens to be safe today.
   FetchDiagnostics diagnostics_scan_;
 
-  LogSink log_;
   FilterHoursSource filter_hours_source_;
   // Opus review (Finding 1): filter_hours_source_'s answer taken BEFORE the
   // hold, in on_start() -- the one piece of real per-run state this

@@ -531,7 +531,7 @@ TEST_CASE(fetch_diagnostics_completes_and_tracks_the_highest_page_actually_seen)
   bool success = false;
 
   FetchDiagnostics fd;
-  fd.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   fd.set_on_success([&success] { success = true; });
 
   CHECK(runner.request(fd));
@@ -617,7 +617,7 @@ TEST_CASE(fetch_diagnostics_fails_and_recovers_if_the_unit_never_enters_the_menu
   bool success = false;
 
   FetchDiagnostics fd;
-  fd.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   fd.set_on_success([&success] { success = true; });
 
   CHECK(runner.request(fd));
@@ -813,13 +813,16 @@ TEST_CASE(adjust_field_tolerates_a_blank_or_blinking_frame_without_erroring_or_r
 
 TEST_CASE(adjust_field_reports_an_unavailable_target_through_an_installed_log_sink) {
   // Finding 2 (stage 7a): AdjustField grew a log_ member and this exact
-  // error, but nothing ever called set_log_sink() on any of the
-  // AdjustField members that reuse it (SyncClock::adjust_field_,
-  // WriteSetting::adjust_field_) -- so the one genuinely new failure mode
-  // that stage introduced logged nothing at all. This is a direct unit test
-  // of AdjustField itself: install a log sink, give it a TargetFn that
-  // always reports "unavailable" (false), and assert the error actually
-  // arrives -- not just that the sequence fails.
+  // error, but nothing ever called set_log_sink() on any of the AdjustField
+  // members that reuse it (SyncClock::adjust_field_, WriteSetting::
+  // adjust_field_) -- so the one genuinely new failure mode that stage
+  // introduced logged nothing at all. AdjustField (like every other
+  // Sequence) now reaches the log through its Runner rather than carrying
+  // its own sink, so there is nothing left to forward and this failure mode
+  // cannot go unwired again -- this is a direct unit test of AdjustField
+  // itself: install the sink on the Runner, give AdjustField a TargetFn
+  // that always reports "unavailable" (false), and assert the error
+  // actually arrives -- not just that the sequence fails.
   Keypad kp;
   Display disp;
   Runner runner(kp, disp);
@@ -830,7 +833,7 @@ TEST_CASE(adjust_field_reports_an_unavailable_target_through_an_installed_log_si
   disp.update(vatest::pad16("Indoor Temp"), vatest::pad16("25 C"), 0);
 
   AdjustField adjust;
-  adjust.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   adjust.reset(
       parse_temp_field, direction_no_wrap, [](int &) { return false; },  // target never available
       40);
@@ -924,7 +927,7 @@ TEST_CASE(exit_edit_chain_presses_only_set_up_to_4_times_then_falls_back_to_wait
   disp.update(vatest::pad16("Indoor Temp"), vatest::pad16("20 C"), 0);
 
   ExitEditChain exit_chain;
-  exit_chain.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   CHECK(runner.request(exit_chain));
 
   bool blink = false;
@@ -1090,7 +1093,7 @@ TEST_CASE(write_setting_reaches_exit_edit_chain_on_the_outdoor_hop_failure_path)
   kp.set_frame_sink(sink.as_frame_sink());
 
   WriteSetting write_setting;
-  write_setting.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   write_setting.configure(SettingId::OUTDOOR_TEMP, 14);
   CHECK(runner.request(write_setting));
 
@@ -1161,7 +1164,7 @@ TEST_CASE(read_settings_finishes_and_returns_home_even_when_nothing_parses) {
   RecordingLog log;
 
   ReadSettings read_settings;
-  read_settings.set_log_sink(log.as_log_sink());
+  runner.set_log_sink(log.as_log_sink());
   CHECK(runner.request(read_settings));
 
   Clock clock{kp, runner};

@@ -50,21 +50,21 @@ Poll ResetFilter::poll() {
     case CHECK_STATUS: {
       if (!this->runner_->display().have_frame() ||
           screens::is_menu_screen(this->runner_->display().raw_line1())) {
-        if (this->log_.error) {
+        if (this->log().error) {
           // Actionable, not just diagnostic -- this is what a human sees
           // when the button appears to do nothing. The display returns to
           // the status loop on its own (the unit's own menu timeout, or
           // whatever sequence currently has it moves on); press again once
           // it has.
-          this->log_.error(
+          this->log().error(
               "ResetFilter: refusing -- display is not on the status screen (line1='" +
               this->runner_->display().text_line1() +
               "'). The display returns to the status loop on its own -- press this button again once it has.");
         }
         return Poll::FAILED;
       }
-      if (this->log_.info) {
-        this->log_.info("ResetFilter: holding Up+Down on '" + this->runner_->display().text_line1() + "'");
+      if (this->log().info) {
+        this->log().info("ResetFilter: holding Up+Down on '" + this->runner_->display().text_line1() + "'");
       }
       return this->goto_step(HOLD);
     }
@@ -101,8 +101,8 @@ Poll ResetFilter::poll() {
       // worse than simply leaving an unconfirmed reset alone -- so if a
       // prompt ever does show up here, this line is where a human first
       // sees it, not a code path that reacts to it.
-      if (this->log_.info) {
-        this->log_.info("ResetFilter: after hold, line1='" + this->runner_->display().text_line1() + "' line2='" +
+      if (this->log().info) {
+        this->log().info("ResetFilter: after hold, line1='" + this->runner_->display().text_line1() + "' line2='" +
                          this->runner_->display().text_line2() + "'");
       }
       return this->goto_step(FETCH);
@@ -133,12 +133,12 @@ Poll ResetFilter::poll() {
     case VERIFY: {
       const std::optional<int> hours = this->filter_hours_source_ ? this->filter_hours_source_() : std::nullopt;
       if (!hours.has_value()) {
-        if (this->log_.warn) {
-          this->log_.warn("ResetFilter: no reading from page 23, cannot confirm the reset took");
+        if (this->log().warn) {
+          this->log().warn("ResetFilter: no reading from page 23, cannot confirm the reset took");
         }
       } else if (*hours == 0) {
-        if (this->log_.warn) {
-          this->log_.warn("ResetFilter: still at 0 hours -- the reset did not take");
+        if (this->log().warn) {
+          this->log().warn("ResetFilter: still at 0 hours -- the reset did not take");
         }
       } else if (this->hours_before_.has_value() && *hours == *this->hours_before_) {
         // Nonzero, but IDENTICAL to the pre-hold snapshot -- most likely
@@ -152,12 +152,12 @@ Poll ResetFilter::poll() {
         // full interval leaves the reading unchanged even though the hold
         // may genuinely have worked, and that is indistinguishable here
         // from a scan that simply missed the page.
-        if (this->log_.warn) {
-          this->log_.warn("ResetFilter: reading unchanged at " + std::to_string(*hours) +
+        if (this->log().warn) {
+          this->log().warn("ResetFilter: reading unchanged at " + std::to_string(*hours) +
                            " hours since before the hold -- likely not re-read this run, cannot confirm");
         }
-      } else if (this->log_.info) {
-        this->log_.info("ResetFilter: reset confirmed, " + std::to_string(*hours) + " hours to go");
+      } else if (this->log().info) {
+        this->log().info("ResetFilter: reset confirmed, " + std::to_string(*hours) + " hours to go");
       }
       return this->goto_step(FINISHED);
     }
