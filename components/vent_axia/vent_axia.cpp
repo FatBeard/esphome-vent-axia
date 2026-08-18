@@ -1,7 +1,6 @@
 #include "vent_axia.h"
 
 #include <cmath>
-#include <cstring>
 
 #include "esphome/core/log.h"
 
@@ -579,82 +578,25 @@ void VentAxiaHub::publish_airflow_mode_() {
 #ifndef USE_SELECT
   return;
 #else
-  // Finding 3b (Opus review): suppressed ENTIRELY -- no publish, and no
-  // Finding-3a latch update below either -- while SetAirflowMode is the
-  // running root sequence. See this function's own comment (vent_axia.h)
-  // for why: normalising deliberately passes through boost states nobody
-  // chose, and letting the latch below absorb that transient noise would
-  // corrupt the very evidence it exists to remember for whatever state the
-  // run actually settles on. Compared by name against the sequence's own
-  // name() rather than a duplicated string literal, so this can never
-  // silently drift out of sync with sequence.h's SetAirflowMode::name().
-  if (this->runner_.busy() && std::strcmp(this->runner_.running_name(), this->set_airflow_mode_.name()) == 0) {
+  // Suppressed ENTIRELY -- no publish, and no airflow_mode_.update() call
+  // either -- while SetAirflowMode is the running root sequence. See this
+  // function's own comment (vent_axia.h) for why: normalising deliberately
+  // passes through boost states nobody chose, and letting the tracker's
+  // latch absorb that transient noise would corrupt the very evidence it
+  // exists to remember for whatever state the run actually settles on.
+  // Pointer identity (Runner::is_running()), not a name comparison: two
+  // sequences sharing a name() could otherwise defeat a string check, and
+  // this way there is no risk of drifting out of sync with a duplicated
+  // literal either.
+  if (this->runner_.is_running(&this->set_airflow_mode_)) {
     return;
   }
 
-  // Both must actually be known -- status_ reports std::nullopt for either
-  // until the first status-screen frame has ever been decoded (has_state()),
-  // and publishing a guess before then would be exactly the "unpublished
-  // rather than a guess" violation CLAUDE.md's "Blank != zero" invariant
-  // warns about for the temperature fields, applied here to a derived value
-  // instead of a directly parsed one.
-  const std::optional<bool> purging = this->status_.purging();
-  const std::optional<bool> boosting = this->status_.boosting();
-  if (!purging.has_value() || !boosting.has_value()) {
+  const std::optional<status::AirflowMode> mode = this->airflow_mode_.update(this->status_);
+  if (!mode.has_value()) {
     return;
   }
-
-  std::string mode;
-  if (*purging) {
-    mode = "Purge";
-  } else if (*boosting) {
-    const std::optional<int> remaining = this->status_.boost_time_remaining();
-    // Finding 3a: a countdown above 30 is unambiguous proof of a 60-minute
-    // boost (a 30-minute one never shows more than 30) -- latch that for
-    // the rest of THIS episode, so the countdown's second half (1-30,
-    // otherwise indistinguishable from an actual 30-minute boost) keeps
-    // reporting "Boost 60 min" instead of silently flipping with nobody
-    // having touched anything. See was_boost_60_this_episode_'s own comment
-    // (vent_axia.h) for when it clears.
-    if (remaining.has_value() && *remaining > 30) {
-      this->was_boost_60_this_episode_ = true;
-    }
-    const std::optional<bool> continuous = this->status_.continuous_boost();
-    if (!remaining.has_value() && continuous.has_value() && *continuous) {
-      // Continuous boost, CONFIRMED -- see StatusTracker::continuous_boost()'s
-      // own comment (status.h) for the CONTINUOUS_CONFIRM_MS window this
-      // rests on. Reopened 13 Aug 2026 against live evidence from
-      // 192.168.1.200 (see the plan this shipped under). Deliberately leaves
-      // the latch untouched either way: continuous offers no 30-vs-60
-      // evidence of its own, and it does not clear the episode either --
-      // boosting() stays true straight through it (all three of
-      // Boost30/Boost60/Continuous show "Boost Airflow" on line1,
-      // sequence.h's SetAirflowMode class comment), so whatever the latch
-      // already knew from before continuous still applies if a countdown
-      // reappears afterwards.
-      mode = "Boost Continuous";
-    } else if (!remaining.has_value()) {
-      // Not (yet) confirmed continuous: either CONTINUOUS_CONFIRM_MS hasn't
-      // elapsed yet since the countdown last disappeared (which includes the
-      // ordinary case of a timed boost whose countdown simply hasn't landed
-      // on this particular frame), or this is squarely inside the trailing
-      // ALTERNATION_TIMEOUT_MS window right after a timed boost's own expiry
-      // -- see CONTINUOUS_CONFIRM_MS's comment for why that window must not
-      // be misread as continuous. Reads as Normal until continuous_boost()
-      // itself confirms; never guess ahead of it.
-      mode = "Normal";
-    } else if (this->was_boost_60_this_episode_) {
-      mode = "Boost 60 min";  // either >30 right now, or latched from earlier this same episode
-    } else {
-      mode = "Boost 30 min";  // never seen above 30 this episode -- genuinely 30, or a 60 not yet past its midpoint
-    }
-  } else {
-    // Episode over -- clear the latch. A fresh episode starts with no
-    // evidence yet, same as it did the very first time.
-    this->was_boost_60_this_episode_ = false;
-    mode = "Normal";
-  }
-  this->publish_select_(SelectKey::AIRFLOW_MODE, mode);
+  this->publish_select_(SelectKey::AIRFLOW_MODE, status::to_string(*mode));
 #endif
 }
 

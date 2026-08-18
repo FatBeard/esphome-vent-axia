@@ -964,13 +964,15 @@ TEST_CASE(set_airflow_mode_refuses_to_guess_when_purge_is_still_showing_after_th
 // not merely untested. See timeout_ms()'s own comment (sequence.h) for the
 // arithmetic.
 //
-// Finding 3 (Opus review) -- the boost-60 latch and the during-run
-// publish suppression -- both live in VentAxiaHub::publish_airflow_mode_()
-// (vent_axia.cpp), which is compiled only for the firmware, not the host
-// suite: per README "Portable core", vent_axia.cpp is the one file (besides
-// the platform *.py files) allowed to include esphome/... headers, and
-// tests/CMakeLists.txt's glob of component sources explicitly EXCLUDES it
-// for exactly that reason. There is no way to reach either fix from this
-// host test binary without linking ESPHome itself, so neither is covered
-// here -- both were instead verified by compiling mhrv/mhrv.yaml and
+// The boost-60 latch and the purge/continuous/normal derivation now live in
+// status::AirflowModeTracker (status.h/.cpp), portable core with no
+// ESPHome headers -- see test_status.cpp for their coverage. What remains
+// in VentAxiaHub::publish_airflow_mode_() (vent_axia.cpp) is only the
+// during-run publish suppression (Runner::is_running(), pointer identity
+// against this sequence) and the final publish_select_() call, neither of
+// which this host suite can reach: per README "Portable core",
+// vent_axia.cpp is the one file (besides the platform *.py files) allowed
+// to include esphome/... headers, and tests/CMakeLists.txt's glob of
+// component sources explicitly EXCLUDES it for exactly that reason. Those
+// two lines were instead verified by compiling mhrv/mhrv.yaml and
 // example/esp32-idf.yaml and by reading the diff.

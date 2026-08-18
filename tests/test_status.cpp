@@ -492,3 +492,121 @@ TEST_CASE(continuous_boost_accumulator_freezes_while_parked_on_a_menu_screen) {
   t.update("Summer Bypass On", "48%             ", true, 30100);
   CHECK(!*t.continuous_boost());
 }
+
+// -------------------------------------------------- AirflowModeTracker --
+// The derivation that used to live only in VentAxiaHub::publish_airflow_mode_()
+// (vent_axia.cpp), untestable on the host because that file is the one place
+// (besides the platform *.py files) allowed to include esphome/... headers --
+// see README "Portable core" and tests/CMakeLists.txt's exclusion of
+// vent_axia.cpp from the glob. Moved into status::AirflowModeTracker so the
+// state machine itself -- purge-wins, the boost-60 latch, the
+// continuous-confirm window -- is covered here instead.
+
+TEST_CASE(airflow_mode_tracker_unknown_before_any_status_screen_frame) {
+  StatusTracker status;
+  AirflowModeTracker mode;
+  CHECK(!mode.update(status).has_value());
+
+  status.update("Normal Airflow  ", "18%             ", true, 0);
+  CHECK(mode.update(status).has_value());
+}
+
+TEST_CASE(airflow_mode_tracker_purge_wins_over_boost) {
+  StatusTracker status;
+  AirflowModeTracker mode;
+  // Both purging_ and boosting_ can be simultaneously active in the
+  // tracker's own sticky state (each rides line1's alternation and ages out
+  // independently), even though the unit presumably only ever shows one at
+  // a time -- purge must still win outright regardless.
+  status.update("Boost Airflow   ", "48%       30m   ", true, 0);
+  status.update("Purge      120 m", "100%            ", true, 3000);
+  CHECK(*status.purging());
+  CHECK(*status.boosting());
+  const auto m = mode.update(status);
+  CHECK(m.has_value());
+  CHECK(*m == AirflowMode::PURGE);
+}
+
+TEST_CASE(airflow_mode_tracker_latches_boost_60_through_the_countdown_second_half) {
+  StatusTracker status;
+  AirflowModeTracker mode;
+  status.update("Boost Airflow   ", "48%       45m   ", true, 0);
+  CHECK(*mode.update(status) == AirflowMode::BOOST_60);
+
+  // Countdown drops into the second half (<=30), on its own indistinguishable
+  // from an actual 30-minute boost -- the latch set by the 45m frame above
+  // is what keeps this reporting BOOST_60 instead of silently flipping to
+  // BOOST_30 with nobody having touched anything. This is the latch's whole
+  // purpose.
+  status.update("Boost Airflow   ", "48%       20m   ", true, 5000);
+  const auto m = mode.update(status);
+  CHECK(m.has_value());
+  CHECK(*m == AirflowMode::BOOST_60);
+}
+
+TEST_CASE(airflow_mode_tracker_reports_boost_30_when_never_seen_above_30) {
+  StatusTracker status;
+  AirflowModeTracker mode;
+  status.update("Boost Airflow   ", "48%       25m   ", true, 0);
+  const auto m = mode.update(status);
+  CHECK(m.has_value());
+  CHECK(*m == AirflowMode::BOOST_30);
+}
+
+TEST_CASE(airflow_mode_tracker_latch_clears_when_boosting_ends) {
+  StatusTracker status;
+  AirflowModeTracker mode;
+  status.update("Boost Airflow   ", "48%       45m   ", true, 0);
+  CHECK(*mode.update(status) == AirflowMode::BOOST_60);
+
+  // Boosting ends -- ALTERNATION_TIMEOUT_MS (12000ms) of nothing but
+  // "Normal Airflow" ages boosting() out to false, same threshold every
+  // other line1 flag in this class uses.
+  status.update("Normal Airflow  ", "18%             ", true, 12100);
+  CHECK(!*status.boosting());
+  CHECK(*mode.update(status) == AirflowMode::NORMAL);
+
+  // A fresh, genuinely 30-minute boost starts. If the latch had not
+  // cleared, this would wrongly inherit BOOST_60 from the episode that just
+  // ended.
+  status.update("Boost Airflow   ", "48%       25m   ", true, 15000);
+  CHECK(*mode.update(status) == AirflowMode::BOOST_30);
+}
+
+TEST_CASE(airflow_mode_tracker_reads_normal_before_confirm_and_continuous_after) {
+  // Same timing as continuous_boost_true_once_past_the_confirm_window above
+  // -- "Boost Airflow" re-matches periodically to keep boosting_ sticky
+  // (each gap well under ALTERNATION_TIMEOUT_MS) while no countdown is ever
+  // parsed, so ms_without_countdown_ accumulates toward CONTINUOUS_CONFIRM_MS.
+  StatusTracker status;
+  AirflowModeTracker mode;
+  status.update("Boost Airflow   ", "48%             ", true, 0);
+  CHECK(*mode.update(status) == AirflowMode::NORMAL);  // never guess ahead of the confirm window
+
+  status.update("Summer Bypass On", "48%             ", true, 6000);
+  status.update("Boost Airflow   ", "48%             ", true, 13000);
+  status.update("Summer Bypass On", "48%             ", true, 19000);
+  CHECK(*mode.update(status) == AirflowMode::NORMAL);  // 19000ms without a countdown, still under 20000
+
+  status.update("Summer Bypass On", "48%             ", true, 20900);
+  CHECK(*status.boosting());
+  const auto m = mode.update(status);
+  CHECK(m.has_value());
+  CHECK(*m == AirflowMode::BOOST_CONTINUOUS);
+}
+
+TEST_CASE(airflow_mode_tracker_exactly_30_remaining_does_not_latch) {
+  // The boundary: the rule is strictly ABOVE 30, so a countdown that reads
+  // exactly 30 must not latch BOOST_60.
+  StatusTracker status;
+  AirflowModeTracker mode;
+  status.update("Boost Airflow   ", "48%       30m   ", true, 0);
+  CHECK(*mode.update(status) == AirflowMode::BOOST_30);
+
+  // If 30 had wrongly latched, this later frame (still in the ambiguous
+  // 1-30 range) would misreport BOOST_60.
+  status.update("Boost Airflow   ", "48%       15m   ", true, 3000);
+  const auto m = mode.update(status);
+  CHECK(m.has_value());
+  CHECK(*m == AirflowMode::BOOST_30);
+}

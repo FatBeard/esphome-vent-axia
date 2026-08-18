@@ -308,6 +308,47 @@ class StatusTracker {
   uint32_t ms_without_countdown_{0};
 };
 
+/// The airflow mode as derived from the passively decoded status line.
+/// Mirrors AirflowTarget (sequence.h) and select.py's AIRFLOW_MODE_OPTIONS
+/// index-for-index -- see to_string() below for the mapping that keeps them
+/// in lockstep.
+enum class AirflowMode : uint8_t { NORMAL, BOOST_30, BOOST_60, BOOST_CONTINUOUS, PURGE };
+
+/// The exact strings select.py's AIRFLOW_MODE_OPTIONS expects -- both lists,
+/// and AirflowTarget's enum order, must stay in lockstep, since select.py
+/// maps the select's chosen index straight back onto AirflowTarget in
+/// write_select(). Do not change any of these literals without updating
+/// select.py alongside them.
+const char *to_string(AirflowMode mode);
+
+/// Derives airflow_mode's confirmed state purely from what a StatusTracker
+/// already decodes (purging()/boosting()/boost_time_remaining()/
+/// continuous_boost()) -- no direct knowledge of the wire, only of the
+/// tracker's own accessors. One instance per hub, long-lived across the
+/// whole run, because the derivation carries one piece of state across
+/// frames within a boost episode (see was_boost_60_this_episode_ below).
+class AirflowModeTracker {
+ public:
+  /// nullopt until purging() and boosting() are BOTH known -- i.e. until the
+  /// first status-screen frame has ever been decoded. Publishing a guess
+  /// before then would be exactly the "unpublished rather than a guess"
+  /// violation CLAUDE.md's "Blank != zero" invariant warns about for the
+  /// temperature fields, applied here to a derived value instead of a
+  /// directly parsed one.
+  std::optional<AirflowMode> update(const StatusTracker &status);
+
+ private:
+  // "This boost episode was seen above 30 minutes remaining" -- a countdown
+  // above 30 is unambiguous proof of a 60-minute boost (a 30-minute one
+  // never shows more than 30), so update() latches that the moment it's
+  // seen and keeps reporting BOOST_60 for the rest of THIS episode, rather
+  // than silently flipping to BOOST_30 once the countdown drops into the
+  // 1-30 range every 30-minute boost also passes through. Cleared the
+  // moment boosting() goes false -- a fresh episode starts with no evidence
+  // yet, same as the very first time.
+  bool was_boost_60_this_episode_{false};
+};
+
 }  // namespace status
 }  // namespace vent_axia
 }  // namespace esphome

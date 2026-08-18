@@ -247,6 +247,14 @@ class Runner {
   /// hub's dump_config(), not meant to be published as an entity itself.
   const char *running_name() const { return this->busy() ? this->stack_[0].seq->name() : ""; }
 
+  /// True when `seq` is the ROOT of the current run -- pointer identity, so it
+  /// cannot be defeated by two sequences sharing a name. Lets a caller (e.g.
+  /// VentAxiaHub::publish_airflow_mode_()) special-case "this specific
+  /// sequence is running" without a duplicated name string to drift out of
+  /// sync, and without the false positive a name comparison would risk if two
+  /// distinct Sequence instances ever shared a name() literal.
+  bool is_running(const Sequence *seq) const { return this->busy() && this->stack_[0].seq == seq; }
+
   uint32_t now_ms() const { return this->now_ms_; }
   const Display &display() const { return this->display_; }
 

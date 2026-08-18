@@ -216,6 +216,80 @@ std::optional<bool> StatusTracker::continuous_boost() const {
          this->ms_without_countdown_ >= CONTINUOUS_CONFIRM_MS;
 }
 
+const char *to_string(AirflowMode mode) {
+  switch (mode) {
+    case AirflowMode::NORMAL:
+      return "Normal";
+    case AirflowMode::BOOST_30:
+      return "Boost 30 min";
+    case AirflowMode::BOOST_60:
+      return "Boost 60 min";
+    case AirflowMode::BOOST_CONTINUOUS:
+      return "Boost Continuous";
+    case AirflowMode::PURGE:
+      return "Purge";
+  }
+  return "Normal";  // unreachable -- every enumerator handled above
+}
+
+std::optional<AirflowMode> AirflowModeTracker::update(const StatusTracker &status) {
+  // Both must actually be known -- see update()'s own comment (status.h).
+  const std::optional<bool> purging = status.purging();
+  const std::optional<bool> boosting = status.boosting();
+  if (!purging.has_value() || !boosting.has_value()) {
+    return std::nullopt;
+  }
+
+  // Purge wins outright, and deliberately leaves the latch untouched either
+  // way: purge is a separate axis from the boost counter (SetAirflowMode's
+  // own class comment, sequence.h), not something that should clear or set
+  // evidence about a boost episode that may resume once purge ends.
+  if (*purging) {
+    return AirflowMode::PURGE;
+  }
+
+  if (*boosting) {
+    const std::optional<int> remaining = status.boost_time_remaining();
+    // See was_boost_60_this_episode_'s own comment (status.h) for what this
+    // latches and why.
+    if (remaining.has_value() && *remaining > 30) {
+      this->was_boost_60_this_episode_ = true;
+    }
+    const std::optional<bool> continuous = status.continuous_boost();
+    if (!remaining.has_value() && continuous.has_value() && *continuous) {
+      // Continuous boost, CONFIRMED -- see StatusTracker::continuous_boost()'s
+      // own comment for the CONTINUOUS_CONFIRM_MS window this rests on.
+      // Deliberately leaves the latch untouched either way: continuous
+      // offers no 30-vs-60 evidence of its own, and it does not clear the
+      // episode either -- boosting() stays true straight through it (all
+      // three of Boost30/Boost60/Continuous show "Boost Airflow" on line1),
+      // so whatever the latch already knew from before continuous still
+      // applies if a countdown reappears afterwards.
+      return AirflowMode::BOOST_CONTINUOUS;
+    }
+    if (!remaining.has_value()) {
+      // Not (yet) confirmed continuous: either CONTINUOUS_CONFIRM_MS hasn't
+      // elapsed yet since the countdown last disappeared (which includes the
+      // ordinary case of a timed boost whose countdown simply hasn't landed
+      // on this particular frame), or this is squarely inside the trailing
+      // ALTERNATION_TIMEOUT_MS window right after a timed boost's own
+      // expiry -- see CONTINUOUS_CONFIRM_MS's comment for why that window
+      // must not be misread as continuous. Reads as Normal until
+      // continuous_boost() itself confirms; never guess ahead of it.
+      return AirflowMode::NORMAL;
+    }
+    // Either >30 right now, or latched from earlier this same episode --
+    // else never seen above 30 this episode: genuinely 30, or a 60 not yet
+    // past its midpoint.
+    return this->was_boost_60_this_episode_ ? AirflowMode::BOOST_60 : AirflowMode::BOOST_30;
+  }
+
+  // Episode over -- clear the latch. A fresh episode starts with no
+  // evidence yet, same as it did the very first time.
+  this->was_boost_60_this_episode_ = false;
+  return AirflowMode::NORMAL;
+}
+
 }  // namespace status
 }  // namespace vent_axia
 }  // namespace esphome

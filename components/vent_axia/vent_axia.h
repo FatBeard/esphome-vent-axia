@@ -281,58 +281,36 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   /// for what computes `value`.
   void publish_select_(SelectKey key, const std::string &value);
 
-  /// Derives airflow_mode's confirmed state purely from what status_ already
-  /// decodes (boosting()/purging()/boost_time_remaining()) and publishes it
-  /// -- SetAirflowMode itself never calls this (PLAN.md §6 "Not optimistic":
-  /// see its own class comment in sequence.h). Called once per decoded frame
-  /// alongside every other status-derived entity (publish_status_()), so a
-  /// press at the unit's own keypad reaches Home Assistant the same way a
-  /// command from Home Assistant does -- there is no separate "who caused
-  /// this" channel on the wire to tell them apart.
+  /// Derives airflow_mode's confirmed state via airflow_mode_.update(status_)
+  /// (status.h) and publishes it -- SetAirflowMode itself never calls this
+  /// (PLAN.md §6 "Not optimistic": see its own class comment in sequence.h).
+  /// Called once per decoded frame alongside every other status-derived
+  /// entity (publish_status_()), so a press at the unit's own keypad reaches
+  /// Home Assistant the same way a command from Home Assistant does -- there
+  /// is no separate "who caused this" channel on the wire to tell them apart.
   ///
-  /// Skips publishing entirely while SetAirflowMode is the running root
-  /// sequence (Opus review, Finding 3b): normalising deliberately walks the
-  /// unit through boost states nobody chose (Boost 30 -> Boost 60 ->
-  /// continuous -> Normal is one lap of the counter), and PLAN.md risk 3 is
-  /// explicit that HA is expected to keep showing the OLD value for the
-  /// whole ~25-30s a transition can take -- "the `busy` binary sensor
-  /// exists to surface this" -- not to visibly walk through every
+  /// Skips publishing entirely -- and skips calling airflow_mode_.update()
+  /// too, so the latch it carries is not corrupted by transient noise --
+  /// while SetAirflowMode is the running root sequence: normalising
+  /// deliberately walks the unit through boost states nobody chose (Boost 30
+  /// -> Boost 60 -> continuous -> Normal is one lap of the counter), and
+  /// PLAN.md risk 3 is explicit that HA is expected to keep showing the OLD
+  /// value for the whole ~25-30s a transition can take -- "the `busy` binary
+  /// sensor exists to surface this" -- not to visibly walk through every
   /// intermediate mode. The dedup cache in last_select_value_ already holds
   /// the pre-run value, so the very first frame decoded after the run ends
   /// publishes the settled truth with no special-casing needed there.
-  /// Guarded on THIS ONE sequence specifically, not on Runner::busy()
-  /// generally: FetchDiagnostics/ReadSettings/SyncClock all park the
-  /// display in a menu while they run, where StatusTracker already FREEZES
-  /// rather than ageing (status.h's own class comment on is_status_screen),
-  /// so they need no equivalent special case here.
+  /// Guarded on THIS ONE sequence specifically (Runner::is_running(), by
+  /// pointer identity), not on Runner::busy() generally: FetchDiagnostics/
+  /// ReadSettings/SyncClock all park the display in a menu while they run,
+  /// where StatusTracker already FREEZES rather than ageing (status.h's own
+  /// class comment on is_status_screen), so they need no equivalent special
+  /// case here.
   ///
-  /// One remaining documented approximation, plus one latency that is new
-  /// rather than a gap:
-  ///  - Continuous boost is no longer approximated here -- reopened 13 Aug
-  ///    2026 against live evidence from 192.168.1.200 (see the plan this
-  ///    shipped under). status_.continuous_boost() (status.h) decodes it
-  ///    from the same "Boost Airflow" line1 signal boosting() already
-  ///    trusts, held for CONTINUOUS_CONFIRM_MS to rule out a timed boost's
-  ///    own trailing sticky window (see that constant's own comment). The
-  ///    cost: airflow_mode reads "Normal" for up to CONTINUOUS_CONFIRM_MS
-  ///    after a boost genuinely goes continuous, before settling on "Boost
-  ///    Continuous" -- deliberate, not a bug, since guessing ahead of the
-  ///    confirm window is exactly the failure mode CONTINUOUS_CONFIRM_MS
-  ///    exists to prevent.
-  ///  - A countdown of 30 minutes or less is, ON ITS OWN, ambiguous between
-  ///    an actual 30-minute boost and a 60-minute boost more than half
-  ///    elapsed (both count down through the same 1-30 range) -- but it is
-  ///    resolvable from evidence already seen earlier in the SAME episode:
-  ///    a countdown above 30 at any point proves it was a 60, since a
-  ///    30-minute boost never shows more than 30. was_boost_60_this_episode_
-  ///    below latches exactly that (Finding 3a): set the moment boosting()
-  ///    is true with boost_time_remaining() > 30, cleared the moment
-  ///    boosting() goes false, so the rest of that same episode keeps
-  ///    reporting "Boost 60 min" through the countdown's second half
-  ///    instead of silently flipping to "Boost 30 min" with nobody having
-  ///    touched anything. Still passive and non-optimistic: this is
-  ///    inference from what the unit's own display showed earlier in this
-  ///    run, never from what Home Assistant asked for.
+  /// The derivation itself -- purge-wins, the continuous-confirm window, the
+  /// boost-60 latch -- lives in status::AirflowModeTracker (portable core,
+  /// host-tested in test_status.cpp) precisely so it is no longer only
+  /// reachable from here.
   void publish_airflow_mode_();
 
   /// Shared by write_switch()/write_number(): configures the one long-lived
@@ -517,14 +495,13 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   std::array<std::optional<bool>, static_cast<size_t>(SwitchKey::COUNT)> last_switch_value_{};
   std::array<std::optional<int>, static_cast<size_t>(NumberKey::COUNT)> last_number_value_{};
   std::array<std::optional<std::string>, static_cast<size_t>(SelectKey::COUNT)> last_select_value_{};
-  // Finding 3a (Opus review): latches "this boost episode was seen above 30
-  // minutes remaining" so publish_airflow_mode_() keeps reporting "Boost 60
-  // min" through the countdown's second half instead of silently flipping
-  // to "Boost 30 min" -- see that function's own comment for the full
-  // reasoning. Set the moment boosting() is true with remaining > 30,
-  // cleared the moment boosting() goes false (a fresh episode starts with
-  // no evidence yet).
-  bool was_boost_60_this_episode_{false};
+  // The airflow-mode derivation (purge-wins, continuous-confirm, the
+  // boost-60 latch) -- see status::AirflowModeTracker's own comment
+  // (status.h) and publish_airflow_mode_() for how this is used and why
+  // it's skipped entirely while SetAirflowMode is the running root
+  // sequence. One long-lived instance, since the latch it carries must
+  // survive across frames within a single boost episode.
+  status::AirflowModeTracker airflow_mode_;
 };
 
 #ifdef USE_BUTTON
