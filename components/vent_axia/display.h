@@ -23,6 +23,25 @@ namespace vent_axia {
 /// negative signed) char is undefined behaviour, hence the cast.
 std::string sanitize(const std::string &raw);
 
+/// sanitize()'s diagnostic counterpart: instead of destroying non-printable
+/// bytes, describes them. For every byte in `raw` where
+/// std::isprint(static_cast<unsigned char>(byte)) == 0, appends
+/// "col N=0xXX" (N = the byte's index, 0xXX uppercase hex), joined with
+/// ", " in column order. Returns "" when the whole line is already
+/// printable ASCII, so a call site can skip cheaply via .empty() rather
+/// than build and discard a string every frame.
+///
+/// Exists because sanitize() collapses 0x00-0x1F, 0x7F and 0x80-0xFF -- the
+/// α annunciator, °, µ and all eight CGRAM custom glyphs among them -- onto
+/// a single '*', which makes them indistinguishable from each other from
+/// that point on. The instrumentation stage that calls this
+/// (VentAxiaHub::log_raw_frame_bytes_(), vent_axia.cpp) reads the RAW frame
+/// text, before sanitize() ever runs, specifically to recover what the
+/// collapse throws away. See DISPLAY-REVIEW.md §6/§7 and
+/// DISPLAY-INSTRUMENTATION-PLAN.md for why: α = 0xE0 is currently an
+/// inference from the HD44780 A00 ROM, never measured on this unit.
+std::string describe_unprintable(const std::string &raw);
+
 /// Owns the two 16-character display lines plus per-line change tracking.
 class Display {
  public:

@@ -54,7 +54,10 @@ TEST_CASE(lines_are_deduplicated_independently) {
 TEST_CASE(non_printable_glyphs_are_replaced_with_asterisk) {
   Display display;
   std::string line1 = "Auto";
-  line1 += static_cast<char>(0x07);  // the unit's non-ASCII "Auto" glyph
+  // Assumed to be the unit's "Auto" glyph (CGRAM slot 7), never measured --
+  // see the describe_unprintable() control-range case below. What this test
+  // pins is the collapse itself, which holds for any non-printable byte.
+  line1 += static_cast<char>(0x07);
   line1 += "           ";            // pad to 16
   CHECK_EQ(line1.size(), static_cast<size_t>(16));
 
@@ -103,4 +106,54 @@ TEST_CASE(editor_open_reopens_on_a_fresh_line2_change) {
 
   display.update("Indoor Temp     ", "        C       ", 2000);  // blink: value blanks out
   CHECK(display.editor_open(2100));
+}
+
+// describe_unprintable() -- sanitize()'s diagnostic counterpart (display.h).
+// Only the pure formatter is covered here: the gating/rate-limit logic that
+// calls it lives in vent_axia.cpp, which tests/CMakeLists.txt deliberately
+// excludes from the host build (it pulls in ESPHome headers), so it is
+// verified only by the firmware compiles and, eventually, a live capture --
+// see DISPLAY-INSTRUMENTATION-PLAN.md §4. Not restructuring the core just to
+// make that two-line comparison testable.
+
+TEST_CASE(describe_unprintable_returns_empty_for_all_ascii) {
+  CHECK_EQ(describe_unprintable("Status          "), std::string(""));
+}
+
+TEST_CASE(describe_unprintable_reports_a_high_range_byte) {
+  std::string line = "36%             ";  // 16 chars, matching a real display line
+  CHECK_EQ(line.size(), static_cast<size_t>(16));  // guard before the write, not after
+  line[15] = static_cast<char>(0xE0);              // the inferred alpha annunciator, column 15
+  CHECK_EQ(describe_unprintable(line), std::string("col 15=0xE0"));
+}
+
+TEST_CASE(describe_unprintable_reports_a_control_range_byte) {
+  std::string line = "AutoXXXXXXXXXXXX";
+  // 0x07 is CGRAM slot 7, ASSUMED rather than measured to be the unit's
+  // "Auto" glyph -- which CGRAM slots this unit actually loads is question 2
+  // of the capture this instrumentation exists to make possible. The test
+  // holds either way: it pins the control-range half of the formatter, and
+  // any byte below 0x20 would do.
+  line[4] = static_cast<char>(0x07);
+  CHECK_EQ(describe_unprintable(line), std::string("col 4=0x07"));
+}
+
+TEST_CASE(describe_unprintable_joins_multiple_bytes_in_column_order) {
+  std::string line = "AAAAAAAAAAAAAAAA";
+  line[2] = static_cast<char>(0x01);
+  line[9] = static_cast<char>(0xFF);
+  line[15] = static_cast<char>(0x7F);
+  CHECK_EQ(describe_unprintable(line), std::string("col 2=0x01, col 9=0xFF, col 15=0x7F"));
+}
+
+TEST_CASE(describe_unprintable_boundary_bytes_0x1f_0x20_0x7e_0x7f) {
+  // 0x20 and 0x7E are the printable range's own edges (isprint() true for
+  // both); 0x1F and 0x7F sit one step outside it on either side and must be
+  // the only two reported.
+  std::string line = "AAAA";
+  line += static_cast<char>(0x1F);
+  line += static_cast<char>(0x20);
+  line += static_cast<char>(0x7E);
+  line += static_cast<char>(0x7F);
+  CHECK_EQ(describe_unprintable(line), std::string("col 4=0x1F, col 7=0x7F"));
 }
