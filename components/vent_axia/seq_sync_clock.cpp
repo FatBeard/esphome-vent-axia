@@ -80,7 +80,7 @@ Poll SyncClock::poll() {
         }
         if (this->log_.warn) {
           this->log_.warn("SyncClock: aborting, could not reach Set Clock (line1='" +
-                           this->runner_->display().line1() + "')");
+                           this->runner_->display().text_line1() + "')");
         }
         return Poll::FAILED;
       }
@@ -93,7 +93,7 @@ Poll SyncClock::poll() {
       if (this->elapsed() >= VERIFY_TIMEOUT_MS) {
         if (this->log_.warn) {
           this->log_.warn("SyncClock: aborting, could not read the unit's clock (line2='" +
-                           this->runner_->display().line2() + "')");
+                           this->runner_->display().text_line2() + "')");
         }
         return Poll::FAILED;
       }
@@ -116,7 +116,7 @@ Poll SyncClock::poll() {
         return Poll::FAILED;
       }
       if (this->log_.info) {
-        this->log_.info("SyncClock: unit says '" + this->runner_->display().line2() + "', should be " +
+        this->log_.info("SyncClock: unit says '" + this->runner_->display().text_line2() + "', should be " +
                          this->describe_target_());
       }
       return this->goto_step(OPEN);
@@ -205,7 +205,7 @@ Poll SyncClock::poll() {
         return Poll::RUNNING;
       }
       if (this->log_.info) {
-        this->log_.info("SyncClock: unit now says '" + this->runner_->display().line2() + "', should be " +
+        this->log_.info("SyncClock: unit now says '" + this->runner_->display().text_line2() + "', should be " +
                          this->describe_target_());
       }
       return this->goto_step(EXIT_CHAIN);

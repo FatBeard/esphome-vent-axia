@@ -21,19 +21,24 @@ void VentAxiaHub::setup() {
   // actually changed, so a change to line1 alone never re-publishes line2.
   this->display_.set_on_change([this](bool line1_changed, bool line2_changed) {
     if (line1_changed) {
-      this->publish_text_(TextKey::DISPLAY_LINE_1, this->display_.line1());
+      // Presentation lane: this becomes an HA text sensor's state, which
+      // ESPHome's native API encodes as protobuf UTF-8 -- never the raw
+      // lane (DISPLAY-REVIEW.md §4/§5).
+      this->publish_text_(TextKey::DISPLAY_LINE_1, this->display_.text_line1());
       // status_message is a trimmed, friendlier sibling of display_line_1
       // for the status loop specifically -- see text_sensor.py. Gated on
       // screen_kind() rather than published unconditionally so a menu
       // screen's line1 (e.g. "Set Clock") never overwrites it; the entity
       // simply holds its last status-loop value while a sequence is
-      // elsewhere, same as every other status-derived entity.
+      // elsewhere, same as every other status-derived entity. parser::trim
+      // strips only ASCII 0x20, which stays correct against the UTF-8
+      // presentation lane (DISPLAY-REVIEW.md §7).
       if (this->display_.screen_kind() == screens::ScreenKind::STATUS) {
-        this->publish_text_(TextKey::STATUS_MESSAGE, parser::trim(this->display_.line1()));
+        this->publish_text_(TextKey::STATUS_MESSAGE, parser::trim(this->display_.text_line1()));
       }
     }
     if (line2_changed) {
-      this->publish_text_(TextKey::DISPLAY_LINE_2, this->display_.line2());
+      this->publish_text_(TextKey::DISPLAY_LINE_2, this->display_.text_line2());
     }
 
     // Diagnostic decode is entirely passive (PLAN.md §4): whatever page the
@@ -43,10 +48,13 @@ void VentAxiaHub::setup() {
     // sitting still on one page does not spam identical publishes and
     // trigger firings; `line1_changed` alone would miss a page whose
     // content changes without its line1 changing (not expected for the
-    // decoded pages, but cheap to cover), so both are checked.
+    // decoded pages, but cheap to cover), so both are checked. Both reads
+    // below are the RAW lane -- diagnostic_page() is a byte-offset decoder,
+    // and publish_diagnostic_page_() itself does the one necessary
+    // transcode for its two presentation uses (see its own comment).
     if ((line1_changed || line2_changed) && this->display_.screen_kind() == screens::ScreenKind::DIAGNOSTIC) {
-      if (const auto page = screens::diagnostic_page(this->display_.line1())) {
-        this->publish_diagnostic_page_(static_cast<uint8_t>(*page), this->display_.line2());
+      if (const auto page = screens::diagnostic_page(this->display_.raw_line1())) {
+        this->publish_diagnostic_page_(static_cast<uint8_t>(*page), this->display_.raw_line2());
       }
     }
   });
@@ -209,19 +217,21 @@ void VentAxiaHub::loop() {
       const uint32_t now = millis();
       this->have_frame_ = true;
       this->last_frame_at_ms_ = now;
-      // Reads the RAW frame, which is what makes this instrumentation worth
-      // anything -- display_.line1()/line2() are already sanitize()'d and
-      // would log the very collapse we are trying to see past. Placed first
-      // to read that way, not because update() mutates the frame: it takes
-      // const refs and sanitize() returns a copy, so `frame` is untouched
-      // either side of it.
+      // Reads frame.line1/line2 directly rather than display_'s raw lane,
+      // even though stage 16 gave that lane the same bytes: this call runs
+      // BEFORE display_.update() below, so display_'s raw lane still holds
+      // the PREVIOUS frame at this point, not the one being logged. Placed
+      // first to read that way, not because update() mutates the frame: it
+      // takes const refs, so `frame` is untouched either side of it.
       this->log_raw_frame_bytes_(frame, now);
       this->display_.update(frame.line1, frame.line2, now);
       // Fed every frame, not just changed ones: StatusTracker's aging clock
       // (status.h) needs a regular heartbeat to notice time passing, and a
       // repeated identical frame is exactly the case where "nothing changed,
-      // still true" has to be confirmed rather than silently skipped.
-      this->status_.update(this->display_.line1(), this->display_.line2(),
+      // still true" has to be confirmed rather than silently skipped. Raw
+      // lane: every status:: decoder is a fixed-offset byte reader, never a
+      // presentation consumer (DISPLAY-REVIEW.md §5).
+      this->status_.update(this->display_.raw_line1(), this->display_.raw_line2(),
                             this->display_.screen_kind() == screens::ScreenKind::STATUS, now);
       this->publish_status_();
     }
@@ -252,15 +262,16 @@ void VentAxiaHub::loop() {
   this->publish_binary_(BinaryKey::BUSY, this->keypad_.busy() || this->runner_.busy());
 }
 
-// Instrumentation only -- no decode behaviour depends on this. DISPLAY-REVIEW.md
-// §6/§7 and DISPLAY-INSTRUMENTATION-PLAN.md: sanitize() collapses every byte
-// outside 0x20-0x7E onto '*', so the alpha annunciator, deg/mu symbols and all
-// eight CGRAM glyphs have been indistinguishable since the moment they're
-// read. This exists to make one live capture (GET /events during a humidity
-// boost, per CLAUDE.md) settle three questions without guessing from a
-// datasheet: which byte alpha actually is, which CGRAM slots this unit uses,
-// and whether unknown_row1_addr/unknown_row2_addr carry a cursor or blink
-// attribute that could replace editor_open()'s 1200ms staleness heuristic
+// Instrumentation only -- no decode behaviour depends on this. Built (stage
+// 15, DISPLAY-REVIEW.md §6/§7 and DISPLAY-INSTRUMENTATION-PLAN.md) to make a
+// live capture (GET /events during a humidity boost, per CLAUDE.md) settle
+// three questions without guessing from a datasheet. Question 1 (which byte
+// the alpha annunciator is) is now answered -- glyphs::ALPHA, display.h --
+// and stage 16 built the two-lane split on that measurement. Still open:
+// which CGRAM slots (0x00-0x07) this unit uses, and whether
+// unknown_row1_addr/unknown_row2_addr carry a cursor or blink attribute
+// (during an OPEN EDITOR specifically -- stage 15's own capture never
+// opened one) that could replace editor_open()'s 1200ms staleness heuristic
 // with a direct protocol read.
 void VentAxiaHub::log_raw_frame_bytes_(const protocol::DisplayFrame &frame, uint32_t now_ms) {
   // (a) The six frame bytes protocol.cpp parses but nothing else reads:
@@ -683,15 +694,25 @@ void VentAxiaHub::publish_airflow_mode_() {
 }
 
 void VentAxiaHub::publish_diagnostic_page_(uint8_t page, const std::string &line2) {
+  // `line2` here is the RAW lane (the caller passes display_.raw_line2()) --
+  // transcoded exactly ONCE, for the two presentation uses immediately
+  // below, so the cost is one to_utf8() call per page-change rather than
+  // two. diagnostics::decode_page() near the bottom of this function keeps
+  // reading the RAW bytes: every diagnostic page ever observed on this unit
+  // is pure ASCII, so today the two representations are byte-identical, but
+  // the decoder must stay correct if a page ever isn't.
+  const std::string text_line2 = to_utf8(line2);
+
   // Raw escape hatch and trigger fire for every page seen, decoded by the
   // table or not -- this is what lets a page nobody has taught
   // diagnostics.cpp to understand yet (or a nonexistent page 28, or
   // anything else) stay visible from YAML without a component change. See
   // diagnostics.h's comment on why this is the hub's job and not
-  // decode_page()'s.
-  this->publish_text_(TextKey::RAW_DIAGNOSTIC_PAGE, diagnostics::format_raw_page(page, line2));
+  // decode_page()'s. Both are presentation uses (a text sensor state and a
+  // YAML automation trigger's std::string argument), hence text_line2.
+  this->publish_text_(TextKey::RAW_DIAGNOSTIC_PAGE, diagnostics::format_raw_page(page, text_line2));
   for (auto *trig : this->diagnostic_page_triggers_) {
-    trig->trigger(page, line2);
+    trig->trigger(page, text_line2);
   }
 
   // Adapts diagnostics::Sink's plain-value callbacks onto this hub's own
@@ -704,7 +725,7 @@ void VentAxiaHub::publish_diagnostic_page_(uint8_t page, const std::string &line
   sink.publish_binary = [this](BinaryKey key, bool value) { this->publish_binary_(key, value); };
   sink.publish_text = [this](TextKey key, const std::string &value) { this->publish_text_(key, value); };
   sink.report_filter_change_due = [this](bool due) { this->reconcile_filter_change_due_(due); };
-  diagnostics::decode_page(page, line2, sink);
+  diagnostics::decode_page(page, line2, sink);  // RAW -- decode_page() is a byte-offset decoder
 }
 
 void VentAxiaHub::reconcile_filter_change_due_(bool due_from_page23) {

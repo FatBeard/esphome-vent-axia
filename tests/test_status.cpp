@@ -201,20 +201,23 @@ TEST_CASE(status_tracker_boost_time_remaining_unpublished_without_a_countdown) {
 }
 
 // ------------------------------------------------------- humidity_boost --
-// Decodes line2 column 15's '*' -- the manual's alpha annunciator for a
-// proportional 0-10V sensor or the internal humidity sensor boosting
-// airflow (PLAN.md §4/§8 stage 14). The regression that matters most here
-// is telling this apart from stage 10's `ls`, which sits in the same
-// right-hand zone of line2 but is a structurally different signal.
+// Decodes line2 column 15's glyphs::ALPHA (0xE0, measured live PLAN.md §8
+// stage 15) -- the manual's alpha annunciator for a proportional 0-10V
+// sensor or the internal humidity sensor boosting airflow (PLAN.md §4/§8
+// stage 14). The regression that matters most here is telling this apart
+// from stage 10's `ls`, which sits in the same right-hand zone of line2 but
+// is a structurally different signal.
 
-TEST_CASE(has_sensor_boost_annunciator_true_for_star_at_column_15) {
+TEST_CASE(has_sensor_boost_annunciator_true_for_the_measured_byte_at_column_15) {
   // The captured frame this decode was built from: line1 "Summer Bypass On",
-  // line2 "31%            *". The percentage is incidental to what is being
-  // tested here -- see has_sensor_boost_annunciator()'s comment for why the
-  // "31% is a proportional rate between Normal and Boost" reading was
-  // withdrawn on 17 Aug 2026 (18% is the LOW rate; Normal measured 30%).
-  // Only column 15 matters, whatever precedes it.
-  CHECK(has_sensor_boost_annunciator("31%            *"));
+  // line2 "31%            *" as published under the pre-stage-16
+  // sanitize()'d pipeline -- the raw byte underneath, confirmed live 18 Aug
+  // 2026 (PLAN.md §8 stage 15), is 0xE0. The percentage is incidental to
+  // what is being tested here -- see has_sensor_boost_annunciator()'s
+  // comment for why the "31% is a proportional rate between Normal and
+  // Boost" reading was withdrawn on 17 Aug 2026 (18% is the LOW rate;
+  // Normal measured 30%). Only column 15 matters, whatever precedes it.
+  CHECK(has_sensor_boost_annunciator("31%            \xE0"));
 }
 
 TEST_CASE(has_sensor_boost_annunciator_false_on_a_plain_status_frame) {
@@ -224,10 +227,22 @@ TEST_CASE(has_sensor_boost_annunciator_false_on_a_plain_status_frame) {
 TEST_CASE(has_sensor_boost_annunciator_false_for_stage_10s_ls_regression) {
   // THE KEY REGRESSION. Stage 10's switched-live annunciator occupies
   // columns 14-15 ('l' then 's'), one column to the left of and including
-  // column 15 -- but column 15 itself holds 's', not '*', so a check of
-  // line2[15] alone cannot confuse the two even though both live in the
-  // same right-hand zone of the line.
+  // column 15 -- but column 15 itself holds 's' (0x73), not glyphs::ALPHA
+  // (0xE0), so a check of line2[15] alone cannot confuse the two even
+  // though both live in the same right-hand zone of the line.
   CHECK(!has_sensor_boost_annunciator("48%           ls"));
+}
+
+TEST_CASE(has_sensor_boost_annunciator_false_for_a_literal_asterisk) {
+  // THE ACTUAL BEHAVIOUR CHANGE stage 16 makes here: pre-stage-16, a literal
+  // ASCII '*' (0x2A) at column 15 -- indistinguishable from glyphs::ALPHA
+  // once sanitize() had collapsed the real byte to the same character --
+  // would have fired this predicate. Now that it reads the raw lane and
+  // compares against the exact measured byte, an actual asterisk on the
+  // display (nothing has ever produced one, but nothing ruled it out
+  // either under the old collapse) must NOT be confused with the
+  // annunciator.
+  CHECK(!has_sensor_boost_annunciator("31%            *"));
 }
 
 TEST_CASE(has_sensor_boost_annunciator_false_for_a_short_line) {
@@ -245,7 +260,7 @@ TEST_CASE(status_tracker_humidity_boost_nullopt_before_any_status_frame) {
 
 TEST_CASE(status_tracker_humidity_boost_set_by_the_annunciator_on_a_status_screen) {
   StatusTracker t;
-  t.update("Summer Bypass On", "31%            *", true, 0);
+  t.update("Summer Bypass On", "31%            \xE0", true, 0);
   CHECK(t.humidity_boost().has_value());
   CHECK(*t.humidity_boost());
 }
@@ -264,7 +279,7 @@ TEST_CASE(status_tracker_humidity_boost_not_set_by_stage_10s_ls_on_status_screen
   CHECK(!*t.humidity_boost());
 }
 
-TEST_CASE(status_tracker_humidity_boost_ignores_a_star_on_a_menu_or_diagnostic_screen) {
+TEST_CASE(status_tracker_humidity_boost_ignores_the_annunciator_on_a_menu_or_diagnostic_screen) {
   StatusTracker t;
   // State established FIRST, deliberately. Asserting on a menu frame alone
   // would prove nothing: before any status frame has_state() is false, so
@@ -276,11 +291,12 @@ TEST_CASE(status_tracker_humidity_boost_ignores_a_star_on_a_menu_or_diagnostic_s
   CHECK(t.has_state());
   CHECK(!*t.humidity_boost());
 
-  // Now a menu/diagnostic frame carrying a '*' at column 15. Those screens
-  // legitimately show their own custom glyphs, which sanitize() also
-  // collapses to '*' -- only the status loop's line2 column 15 means the
-  // annunciator, so this must not set the flag.
-  t.update("Diagnostic  05  ", "0000           *", false, 1000);
+  // Now a menu/diagnostic frame carrying glyphs::ALPHA at column 15. Those
+  // screens legitimately show their own custom glyphs, and nothing rules
+  // out one of them coincidentally landing on this exact byte at this exact
+  // column -- only the status loop's line2 column 15 means the annunciator,
+  // so this must not set the flag.
+  t.update("Diagnostic  05  ", "0000           \xE0", false, 1000);
   CHECK(!*t.humidity_boost());
 
   // And still false back on the status screen: the menu frame left nothing
@@ -291,7 +307,7 @@ TEST_CASE(status_tracker_humidity_boost_ignores_a_star_on_a_menu_or_diagnostic_s
 
 TEST_CASE(status_tracker_humidity_boost_stays_true_across_a_frame_where_the_annunciator_is_absent) {
   StatusTracker t;
-  t.update("Summer Bypass On", "31%            *", true, 0);
+  t.update("Summer Bypass On", "31%            \xE0", true, 0);
   CHECK(*t.humidity_boost());
 
   // The annunciator is genuinely GONE from this frame -- not merely
@@ -305,13 +321,13 @@ TEST_CASE(status_tracker_humidity_boost_stays_true_across_a_frame_where_the_annu
   t.update("Low Airflow     ", "18%             ", true, 1700);
   CHECK(*t.humidity_boost());
 
-  t.update("Summer Bypass On", "31%            *", true, 3400);
+  t.update("Summer Bypass On", "31%            \xE0", true, 3400);
   CHECK(*t.humidity_boost());
 }
 
 TEST_CASE(status_tracker_humidity_boost_ages_out_after_its_timeout) {
   StatusTracker t;
-  t.update("Summer Bypass On", "31%            *", true, 0);
+  t.update("Summer Bypass On", "31%            \xE0", true, 0);
   CHECK(*t.humidity_boost());
 
   // Comfortably under ALTERNATION_TIMEOUT_MS: still true, annunciator gone.

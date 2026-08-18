@@ -21,7 +21,7 @@ void FetchDiagnostics::on_start() {
 }
 
 bool FetchDiagnostics::at_page_00_() const {
-  const auto page = screens::diagnostic_page(this->runner_->display().line1());
+  const auto page = screens::diagnostic_page(this->runner_->display().raw_line1());
   return page.has_value() && *page == 0;
 }
 
@@ -32,7 +32,7 @@ void FetchDiagnostics::track_page_() {
   // line1 to know which page number is currently showing -- never line2,
   // and never any decoding -- purely to report what was captured when this
   // run finishes (on_finish() below).
-  const auto page = screens::diagnostic_page(this->runner_->display().line1());
+  const auto page = screens::diagnostic_page(this->runner_->display().raw_line1());
   if (!page.has_value()) {
     return;  // mid-transition, or not on a diagnostic page yet -- not an error
   }
@@ -62,7 +62,7 @@ Poll FetchDiagnostics::poll() {
     // the unit's entry combo for the diagnostic menu. Timeout 15s.
     case ENTER:
       this->hold_.reset(
-          UP | MAIN, [this] { return screens::is_diagnostic_screen(this->runner_->display().line1()); },
+          UP | MAIN, [this] { return screens::is_diagnostic_screen(this->runner_->display().raw_line1()); },
           ENTER_TIMEOUT_MS);
       return this->await(this->hold_, RELEASE_ENTER);
 
@@ -132,7 +132,7 @@ Poll FetchDiagnostics::poll() {
     // actually seen is reported instead. Timeout 15s.
     case EXIT:
       this->hold_.reset(
-          UP, [this] { return !screens::is_diagnostic_screen(this->runner_->display().line1()); }, EXIT_TIMEOUT_MS);
+          UP, [this] { return !screens::is_diagnostic_screen(this->runner_->display().raw_line1()); }, EXIT_TIMEOUT_MS);
       return this->await(this->hold_, FINISHED);
 
     default:

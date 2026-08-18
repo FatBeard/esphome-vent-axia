@@ -106,8 +106,9 @@ enum class BinaryKey : uint8_t {
   // flight (PLAN.md risk 3: airflow_mode transitions can take ~25-30s) rather
   // than the entity just appearing to sit still.
   BUSY,
-  // Status line2 column 15's alpha annunciator (rendered '*' by sanitize(),
-  // see status.h's has_sensor_boost_annunciator()) -- the manual's own
+  // Status line2 column 15's alpha annunciator, byte glyphs::ALPHA (0xE0,
+  // display.h, measured live PLAN.md §8 stage 15 -- see status.h's
+  // has_sensor_boost_annunciator()) -- the manual's own
   // wording covers BOTH the internal humidity sensor and a proportional
   // 0-10V sensor wired to P1/P2 boosting the airflow, so a CO2 or humidistat
   // sensor on P1 would raise this too. Named humidity_boost rather than

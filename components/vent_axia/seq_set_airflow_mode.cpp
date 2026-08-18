@@ -89,7 +89,7 @@ Poll SetAirflowMode::after_probe_(bool boosting_now) {
   // to StatusTracker::ALTERNATION_TIMEOUT_MS, which is exactly the kind of
   // false confidence this check exists to avoid.
   const status::LineValues probe_values =
-      status::parse_line_values(this->runner_->display().line1(), this->runner_->display().line2());
+      status::parse_line_values(this->runner_->display().raw_line1(), this->runner_->display().raw_line2());
   if (this->have_stuck_sample_ && probe_values.airflow_percent == this->last_airflow_percent_ &&
       probe_values.countdown_minutes == this->last_countdown_minutes_) {
     this->stuck_taps_++;
@@ -157,10 +157,10 @@ Poll SetAirflowMode::poll() {
     // within a sequence's patience -- the unit's own timeout is minutes.
     case CHECK_CURRENT: {
       if (!this->runner_->display().have_frame() ||
-          screens::is_menu_screen(this->runner_->display().line1())) {
+          screens::is_menu_screen(this->runner_->display().raw_line1())) {
         if (this->log_.error) {
           this->log_.error("SetAirflowMode: refusing -- display is not on the status loop (line1='" +
-                            this->runner_->display().line1() + "')");
+                            this->runner_->display().text_line1() + "')");
         }
         return Poll::FAILED;
       }
@@ -249,7 +249,7 @@ Poll SetAirflowMode::poll() {
     // immediately after a hold specifically meant to change that is real,
     // trustworthy evidence the cancel failed, not a guess.
     case PROBE_CHECK:
-      if (status::parse_line_values(this->runner_->display().line1(), this->runner_->display().line2()).purge) {
+      if (status::parse_line_values(this->runner_->display().raw_line1(), this->runner_->display().raw_line2()).purge) {
         if (this->log_.error) {
           this->log_.error(
               "SetAirflowMode: still showing Purge after the cancel hold -- refusing to guess what Main taps "
@@ -257,7 +257,7 @@ Poll SetAirflowMode::poll() {
         }
         return Poll::FAILED;
       }
-      if (status::classify_line(this->runner_->display().line1()) == status::LineMessage::BOOST_AIRFLOW) {
+      if (status::classify_line(this->runner_->display().raw_line1()) == status::LineMessage::BOOST_AIRFLOW) {
         return this->after_probe_(true);
       }
       return this->goto_step(PROBE_WAIT);
@@ -268,7 +268,7 @@ Poll SetAirflowMode::poll() {
     // boosting"; a Boost frame arriving at any point before that concludes
     // the probe early as "boosting", same as PROBE_CHECK's immediate case.
     case PROBE_WAIT:
-      if (status::classify_line(this->runner_->display().line1()) == status::LineMessage::BOOST_AIRFLOW) {
+      if (status::classify_line(this->runner_->display().raw_line1()) == status::LineMessage::BOOST_AIRFLOW) {
         return this->after_probe_(true);
       }
       return this->elapsed() >= PROBE_TIMEOUT_MS ? this->after_probe_(false) : Poll::RUNNING;
