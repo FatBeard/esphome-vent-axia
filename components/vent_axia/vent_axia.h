@@ -375,12 +375,72 @@ class VentAxiaHub : public Component, public uart::UARTDevice {
   /// run.
   void stamp_diagnostics_updated_();
 
+  /// Logs raw, pre-sanitize() frame bytes at DEBUG -- visible under the
+  /// `level: DEBUG` both mhrv.yaml and example/production.yaml already run,
+  /// so this needs no new config option. A live capture during a humidity
+  /// boost is meant to settle three questions with no decoding change of
+  /// its own: which byte the α annunciator actually is (0xE0 is currently
+  /// an inference from the HD44780 A00 ROM, never measured on this unit),
+  /// which CGRAM slots (0x00-0x07) this unit uses, and whether
+  /// unknown_row1_addr/unknown_row2_addr carry a cursor or blink attribute
+  /// that could replace editor_open()'s 1200ms staleness heuristic with a
+  /// direct protocol read -- that heuristic is the one CLAUDE.md records as
+  /// having silently taken a 14°C setpoint to 19°C. See
+  /// DISPLAY-INSTRUMENTATION-PLAN.md and DISPLAY-REVIEW.md §6/§7.
+  ///
+  /// Must read frame.line1/line2 -- the RAW strings straight off the wire
+  /// -- never display_.line1()/line2(), which are already sanitize()'d and
+  /// would defeat the entire point of the stage: sanitize() is exactly the
+  /// many-to-one collapse this instrumentation exists to see past.
+  void log_raw_frame_bytes_(const protocol::DisplayFrame &frame, uint32_t now_ms);
+
+  /// Floor between log lines from log_raw_frame_bytes_(), applied separately
+  /// to the unknown-byte tuple and to each line's non-ASCII description --
+  /// see that function for why the change-gate alone isn't enough on either
+  /// path (frames arrive ~3.3/s; anything that varies per frame would
+  /// otherwise flood a network-only logger at that rate for as long as it
+  /// kept varying).
+  static constexpr uint32_t RAW_LOG_MIN_INTERVAL_MS = 2000;
+
   bool read_only_{false};
   protocol::Framer framer_;
   Display display_;
   status::StatusTracker status_;
   bool have_frame_{false};
   uint32_t last_frame_at_ms_{0};
+
+  // log_raw_frame_bytes_()'s anti-flood state. Non-ASCII line descriptions
+  // gate on the FORMATTER'S OUTPUT changing rather than the raw line --
+  // during a humidity boost the airflow percentage in line2 ticks every
+  // frame while the annunciator byte sits still in column 15, and raw-line
+  // gating would re-log an unchanged "col 15=0x??" several times a second
+  // for as long as the boost lasts. Every path additionally gates on
+  // RAW_LOG_MIN_INTERVAL_MS above, each against its own last-logged
+  // timestamp so a chatty line cannot silence the other one.
+  //
+  // have_logged_unknown_bytes_ does two jobs: it distinguishes "never
+  // logged" from a zero-initialised tuple that happens to match a real
+  // frame's, and it exempts the very first frame from the rate limit, so
+  // the at-rest baseline -- the most informative line in the whole capture
+  // -- is stamped when the link comes up rather than up to 2s later.
+  //
+  // unknown_change_suppressed_ closes the one hole the floor would
+  // otherwise open: a tuple that changes and reverts entirely inside the
+  // rate limit leaves no trace, and question 3 (a cursor or blink
+  // attribute) is exactly a sub-2s signal. The flag remembers that
+  // something moved, so the next eligible frame logs and says so even if
+  // the bytes have since gone back to their previous values.
+  std::string last_logged_line1_unprintable_;
+  std::string last_logged_line2_unprintable_;
+  uint32_t last_line1_log_ms_{0};
+  uint32_t last_line2_log_ms_{0};
+  std::array<uint8_t, 4> last_logged_unknown_header_{};
+  uint8_t last_logged_unknown_row1_addr_{0};
+  uint8_t last_logged_unknown_row2_addr_{0};
+  bool have_logged_unknown_bytes_{false};
+  bool unknown_change_suppressed_{false};
+  uint32_t last_unknown_log_ms_{0};
+
   bool link_up_{false};  // mirrors what publish_link_up_ just published -- see loop()
   std::vector<DiagnosticPageTrigger *> diagnostic_page_triggers_;
   std::vector<SequenceFailedTrigger *> sequence_failed_triggers_;
