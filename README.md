@@ -362,10 +362,10 @@ appearing between the LCD and the chips is worth a look.
 #### Settings
 
 Below the remote sits a **More settings** disclosure, closed by default, that
-holds the summer-bypass switch, the two bypass temperature setpoints, and the
-maintenance action buttons — occasional-use surfaces that don't need to sit
-open under the remote every time the card is glanced at. It appears only once
-at least one of the following is configured:
+holds the summer-bypass switch, the two bypass temperature setpoints as
+sliders, and the maintenance action buttons — occasional-use surfaces that
+don't need to sit open under the remote every time the card is glanced at. It
+appears only once at least one of the following is configured:
 
 | Option | Entity | Notes |
 | --- | --- | --- |
@@ -377,8 +377,14 @@ None of the three is optimistic: like `airflow_mode_entity`, the switch's
 `control()` and the numbers' writes only start a `WriteSetting` run on the
 unit — what the card shows next comes solely from the unit's own settings
 readback (`refresh_settings_button` / the nightly `read_settings` sequence),
-not a value predicted client-side. A stepper tap therefore doesn't move until
-that readback lands.
+not a value predicted client-side. A slider only writes on release (or on a
+committing keypress), not on every tick of the drag; from that point the
+thumb and readout turn amber and pulse — sent, not yet confirmed — until the
+unit's own readback echoes the same value back, or `WriteSetting`'s own
+Runner timeout gives up on the run, whichever comes first. The same amber
+state already applies while the slider is being dragged, so there's no
+jarring colour change at the moment you let go — dragging and "sent, not yet
+confirmed" read as one continuous state.
 
 ### Boost button vs airflow mode
 

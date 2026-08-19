@@ -76,6 +76,14 @@ const CONFIRM_WINDOW_MS = 4000;
 // would misreport that as still-in-flight forever.
 const MODE_PENDING_TIMEOUT_MS = 90000;
 
+// Ceiling for a bypass-temperature slider's "unconfirmed" tint. Not a guess:
+// it's WriteSetting's own Runner-enforced root timeout (sequences.h,
+// TIMEOUT_BUDGET_MS on the WriteSetting sequence) -- the firmware itself will
+// give up and fail the run at that point, so the UI shouldn't claim "still in
+// flight" any longer than the thing it's describing could actually still be
+// running.
+const SETTINGS_PENDING_TIMEOUT_MS = 480000;
+
 // Vent glyph rotation period at 0% and 100% airflow. The unit idles around 20-30%
 // and boosts to ~50-60%, so the interesting range sits in the middle: a linear map
 // between these two keeps trickle visibly slow and boost visibly urgent without the
@@ -513,6 +521,19 @@ class SentinelRemoteCard extends HTMLElement {
     // Whether the settings/maintenance disclosure is open. Local UI state,
     // not derived from hass -- see the click handler in `_build()`.
     this._settingsOpen = false;
+    // Which bypass-temperature slider (if any) is mid-drag. While set,
+    // `_renderSettings` skips rebuilding the panel -- hass pushes state for
+    // unrelated entities constantly, and replacing the slider's innerHTML out
+    // from under an active drag would yank it back to the last confirmed
+    // value and swallow the gesture, the same innerHTML-vs-pointer problem
+    // the mode row and action row solve with a signature guard.
+    this._settingsDragKey = null;
+    this._settingsHasContent = false;
+    // Per-slider record of the value just sent but not yet echoed back by the
+    // unit's own settings readback -- keyed by SETTINGS_NUMBERS' `key`, value
+    // `{ value, at }`. Cleared on confirmation or after
+    // SETTINGS_PENDING_TIMEOUT_MS, same shape as `_pendingMode` above.
+    this._pendingSettings = {};
     if (!this._built) this._build();
     this._applyStaticConfig();
   }
@@ -657,9 +678,21 @@ class SentinelRemoteCard extends HTMLElement {
     });
     this._els.settingsPanel.addEventListener("click", (ev) => {
       const toggleBtn = ev.target.closest("[data-toggle]");
-      if (toggleBtn && !toggleBtn.disabled) return this._onSettingsToggle(toggleBtn.dataset.toggle);
-      const stepBtn = ev.target.closest("[data-step]");
-      if (stepBtn && !stepBtn.disabled) this._onSettingsStep(stepBtn.dataset.step, Number(stepBtn.dataset.dir));
+      if (toggleBtn && !toggleBtn.disabled) this._onSettingsToggle(toggleBtn.dataset.toggle);
+    });
+    // `input` fires continuously while a slider is dragged (and once for a
+    // click-to-jump); `change` fires once the drag/keypress commits. Preview
+    // locally on the former, write to the unit on the latter -- see
+    // `_settingsDragKey` above for why the drag flag is set/cleared here.
+    this._els.settingsPanel.addEventListener("input", (ev) => {
+      const slider = ev.target.closest("[data-slider]");
+      if (!slider) return;
+      this._settingsDragKey = slider.dataset.slider;
+      this._onSettingsSliderPreview(slider);
+    });
+    this._els.settingsPanel.addEventListener("change", (ev) => {
+      const slider = ev.target.closest("[data-slider]");
+      if (slider) this._onSettingsSliderCommit(slider);
     });
     // Purely local UI state -- which entities are behind it is a render
     // concern (see `_renderMore`), but open/closed is not hass-derived, so
@@ -1040,7 +1073,7 @@ class SentinelRemoteCard extends HTMLElement {
 
     // Open/closed itself is local UI state toggled directly by `_toggleMore()`
     // -- this only keeps the DOM in sync with it across a re-render (e.g. the
-    // toggle staying open while a stepper tap re-renders the panel).
+    // toggle staying open while a settings interaction re-renders the panel).
     this._els.moreBody.classList.toggle("open", this._settingsOpen);
     this._els.moreToggle.classList.toggle("open", this._settingsOpen);
   }
@@ -1066,6 +1099,7 @@ class SentinelRemoteCard extends HTMLElement {
   // knows whether the disclosure has a reason to exist.
   _renderSettings(hass, c, locked) {
     const el = this._els.settingsPanel;
+    if (this._settingsDragKey) return this._settingsHasContent;
     const rows = [];
 
     if (c.summer_mode_entity) {
@@ -1098,27 +1132,45 @@ class SentinelRemoteCard extends HTMLElement {
       const max = attrs.max ?? def.fallbackMax;
       const step = attrs.step ?? def.fallbackStep;
       const unit = attrs.unit_of_measurement || def.fallbackUnit;
-      const value = unavailable ? null : Number(st.state);
-      const atMin = value !== null && value <= min;
-      const atMax = value !== null && value >= max;
+      const confirmedValue = unavailable ? min : Number(st.state);
+
+      // Drop the pending mark once the unit confirms the target -- or once
+      // SETTINGS_PENDING_TIMEOUT_MS runs out on a run that isn't landing.
+      // Same shape as the mode row's `_pendingMode` handling above.
+      const pending = this._pendingSettings[def.key];
+      let pendingActive = false;
+      if (pending) {
+        if (!unavailable && confirmedValue === pending.value) {
+          delete this._pendingSettings[def.key];
+        } else if (Date.now() - pending.at > SETTINGS_PENDING_TIMEOUT_MS) {
+          delete this._pendingSettings[def.key];
+        } else {
+          pendingActive = true;
+        }
+      }
+      const value = pendingActive ? pending.value : confirmedValue;
+      const pendingCls = pendingActive ? " pending" : "";
+
       rows.push(`
-        <div class="settings-row">
-          <div>
+        <div class="settings-row settings-row-slider">
+          <div class="settings-row-head">
             <div class="settings-label">${this._esc(def.label)}</div>
             <div class="settings-sub">${this._esc(def.sub)}</div>
           </div>
-          <div class="stepper">
-            <button
-              data-step="${def.key}" data-dir="-1"
-              title="Decrease ${this._esc(def.label.toLowerCase())} by ${step}${unit}"
-              ${locked || unavailable || atMin ? "disabled" : ""}
-            >&minus;</button>
-            <span class="stepper-val">${unavailable ? "—" : this._esc(value) + unit}</span>
-            <button
-              data-step="${def.key}" data-dir="1"
-              title="Increase ${this._esc(def.label.toLowerCase())} by ${step}${unit}"
-              ${locked || unavailable || atMax ? "disabled" : ""}
-            >+</button>
+          <div class="slider-row">
+            <input
+              type="range"
+              class="settings-slider${pendingCls}"
+              data-slider="${def.key}"
+              data-unit="${this._esc(unit)}"
+              min="${min}" max="${max}" step="${step}"
+              value="${value}"
+              title="${this._esc(def.label)}: drag to set, ${min}-${max}${unit}${
+        pendingActive ? " (sent, waiting for the unit to confirm)" : ""
+      }"
+              ${locked || unavailable ? "disabled" : ""}
+            >
+            <span class="slider-val${pendingCls}">${unavailable && !pendingActive ? "—" : this._esc(value) + unit}</span>
           </div>
         </div>
       `);
@@ -1126,7 +1178,8 @@ class SentinelRemoteCard extends HTMLElement {
 
     el.innerHTML = rows.join("");
     el.style.display = rows.length ? "" : "none";
-    return rows.length > 0;
+    this._settingsHasContent = rows.length > 0;
+    return this._settingsHasContent;
   }
 
   _onSettingsToggle(key) {
@@ -1135,21 +1188,34 @@ class SentinelRemoteCard extends HTMLElement {
     this._hass.callService("switch", "toggle", { entity_id: entity });
   }
 
+  // Purely visual: keeps the readout in step with the thumb while dragging,
+  // without writing anything -- the actual write waits for `change` below.
+  // Tinted amber immediately, same as the committed-but-unconfirmed state
+  // `_renderSettings` applies afterwards, since a value the thumb has already
+  // moved to but the unit hasn't been told about is equally not-yet-true.
+  _onSettingsSliderPreview(slider) {
+    const valEl = slider.closest(".slider-row").querySelector(".slider-val");
+    slider.classList.add("pending");
+    if (valEl) {
+      valEl.classList.add("pending");
+      valEl.textContent = `${slider.value}${slider.dataset.unit}`;
+    }
+  }
+
   // Not optimistic, deliberately: like airflow_mode (select.py), these
   // numbers reflect only what the unit itself confirms, not a locally
-  // predicted value, so the stepper's displayed value comes straight from
-  // `hass.states` on the next render rather than being nudged client-side.
-  _onSettingsStep(key, dir) {
+  // predicted value -- the slider snaps to whatever `hass.states` reports on
+  // the next render, staying amber (`_renderSettings`'s `pendingActive`)
+  // until that lands or SETTINGS_PENDING_TIMEOUT_MS gives up waiting.
+  _onSettingsSliderCommit(slider) {
+    const key = slider.dataset.slider;
+    this._settingsDragKey = null;
     const entity = this._config[key];
     if (!entity || !this._hass) return;
-    const st = this._hass.states[entity];
-    if (!st) return;
-    const attrs = st.attributes || {};
-    const min = attrs.min ?? -Infinity;
-    const max = attrs.max ?? Infinity;
-    const step = attrs.step ?? 1;
-    const next = Math.min(max, Math.max(min, Number(st.state) + dir * step));
-    this._hass.callService("number", "set_value", { entity_id: entity, value: next });
+    const value = Number(slider.value);
+    this._pendingSettings[key] = { value, at: Date.now() };
+    this._hass.callService("number", "set_value", { entity_id: entity, value });
+    this._render();
   }
 
   // Maintenance actions. Each is a plain button press on the component side,
@@ -1732,33 +1798,70 @@ class SentinelRemoteCard extends HTMLElement {
       .switch.on::after { left: 17px; }
       .switch:disabled { opacity: .4; pointer-events: none; }
 
-      .stepper { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
-      .stepper button {
-        appearance: none;
-        cursor: pointer;
-        width: 24px;
-        height: 24px;
-        border-radius: 8px;
-        border: 1px solid var(--divider-color, rgba(0,0,0,.12));
-        background: var(--card-background-color, #fff);
-        color: var(--primary-text-color);
-        font-size: 14px;
-        font-weight: 700;
-        line-height: 1;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        -webkit-tap-highlight-color: transparent;
-        touch-action: manipulation;
-      }
-      .stepper button:disabled { opacity: .35; pointer-events: none; }
-      .stepper-val {
+      .settings-row-slider { flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 6px; }
+      .settings-row-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+      .slider-row { display: flex; align-items: center; gap: 10px; }
+      .slider-val {
         min-width: 42px;
-        text-align: center;
+        flex-shrink: 0;
+        text-align: right;
         font-size: 12.5px;
         font-weight: 700;
         font-variant-numeric: tabular-nums;
         color: var(--primary-text-color);
+      }
+      .settings-slider {
+        -webkit-appearance: none;
+        appearance: none;
+        flex: 1;
+        height: 4px;
+        border-radius: 999px;
+        background: var(--divider-color, rgba(0,0,0,.16));
+        cursor: pointer;
+        touch-action: manipulation;
+      }
+      .settings-slider::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        background: var(--accent);
+        border: 2px solid var(--card-background-color, #fff);
+        box-shadow: 0 1px 2px rgba(0,0,0,.3);
+      }
+      .settings-slider::-moz-range-thumb {
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        background: var(--accent);
+        border: 2px solid var(--card-background-color, #fff);
+        box-shadow: 0 1px 2px rgba(0,0,0,.3);
+      }
+      .settings-slider::-moz-range-track {
+        height: 4px;
+        border-radius: 999px;
+        background: var(--divider-color, rgba(0,0,0,.16));
+      }
+      .settings-slider:disabled { opacity: .35; pointer-events: none; }
+      /* Sent (or mid-drag) but not yet echoed back by the unit's own settings
+         readback -- same amber as .chip.warn, same seg-pulse animation and
+         "outline rather than fill" spirit as .seg.pending above, just applied
+         to a slider instead of a segmented button. */
+      .settings-slider.pending {
+        background: color-mix(in srgb, #f59e0b 40%, transparent);
+        animation: seg-pulse 1.6s ease-in-out infinite;
+      }
+      .settings-slider.pending::-webkit-slider-thumb { background: #f59e0b; }
+      .settings-slider.pending::-moz-range-thumb { background: #f59e0b; }
+      .slider-val.pending {
+        color: color-mix(in srgb, #f59e0b 62%, var(--primary-text-color, #000));
+        animation: seg-pulse 1.6s ease-in-out infinite;
+      }
+      /* Must come after the two rules above: equal specificity, so source
+         order decides, and this needs to win when the media query matches. */
+      @media (prefers-reduced-motion: reduce) {
+        .settings-slider.pending, .slider-val.pending { animation: none; }
       }
 
       /* Maintenance actions share the disclosure with settings -- both are
