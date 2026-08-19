@@ -1650,8 +1650,8 @@ class SentinelRemoteCard extends HTMLElement {
       /* Settings and maintenance actions are occasional housekeeping, not the
          everyday reason to open the card, so both live behind this disclosure
          below the remote rather than sitting open every time -- closed by
-         default (`_toggleMore()`). The toggle only appears when there's
-         something behind it (`_renderMore`), same opt-in-by-presence rule as
+         default (_toggleMore()). The toggle only appears when there's
+         something behind it (_renderMore), same opt-in-by-presence rule as
          everything else on the card. */
       .disclosure-toggle {
         margin-top: 12px;
