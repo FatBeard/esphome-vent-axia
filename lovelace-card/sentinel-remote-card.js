@@ -10,16 +10,23 @@
  * panel that fits a modern dashboard, in both light and dark Home Assistant themes.
  *
  * Beyond the remote itself the card carries these surfaces, all optional:
- *   - the header vent glyph, which spins at a rate proportional to airflow_entity
+ *   - the header vent glyph, which spins at a rate proportional to airflow_entity,
+ *     with a live boost-countdown badge alongside it when a timed boost is running
  *   - an alert rail that renders nothing at all while the unit is healthy, so a
  *     quiet card is a well unit
- *   - a single-line chip row of numeric readouts
+ *   - two labelled chip groups (Climate, System) of numeric readouts, each
+ *     wrapping on its own line rather than one row that clips
  *   - an airflow-mode segmented control (Normal / boost durations / Purge), which
  *     is also the only way to start and stop a purge
- *   - a row of maintenance actions (refresh diagnostics, sync clock, reset filter)
+ *   - a "More settings" disclosure, closed by default, holding the summer-bypass
+ *     switch, the two bypass temperature setpoints, and the row of maintenance
+ *     actions (refresh diagnostics, sync clock, reset filter) -- everything
+ *     occasional-use, out from under the remote until asked for
  *
  * Every status entity is opt-in by presence: name the entity in the config and
- * the feature appears, omit it and it disappears.
+ * the feature appears, omit it and it disappears. The disclosure itself follows
+ * the same rule one level up -- it only appears once at least one settings
+ * entity or maintenance button is configured behind it.
  *
  * Two ordered lists, `chips:` and `alerts:`, additionally control *which* of the
  * configured readouts appear and in what order. Omitting either list falls back
@@ -125,6 +132,11 @@ const ICON = {
   // Maintenance actions
   refresh: "M12 4V1L8 5l4 4V6a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8Z",
   sliders: "M4 6h10v2H4V6Zm12 0h4v2h-4V6Zm-4-3h2v8h-2V3ZM4 16h4v2H4v-2Zm6 0h10v2H10v-2Zm-4-3h2v8H6v-8Z",
+
+  // The "More settings" disclosure toggle -- a plain chevron, reused from the
+  // Down button's own glyph so it reads as "reveal what's below" rather than
+  // introducing a fourth arrow style onto the card.
+  chevronDown: "M7 10l5 5 5-5H7Z",
 };
 
 // Numeric readouts, keyed by the short id used in the `chips:` config list.
@@ -136,6 +148,14 @@ const ICON = {
 // tooltip from diagnostics_updated_entity. Everything sourced from a diagnostic
 // page carries it -- including humidity, which predates the flag and was
 // previously (wrongly) presented as live.
+//
+// `group` places a qualifying chip into one of two labelled rows under the
+// chip area (`_renderChips`) -- "climate" for what the air is doing, "system"
+// for what the hardware is doing. `chips:`/DEFAULT_CHIP_ORDER still control
+// membership and order exactly as before; grouping only changes where a
+// qualifying chip lands, never whether it qualifies. `boost_remaining` has no
+// group: it is live, not diagnostic, and rides in the header next to the
+// airflow badge instead (see `_renderChips`'s boost-badge handling).
 const CHIP_CATALOGUE = {
   supply_temp: {
     key: "supply_temp_entity",
@@ -143,6 +163,7 @@ const CHIP_CATALOGUE = {
     label: "Supply air (to house)",
     fallbackUnit: "°C",
     stale: true,
+    group: "climate",
   },
   extract_temp: {
     key: "extract_temp_entity",
@@ -150,6 +171,7 @@ const CHIP_CATALOGUE = {
     label: "Extract air (from house)",
     fallbackUnit: "°C",
     stale: true,
+    group: "climate",
   },
   // Labelled "unit sensor" on purpose. The MVHR's menu has a screen called
   // "Indoor Temp" which is the summer-bypass *setpoint*, not a reading; naming
@@ -160,27 +182,71 @@ const CHIP_CATALOGUE = {
     label: "Indoor air (unit sensor)",
     fallbackUnit: "°C",
     stale: true,
+    group: "climate",
   },
-  humidity: { key: "humidity_entity", icon: ICON.droplet, label: "Humidity", fallbackUnit: "%", stale: true },
+  humidity: {
+    key: "humidity_entity",
+    icon: ICON.droplet,
+    label: "Humidity",
+    fallbackUnit: "%",
+    stale: true,
+    group: "climate",
+  },
   humidity_avg: {
     key: "humidity_avg_entity",
     icon: ICON.droplet,
     label: "Humidity (5 min average)",
     fallbackUnit: "%",
     stale: true,
+    group: "climate",
   },
-  co2: { key: "co2_entity", icon: ICON.co2, label: "CO2", fallbackUnit: "ppm" },
+  co2: { key: "co2_entity", icon: ICON.co2, label: "CO2", fallbackUnit: "ppm", group: "climate" },
   // RPM is the one readout that distinguishes "commanded 30%" from "actually
   // turning"; drive percentage rising at constant RPM is the early signal of a
   // blocked filter or duct.
-  supply_rpm: { key: "supply_rpm_entity", icon: ICON.tachometer, label: "Supply fan speed", fallbackUnit: "rpm", stale: true },
-  extract_rpm: { key: "extract_rpm_entity", icon: ICON.tachometer, label: "Extract fan speed", fallbackUnit: "rpm", stale: true },
-  supply_pwm: { key: "supply_pwm_entity", icon: ICON.bars, label: "Supply motor drive", fallbackUnit: "%", stale: true },
-  extract_pwm: { key: "extract_pwm_entity", icon: ICON.bars, label: "Extract motor drive", fallbackUnit: "%", stale: true },
+  supply_rpm: {
+    key: "supply_rpm_entity",
+    icon: ICON.tachometer,
+    label: "Supply fan speed",
+    fallbackUnit: "rpm",
+    stale: true,
+    group: "system",
+  },
+  extract_rpm: {
+    key: "extract_rpm_entity",
+    icon: ICON.tachometer,
+    label: "Extract fan speed",
+    fallbackUnit: "rpm",
+    stale: true,
+    group: "system",
+  },
+  supply_pwm: {
+    key: "supply_pwm_entity",
+    icon: ICON.bars,
+    label: "Supply motor drive",
+    fallbackUnit: "%",
+    stale: true,
+    group: "system",
+  },
+  extract_pwm: {
+    key: "extract_pwm_entity",
+    icon: ICON.bars,
+    label: "Extract motor drive",
+    fallbackUnit: "%",
+    stale: true,
+    group: "system",
+  },
   // Shares filter_entity with the alert rail, which uses the same figure for
   // its "Filter due - 312 h" detail. Listing this id promotes it to a chip of
   // its own for people who want the countdown visible all the time.
-  filter_hours: { key: "filter_entity", icon: ICON.funnel, label: "Filter life remaining", fallbackUnit: "h", stale: true },
+  filter_hours: {
+    key: "filter_entity",
+    icon: ICON.funnel,
+    label: "Filter life remaining",
+    fallbackUnit: "h",
+    stale: true,
+    group: "system",
+  },
   boost_remaining: {
     key: "boost_remaining_entity",
     icon: ICON.clock,
@@ -371,6 +437,32 @@ const ACTION_BUTTONS = [
   },
 ];
 
+// The two bypass temperature setpoints, rendered as tap-to-step rows in the
+// settings panel. `key` names the entity as usual; min/max/step/unit are read
+// from the number entity's own attributes when present (ESPHome publishes
+// them from number.py's declared bounds) and these are only the fallback for
+// an entity that, for whatever reason, doesn't carry them.
+const SETTINGS_NUMBERS = [
+  {
+    key: "bypass_indoor_temp_entity",
+    label: "Indoor target",
+    sub: "Summer bypass indoor setpoint",
+    fallbackMin: 16,
+    fallbackMax: 40,
+    fallbackStep: 1,
+    fallbackUnit: "°C",
+  },
+  {
+    key: "bypass_outdoor_temp_entity",
+    label: "Outdoor cut-off",
+    sub: "Summer bypass outdoor cut-off",
+    fallbackMin: 5,
+    fallbackMax: 20,
+    fallbackStep: 1,
+    fallbackUnit: "°C",
+  },
+];
+
 class SentinelRemoteCard extends HTMLElement {
   static getStubConfig() {
     return {
@@ -418,6 +510,9 @@ class SentinelRemoteCard extends HTMLElement {
     // display has actually changed.
     this._modeSig = null;
     this._actionSig = null;
+    // Whether the settings/maintenance disclosure is open. Local UI state,
+    // not derived from hass -- see the click handler in `_build()`.
+    this._settingsOpen = false;
     if (!this._built) this._build();
     this._applyStaticConfig();
   }
@@ -462,7 +557,8 @@ class SentinelRemoteCard extends HTMLElement {
                   <circle cx="12" cy="12" r="1.7" fill="var(--card-background-color, #fff)"/>
                 </svg>
               </div>
-              <span class="airflow-pct" id="airflowPct"></span>
+              <span class="airflow-pct" id="airflowPct" title="Live airflow"></span>
+              <span class="boost-badge" id="boostBadge"></span>
             </div>
           </div>
 
@@ -476,7 +572,18 @@ class SentinelRemoteCard extends HTMLElement {
           </div>
 
           <div class="alerts" id="alerts"></div>
-          <div class="chips" id="chips"></div>
+
+          <div class="chips" id="chips">
+            <div class="chip-group" id="chipsClimateGroup">
+              <div class="chip-group-label">Climate</div>
+              <div class="chip-group-row" id="chipsClimateRow"></div>
+            </div>
+            <div class="chip-group" id="chipsSystemGroup">
+              <div class="chip-group-label">System</div>
+              <div class="chip-group-row" id="chipsSystemRow"></div>
+            </div>
+          </div>
+
           <div class="mode-row" id="modeRow"></div>
 
           <div class="buttons">
@@ -497,7 +604,18 @@ class SentinelRemoteCard extends HTMLElement {
             </div>
           </div>
 
-          <div class="actions" id="actions"></div>
+          <button class="disclosure-toggle" id="moreToggle" title="Show settings and maintenance actions" aria-expanded="false">
+            <span>More settings</span>
+            <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="${ICON.chevronDown}"/></svg>
+          </button>
+          <div class="disclosure-body" id="moreBody">
+            <div>
+              <div class="disclosure-inner">
+                <div class="settings" id="settingsPanel"></div>
+                <div class="actions" id="actions"></div>
+              </div>
+            </div>
+          </div>
         </div>
       </ha-card>
     `;
@@ -507,12 +625,20 @@ class SentinelRemoteCard extends HTMLElement {
       title: root.querySelector(".title"),
       vent: root.querySelector(".vent-icon"),
       airflowPct: root.querySelector("#airflowPct"),
+      boostBadge: root.querySelector("#boostBadge"),
       l1: root.querySelector("#l1"),
       l2: root.querySelector("#l2"),
       busyBar: root.querySelector("#busyBar"),
       alerts: root.querySelector("#alerts"),
       chips: root.querySelector("#chips"),
+      chipsClimateGroup: root.querySelector("#chipsClimateGroup"),
+      chipsClimateRow: root.querySelector("#chipsClimateRow"),
+      chipsSystemGroup: root.querySelector("#chipsSystemGroup"),
+      chipsSystemRow: root.querySelector("#chipsSystemRow"),
       modeRow: root.querySelector("#modeRow"),
+      moreToggle: root.querySelector("#moreToggle"),
+      moreBody: root.querySelector("#moreBody"),
+      settingsPanel: root.querySelector("#settingsPanel"),
       actions: root.querySelector("#actions"),
       boost: root.querySelector('[data-key="boost"]'),
       down: root.querySelector('[data-key="down"]'),
@@ -529,6 +655,16 @@ class SentinelRemoteCard extends HTMLElement {
       const btn = ev.target.closest("[data-action]");
       if (btn && !btn.disabled) this._onAction(btn.dataset.action);
     });
+    this._els.settingsPanel.addEventListener("click", (ev) => {
+      const toggleBtn = ev.target.closest("[data-toggle]");
+      if (toggleBtn && !toggleBtn.disabled) return this._onSettingsToggle(toggleBtn.dataset.toggle);
+      const stepBtn = ev.target.closest("[data-step]");
+      if (stepBtn && !stepBtn.disabled) this._onSettingsStep(stepBtn.dataset.step, Number(stepBtn.dataset.dir));
+    });
+    // Purely local UI state -- which entities are behind it is a render
+    // concern (see `_renderMore`), but open/closed is not hass-derived, so
+    // toggling it goes straight to the DOM rather than through `_render()`.
+    this._els.moreToggle.addEventListener("click", () => this._toggleMore());
 
     for (const key of ["boost", "down", "select", "up"]) {
       const el = this._els[key];
@@ -604,7 +740,7 @@ class SentinelRemoteCard extends HTMLElement {
     this._renderAlerts(hass, c);
     this._renderChips(hass, c);
     this._renderModeRow(hass, c, busy || !online);
-    this._renderActions(hass, c, busy || !online);
+    this._renderMore(hass, c, busy || !online);
   }
 
   // Spin the vent glyph at a rate that tracks real airflow. `airflow_entity` is
@@ -886,6 +1022,136 @@ class SentinelRemoteCard extends HTMLElement {
     this._render();
   }
 
+  // The "More settings" disclosure: everything occasional-use (the summer
+  // bypass switch, the two bypass temperature setpoints, the maintenance
+  // action buttons) lives behind it, closed by default, so the everyday card
+  // is just the remote and the readouts. The toggle itself only appears when
+  // there's something behind it to show -- same opt-in-by-presence rule as
+  // every other surface on the card, just applied to the drawer as a whole.
+  _renderMore(hass, c, locked) {
+    const hasSettings = this._renderSettings(hass, c, locked);
+    this._renderActions(hass, c, locked);
+    const hasActions = !!(this._els.actions.style.display !== "none" && this._els.actions.innerHTML);
+
+    const show = hasSettings || hasActions;
+    this._els.moreToggle.style.display = show ? "" : "none";
+    this._els.moreBody.style.display = show ? "" : "none";
+    if (!show) return;
+
+    // Open/closed itself is local UI state toggled directly by `_toggleMore()`
+    // -- this only keeps the DOM in sync with it across a re-render (e.g. the
+    // toggle staying open while a stepper tap re-renders the panel).
+    this._els.moreBody.classList.toggle("open", this._settingsOpen);
+    this._els.moreToggle.classList.toggle("open", this._settingsOpen);
+  }
+
+  _toggleMore() {
+    this._settingsOpen = !this._settingsOpen;
+    const open = this._settingsOpen;
+    this._els.moreBody.classList.toggle("open", open);
+    this._els.moreToggle.classList.toggle("open", open);
+    this._els.moreToggle.setAttribute("aria-expanded", open ? "true" : "false");
+    this._els.moreToggle.title = open
+      ? "Hide settings and maintenance actions"
+      : "Show settings and maintenance actions";
+    this._els.moreToggle.querySelector("span").textContent = open ? "Hide settings" : "More settings";
+  }
+
+  // The settings panel: the summer-bypass switch and the two bypass
+  // temperature setpoints, each independently opt-in by presence exactly like
+  // every chip and alert. Unlike the alert/chip catalogues these aren't
+  // read-only, so unlike a chip's flat text this row also has to reflect
+  // whether the underlying entity currently allows a tap (unavailable, or the
+  // card is locked). Returns whether it rendered anything, so `_renderMore`
+  // knows whether the disclosure has a reason to exist.
+  _renderSettings(hass, c, locked) {
+    const el = this._els.settingsPanel;
+    const rows = [];
+
+    if (c.summer_mode_entity) {
+      const st = hass.states[c.summer_mode_entity];
+      const unavailable = this._isUnavailable(hass, c.summer_mode_entity);
+      const on = st ? this._isOn(st) : false;
+      rows.push(`
+        <div class="settings-row">
+          <div>
+            <div class="settings-label">Summer bypass</div>
+            <div class="settings-sub">Menu 2 · Enable Bypass</div>
+          </div>
+          <button
+            class="switch${on ? " on" : ""}"
+            data-toggle="summer_mode_entity"
+            title="${on ? "On" : "Off"} — tap to ${on ? "disable" : "enable"} the summer bypass"
+            ${locked || unavailable ? "disabled" : ""}
+          ></button>
+        </div>
+      `);
+    }
+
+    for (const def of SETTINGS_NUMBERS) {
+      const entity = c[def.key];
+      if (!entity) continue;
+      const st = hass.states[entity];
+      const unavailable = !st || st.state === "unavailable" || st.state === "unknown";
+      const attrs = (st && st.attributes) || {};
+      const min = attrs.min ?? def.fallbackMin;
+      const max = attrs.max ?? def.fallbackMax;
+      const step = attrs.step ?? def.fallbackStep;
+      const unit = attrs.unit_of_measurement || def.fallbackUnit;
+      const value = unavailable ? null : Number(st.state);
+      const atMin = value !== null && value <= min;
+      const atMax = value !== null && value >= max;
+      rows.push(`
+        <div class="settings-row">
+          <div>
+            <div class="settings-label">${this._esc(def.label)}</div>
+            <div class="settings-sub">${this._esc(def.sub)}</div>
+          </div>
+          <div class="stepper">
+            <button
+              data-step="${def.key}" data-dir="-1"
+              title="Decrease ${this._esc(def.label.toLowerCase())} by ${step}${unit}"
+              ${locked || unavailable || atMin ? "disabled" : ""}
+            >&minus;</button>
+            <span class="stepper-val">${unavailable ? "—" : this._esc(value) + unit}</span>
+            <button
+              data-step="${def.key}" data-dir="1"
+              title="Increase ${this._esc(def.label.toLowerCase())} by ${step}${unit}"
+              ${locked || unavailable || atMax ? "disabled" : ""}
+            >+</button>
+          </div>
+        </div>
+      `);
+    }
+
+    el.innerHTML = rows.join("");
+    el.style.display = rows.length ? "" : "none";
+    return rows.length > 0;
+  }
+
+  _onSettingsToggle(key) {
+    const entity = this._config[key];
+    if (!entity || !this._hass) return;
+    this._hass.callService("switch", "toggle", { entity_id: entity });
+  }
+
+  // Not optimistic, deliberately: like airflow_mode (select.py), these
+  // numbers reflect only what the unit itself confirms, not a locally
+  // predicted value, so the stepper's displayed value comes straight from
+  // `hass.states` on the next render rather than being nudged client-side.
+  _onSettingsStep(key, dir) {
+    const entity = this._config[key];
+    if (!entity || !this._hass) return;
+    const st = this._hass.states[entity];
+    if (!st) return;
+    const attrs = st.attributes || {};
+    const min = attrs.min ?? -Infinity;
+    const max = attrs.max ?? Infinity;
+    const step = attrs.step ?? 1;
+    const next = Math.min(max, Math.max(min, Number(st.state) + dir * step));
+    this._hass.callService("number", "set_value", { entity_id: entity, value: next });
+  }
+
   // Maintenance actions. Each is a plain button press on the component side,
   // where a sequence performs whatever held key combination the operation
   // actually needs -- see the README's "Button combos" section for why the card
@@ -986,7 +1252,12 @@ class SentinelRemoteCard extends HTMLElement {
   //
   // Listing an id is necessary but not sufficient: the chip still needs its
   // entity configured and reporting, so the original opt-in-by-presence rule
-  // survives underneath the new ordering.
+  // survives underneath the grouping. Each qualifying chip's CHIP_CATALOGUE
+  // `group` then sends it into the Climate or System row (each of which wraps
+  // on its own rather than the whole card clipping one long line), except
+  // `boost_remaining`, which has no group and goes to the header badge next
+  // to the airflow percentage -- it is live, not a diagnostics-page reading,
+  // so it doesn't belong in either group.
   _renderChips(hass, c) {
     // Anything read from a diagnostic page comes off the ~15 minute scrape, not
     // the live status frames, so it can legitimately be a quarter of an hour
@@ -996,7 +1267,10 @@ class SentinelRemoteCard extends HTMLElement {
     const scrapedAt =
       scrapeSt && scrapeSt.state !== "unavailable" && scrapeSt.state !== "unknown" ? scrapeSt.state : "";
 
-    const chips = [];
+    const climateChips = [];
+    const systemChips = [];
+    let boostBadgeHtml = "";
+
     for (const id of this._orderedIds(c.chips, DEFAULT_CHIP_ORDER, CHIP_CATALOGUE, "chips")) {
       const d = CHIP_CATALOGUE[id];
       const entity = c[d.key];
@@ -1009,18 +1283,34 @@ class SentinelRemoteCard extends HTMLElement {
       // reports Celsius, Fahrenheit, minutes or percent.
       const unit = (st.attributes && st.attributes.unit_of_measurement) || d.fallbackUnit || "";
       const title = d.stale && scrapedAt ? `${d.label} — updated ${scrapedAt}` : d.label;
-      chips.push(`
+      const valueText = `${this._esc(st.state)}${unit ? " " + this._esc(unit) : ""}`;
+
+      if (!d.group) {
+        boostBadgeHtml = `
+          <span class="boost-badge" title="${this._esc(title)}">
+            <svg viewBox="0 0 24 24" width="12" height="12">${this._iconPath(d.icon)}</svg>${valueText}
+          </span>
+        `;
+        continue;
+      }
+
+      const bucket = d.group === "climate" ? climateChips : systemChips;
+      bucket.push(`
         <div class="chip" title="${this._esc(title)}">
           <svg viewBox="0 0 24 24" width="12" height="12">${this._iconPath(d.icon)}</svg>
-          <span>${this._esc(st.state)}${unit ? " " + this._esc(unit) : ""}</span>
+          <span>${valueText}</span>
         </div>
       `);
     }
-    this._els.chips.innerHTML = chips.join("");
-    this._els.chips.style.display = chips.length ? "" : "none";
-    // Single row by default; `chip_wrap: true` restores the old wrapping
-    // behaviour for dashboards that would rather have two lines than ellipsis.
-    this._els.chips.classList.toggle("wrap", c.chip_wrap === true);
+
+    this._els.boostBadge.innerHTML = boostBadgeHtml;
+    this._els.boostBadge.style.display = boostBadgeHtml ? "" : "none";
+
+    this._els.chipsClimateRow.innerHTML = climateChips.join("");
+    this._els.chipsClimateGroup.style.display = climateChips.length ? "" : "none";
+    this._els.chipsSystemRow.innerHTML = systemChips.join("");
+    this._els.chipsSystemGroup.style.display = systemChips.length ? "" : "none";
+    this._els.chips.style.display = climateChips.length || systemChips.length ? "" : "none";
   }
 
   // Chips and alerts are assembled as HTML strings, so anything sourced from an
@@ -1124,6 +1414,21 @@ class SentinelRemoteCard extends HTMLElement {
         font-variant-numeric: tabular-nums;
         color: var(--secondary-text-color);
       }
+      /* Live, not diagnostic -- boost_remaining rides here instead of in the
+         System group below, because it comes off the status line every tick
+         rather than the ~15 minute scrape everything in that group shares. */
+      .boost-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        margin-left: 4px;
+        padding-left: 6px;
+        border-left: 1px solid var(--divider-color, rgba(0,0,0,.12));
+        font-size: 11px;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+        color: var(--accent);
+      }
       .vent-icon {
         color: var(--secondary-text-color);
         display: flex;
@@ -1184,22 +1489,30 @@ class SentinelRemoteCard extends HTMLElement {
         gap: 6px;
         margin-top: 10px;
       }
-      /* Chips do NOT wrap. A single row of readings is the point -- supply and
-         extract air temperature belong side by side, not stacked. Columns are
-         sized to their content but allowed to shrink (the minmax lower bound of
-         0 is what permits that), so adding readouts compresses the row and
-         eventually ellipsises rather than spilling onto a second line. */
+      /* Two labelled groups -- Climate, System -- each wrapping on its own
+         line rather than one row that clips at the card edge. A config with a
+         dozen chips enabled grows taller, never narrower than its content:
+         the old single-row-with-ellipsis had no good answer for that, this
+         does. */
       .chips {
-        display: grid;
-        grid-auto-flow: column;
-        grid-auto-columns: minmax(0, max-content);
-        justify-content: start;
-        gap: 6px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
         margin-top: 10px;
       }
-      .chips.wrap {
+      .chip-group-label {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: .08em;
+        text-transform: uppercase;
+        color: var(--secondary-text-color);
+        opacity: .68;
+        margin: 0 0 6px 2px;
+      }
+      .chip-group-row {
         display: flex;
         flex-wrap: wrap;
+        gap: 6px;
       }
       .chip span {
         overflow: hidden;
@@ -1334,10 +1647,123 @@ class SentinelRemoteCard extends HTMLElement {
 
       .buttons { margin-top: 16px; display: flex; flex-direction: column; gap: 10px; }
 
-      /* Maintenance actions sit below the remote, not above it: they are
-         occasional housekeeping, and the remote is what the card is for. */
-      .actions {
+      /* Settings and maintenance actions are occasional housekeeping, not the
+         everyday reason to open the card, so both live behind this disclosure
+         below the remote rather than sitting open every time -- closed by
+         default (`_toggleMore()`). The toggle only appears when there's
+         something behind it (`_renderMore`), same opt-in-by-presence rule as
+         everything else on the card. */
+      .disclosure-toggle {
         margin-top: 12px;
+        width: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        padding: 8px;
+        border-radius: 12px;
+        border: 1px dashed var(--divider-color, rgba(0,0,0,.14));
+        background: transparent;
+        color: var(--secondary-text-color);
+        font-family: inherit;
+        font-size: 11.5px;
+        font-weight: 600;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+        touch-action: manipulation;
+      }
+      .disclosure-toggle:hover { background: var(--secondary-background-color, rgba(0,0,0,.05)); color: var(--primary-text-color); }
+      .disclosure-toggle svg { transition: transform .2s ease; }
+      .disclosure-toggle.open svg { transform: rotate(180deg); }
+      /* Animated via grid-template-rows (0fr -> 1fr) rather than max-height:
+         the track sizes to the real content height either way, so there's no
+         magic-number cap for a growing settings panel to outgrow. */
+      .disclosure-body {
+        display: grid;
+        grid-template-rows: 0fr;
+        transition: grid-template-rows .25s ease;
+      }
+      .disclosure-body.open { grid-template-rows: 1fr; }
+      .disclosure-body > div { overflow: hidden; }
+      .disclosure-inner { padding-top: 12px; display: flex; flex-direction: column; gap: 12px; }
+      @media (prefers-reduced-motion: reduce) {
+        .disclosure-body { transition: none; }
+      }
+
+      .settings {
+        padding: 10px 10px 11px;
+        border-radius: 14px;
+        background: var(--secondary-background-color, rgba(0,0,0,.05));
+        display: flex;
+        flex-direction: column;
+        gap: 11px;
+      }
+      .settings-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+      .settings-label { font-size: 12px; font-weight: 600; color: var(--primary-text-color); }
+      .settings-sub { font-size: 10.5px; color: var(--secondary-text-color); margin-top: 1px; }
+
+      .switch {
+        appearance: none;
+        border: none;
+        cursor: pointer;
+        width: 36px;
+        height: 21px;
+        border-radius: 999px;
+        background: var(--divider-color, rgba(0,0,0,.16));
+        position: relative;
+        flex-shrink: 0;
+        transition: background .15s ease;
+        -webkit-tap-highlight-color: transparent;
+        touch-action: manipulation;
+      }
+      .switch::after {
+        content: "";
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 17px;
+        height: 17px;
+        border-radius: 50%;
+        background: #fff;
+        box-shadow: 0 1px 2px rgba(0,0,0,.3);
+        transition: left .15s ease;
+      }
+      .switch.on { background: var(--accent); }
+      .switch.on::after { left: 17px; }
+      .switch:disabled { opacity: .4; pointer-events: none; }
+
+      .stepper { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+      .stepper button {
+        appearance: none;
+        cursor: pointer;
+        width: 24px;
+        height: 24px;
+        border-radius: 8px;
+        border: 1px solid var(--divider-color, rgba(0,0,0,.12));
+        background: var(--card-background-color, #fff);
+        color: var(--primary-text-color);
+        font-size: 14px;
+        font-weight: 700;
+        line-height: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        -webkit-tap-highlight-color: transparent;
+        touch-action: manipulation;
+      }
+      .stepper button:disabled { opacity: .35; pointer-events: none; }
+      .stepper-val {
+        min-width: 42px;
+        text-align: center;
+        font-size: 12.5px;
+        font-weight: 700;
+        font-variant-numeric: tabular-nums;
+        color: var(--primary-text-color);
+      }
+
+      /* Maintenance actions share the disclosure with settings -- both are
+         occasional housekeeping, and the remote above is what the card is for. */
+      .actions {
         display: flex;
         flex-wrap: wrap;
         gap: 6px;
@@ -1466,21 +1892,25 @@ class SentinelRemoteCardEditor extends HTMLElement {
         <p><b>Controls:</b> airflow_mode_entity (the Normal / boost / Purge segmented
         row — this is where purge lives), refresh_diagnostics_button,
         refresh_settings_button, sync_clock_button, reset_filter_button.</p>
-        <p><b>Chips:</b> supply_temp_entity, extract_temp_entity, indoor_temp_entity,
-        humidity_entity, humidity_avg_entity, co2_entity, supply_rpm_entity,
-        extract_rpm_entity, supply_pwm_entity, extract_pwm_entity, filter_entity,
-        boost_remaining_entity, diagnostics_updated_entity.</p>
+        <p><b>Chips (Climate / System groups):</b> supply_temp_entity, extract_temp_entity,
+        indoor_temp_entity, humidity_entity, humidity_avg_entity, co2_entity,
+        supply_rpm_entity, extract_rpm_entity, supply_pwm_entity, extract_pwm_entity,
+        filter_entity, diagnostics_updated_entity. boost_remaining_entity rides in the
+        header next to the airflow badge instead of a group.</p>
         <p><b>Alerts:</b> link_entity, bypass_entity, antifrost_entity,
         antifrost_mode_entity, defrost_entity, dryout_entity, humidity_boost_entity,
         purge_entity, switched_live_entity, filter_due_entity, filter_warning_threshold,
         supply_fault_entity, extract_fault_entity, rail_fault_entity.</p>
+        <p><b>Settings (behind the "More settings" disclosure):</b> summer_mode_entity,
+        bypass_indoor_temp_entity, bypass_outdoor_temp_entity.</p>
         <p><b>Other status:</b> airflow_entity (spins the header vent glyph in
         proportion to flow), busy_entity, boost_active_entity, running_entity.</p>
         <p><b>Layout:</b> chips and alerts take ordered id lists that control which
-        readouts appear and in what order; chip_wrap lets the chip row wrap again.</p>
+        readouts appear and in what order.</p>
         <p><b>Appearance:</b> title, accent_color, theme.</p>
         <p>Each status entity is opt-in: name it and the chip or icon appears, omit
-        the line and it is hidden.</p>
+        the line and it is hidden. Settings and maintenance actions share one
+        disclosure that only appears once something is configured behind it.</p>
       </div>
     `;
   }
