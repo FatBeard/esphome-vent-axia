@@ -1810,47 +1810,71 @@ class SentinelRemoteCard extends HTMLElement {
         font-variant-numeric: tabular-nums;
         color: var(--primary-text-color);
       }
+      /* The input's own box is the draggable/tappable hit area, not just the
+         visible bar -- WebKit doesn't grow that hit area to match the thumb
+         graphic the way a real touch target needs, so height here has to be
+         the target size (28px, near the ~24px minimum touch guidance), with
+         the thin 4px bar drawn separately by ::-webkit-slider-runnable-track
+         / ::-moz-range-track below. A 4px-tall input (the original version
+         of this rule) meant the 4px visual bar WAS the entire grabbable
+         area -- reported as "difficult to grab" and confirmed as exactly
+         that: the thumb only looked bigger than its hit box. */
       .settings-slider {
         -webkit-appearance: none;
         appearance: none;
         flex: 1;
+        height: 28px;
+        background: transparent;
+        cursor: pointer;
+        touch-action: manipulation;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .settings-slider::-webkit-slider-runnable-track {
         height: 4px;
         border-radius: 999px;
         background: var(--divider-color, rgba(0,0,0,.16));
-        cursor: pointer;
-        touch-action: manipulation;
-      }
-      .settings-slider::-webkit-slider-thumb {
-        -webkit-appearance: none;
-        appearance: none;
-        width: 18px;
-        height: 18px;
-        border-radius: 50%;
-        background: var(--accent);
-        border: 2px solid var(--card-background-color, #fff);
-        box-shadow: 0 1px 2px rgba(0,0,0,.3);
-      }
-      .settings-slider::-moz-range-thumb {
-        width: 18px;
-        height: 18px;
-        border-radius: 50%;
-        background: var(--accent);
-        border: 2px solid var(--card-background-color, #fff);
-        box-shadow: 0 1px 2px rgba(0,0,0,.3);
       }
       .settings-slider::-moz-range-track {
         height: 4px;
         border-radius: 999px;
         background: var(--divider-color, rgba(0,0,0,.16));
       }
+      .settings-slider::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        /* WebKit aligns the thumb to the top of the track box rather than
+           centering it -- (4px track - 20px thumb) / 2, unlike Firefox which
+           centers ::-moz-range-thumb on the input automatically. */
+        margin-top: -8px;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: var(--accent);
+        border: 2px solid var(--card-background-color, #fff);
+        box-shadow: 0 1px 2px rgba(0,0,0,.3);
+      }
+      .settings-slider::-moz-range-thumb {
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: var(--accent);
+        border: 2px solid var(--card-background-color, #fff);
+        box-shadow: 0 1px 2px rgba(0,0,0,.3);
+      }
       .settings-slider:disabled { opacity: .35; pointer-events: none; }
       /* Sent (or mid-drag) but not yet echoed back by the unit's own settings
          readback -- same amber as .chip.warn, same seg-pulse animation and
          "outline rather than fill" spirit as .seg.pending above, just applied
-         to a slider instead of a segmented button. */
-      .settings-slider.pending {
+         to a slider instead of a segmented button. The tint lives on the
+         track/thumb pseudo-elements, not the outer input (which is now
+         transparent -- see the hit-area comment above), so it has to be set
+         per engine same as the base track/thumb colors are. */
+      .settings-slider.pending { animation: seg-pulse 1.6s ease-in-out infinite; }
+      .settings-slider.pending::-webkit-slider-runnable-track {
         background: color-mix(in srgb, #f59e0b 40%, transparent);
-        animation: seg-pulse 1.6s ease-in-out infinite;
+      }
+      .settings-slider.pending::-moz-range-track {
+        background: color-mix(in srgb, #f59e0b 40%, transparent);
       }
       .settings-slider.pending::-webkit-slider-thumb { background: #f59e0b; }
       .settings-slider.pending::-moz-range-thumb { background: #f59e0b; }
