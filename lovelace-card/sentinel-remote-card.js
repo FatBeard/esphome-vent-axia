@@ -472,7 +472,7 @@ class SentinelRemoteCard extends HTMLElement {
               <div class="lcd-line" id="l2">&nbsp;</div>
               <div class="lcd-scanline"></div>
             </div>
-            <div class="busy-bar" id="busyBar" style="display:none"><span></span></div>
+            <div class="busy-bar" id="busyBar"><span></span></div>
           </div>
 
           <div class="alerts" id="alerts"></div>
@@ -580,7 +580,7 @@ class SentinelRemoteCard extends HTMLElement {
     // ESPHome node dropping off the network.
     const online = !c.link_entity || this._isOn(hass.states[c.link_entity]);
     this._els.panel.classList.toggle("offline", !online);
-    this._els.busyBar.style.display = busy ? "" : "none";
+    this._els.busyBar.classList.toggle("on", busy);
 
     for (const key of ["boost", "down", "select", "up"]) {
       const entity = c[`${key}_button`];
@@ -1242,13 +1242,22 @@ class SentinelRemoteCard extends HTMLElement {
 
       /* A sequence can run for ~25-30s. This sits under the LCD and is the only
          thing on the card that says "still working" during it -- without it a
-         mode change looks like a tap that did nothing. */
+         mode change looks like a tap that did nothing.
+
+         Space is reserved permanently (never display:none) and only visibility
+         toggles via .on -- appearing/disappearing by display would insert or
+         remove its margin+height from the flow and shove every row below it
+         (alerts/chips/mode-row/buttons/actions) down and back up on every tap. */
       .busy-bar {
         margin-top: 8px;
         height: 2px;
         border-radius: 2px;
         overflow: hidden;
         background: color-mix(in srgb, var(--accent) 18%, transparent);
+        visibility: hidden;
+      }
+      .busy-bar.on {
+        visibility: visible;
       }
       .busy-bar span {
         display: block;
@@ -1257,6 +1266,9 @@ class SentinelRemoteCard extends HTMLElement {
         border-radius: 2px;
         background: var(--accent);
         animation: busy-slide 1.4s ease-in-out infinite;
+      }
+      .busy-bar:not(.on) span {
+        animation-play-state: paused;
       }
       @keyframes busy-slide {
         0%   { transform: translateX(-100%); }
